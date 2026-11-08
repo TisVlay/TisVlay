@@ -121,11 +121,12 @@ export global Nav {
         self.reveal-tick += 1;
     }
 
-    /// Escape's last levels (docs/gui/remote-navigation.md). Rust keeps the history: this
-    /// is whether the current page was reached through a click-through
-    /// (a profile pencil, a "used by" link), so Escape on the sidebar
-    /// goes back to it. With nothing to go back to, Escape on the
-    /// sidebar closes the window in couch mode through `close`.
+    /// Escape's last levels (docs/gui/remote-navigation.md). Rust
+    /// keeps the history: this is whether the current page was reached
+    /// through a click-through (a profile pencil, a "used by" link), so
+    /// Escape on the sidebar goes back to it. With nothing to go back
+    /// to, Escape on the sidebar closes the window in couch mode
+    /// through `close`.
     in-out property <bool> click-through-back: false;
     callback close();
     in-out property <int> anchor-seq: 0;

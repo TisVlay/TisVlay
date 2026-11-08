@@ -64,13 +64,13 @@ The window can be driven without a mouse: from a keyboard, or from a TV remote o
 | **↑ ↓** | Move along the sidebar, down a list, or between the rows of a page. The sidebar switches pages as you move, and a list shows the TV or profile under the ring. |
 | **← →** | Move along a row, from its control to the buttons beside it, and between the sidebar, the list and the page. On a slider they change the value. |
 | **OK** / **Enter** | Activate: enter a page from the sidebar, open the TV or profile under the ring, press a button, flip a switch, open a choice, start typing in a field. |
-| **Back** / **Esc** | One level out: close a help bubble, stop editing, leave the page for its list and the list for the sidebar. On the sidebar it returns from a jump you made with a pencil or a **Used by** link. |
+| **Back** / **Esc** | One level out: close a help bubble, stop editing, leave the page for its list and the list for the sidebar. In the pairing wizard it's **Back**, or **Cancel**; while editing a TV's config it's **Cancel**, asking first if you changed something. On the sidebar it returns from a jump you made with a pencil or a **Used by** link. |
 | **Menu** | Help for the row under the ring, the same as its **ⓘ**. |
 | **Tab** / **Shift+Tab** | The next or previous control; in couch mode, the next or previous page. |
 
-Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK and Back, Square is Menu, and the shoulder buttons are Tab and Shift+Tab. A TV remote's arrows, OK and Back map the same way. It has no Menu key, so a row's help is one **→** away, on its **ⓘ**.
+Under Plasma Bigscreen, a gamepad's D-pad, Cross and Circle are the arrows, OK and Back, Square is Menu, and the shoulder buttons are Tab and Shift+Tab. A TV remote's arrows and OK are the arrows and OK, and when the TV forwards its remote's keys to the desktop, its Exit key is Back and its Info key is Menu. Help is also on each row's **ⓘ**, at the end of the row.
 
-**Couch mode.** On a TV across the room the window opens maximized and scaled up, and the keys are arranged for a remote: a text field, slider or number waits for OK before it takes the arrows, so moving between rows never changes a value by accident (OK or Back finishes), Tab and Shift+Tab step between the pages, and Back on the sidebar closes the window. It turns on by itself under a TV shell such as Plasma Bigscreen. To use it on an ordinary desktop driving a TV, or to keep it off, set **Settings → COUCH MODE → Couch mode** to **On** or **Off** (**Follow the session** is the default), and adjust **Scale**, a percentage on top of your display's own scale: larger for a farther couch or a smaller screen. Changes apply at once and are kept for the next launch.
+**Couch mode.** On a TV across the room the window opens maximized and scaled up, and the keys are arranged for a remote: a text field, slider or number waits for OK before it takes the arrows, so moving between rows never changes a value by accident (OK or Back finishes), Tab and Shift+Tab step between the pages, and Back on the sidebar closes the window. It turns on by itself under Plasma Bigscreen, the TV shell it recognizes. To use it on an ordinary desktop driving a TV, or to keep it off, set **Settings → COUCH MODE → Couch mode** to **On** or **Off** (**Follow the session** is the default), and adjust **Scale**, a percentage on top of your display's own scale: larger for a farther couch or a smaller screen. Changes apply at once and are kept for the next launch.
 
 ## Tray applet (`tisvlay-tray`)
 
@@ -121,6 +121,6 @@ tisvlay-gui
 systemctl --user status tisvlay-tray
 ```
 
-`TISVLAY_COUCH_MODE=on tisvlay-gui` (or `off`) opens the window in or out of couch mode for this launch, whatever the setting says.
+With the window closed, `TISVLAY_COUCH_MODE=on tisvlay-gui` (or `off`) opens it in or out of couch mode for this launch, whatever the setting says. While a window is open, a second launch only brings it to the front.
 
 </details>

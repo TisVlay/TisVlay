@@ -42,9 +42,13 @@ When the focused item is hidden or destroyed, Slint clears focus, and with nothi
 
 A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all. `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
 
-### Change handlers in one pass run in no set order
+### Change handlers in one pass run newest first
 
-Several `changed` handlers triggered by one property change run in no defined order, so a shell handler can't tell in the same pass whether a widget's handler has answered a request. The GUI's request-and-serve pattern (`Nav.request-column`, `request-anchor`, `request-list-step`) pairs a tick with a served marker and checks it from a 1 ms `Timer`.
+The pending `changed` handlers are pushed at the front of a list and drained from the front (`change_tracker.rs`), so the handler of the property changed last runs first: a control gaining focus runs its handler before the one losing it. Don't let a losing handler clear shared state the gaining one set. A shell handler also can't tell in the same pass whether a widget's handler has answered a request, so the GUI's request-and-serve pattern pairs a tick with a served marker: `Nav.request-anchor` and `request-list-step` check it from a 1 ms `Timer`, and `request-column`'s marker is read by a list created in the same pass as the request.
+
+### A programmatic `focus()` on an item that refuses walks on
+
+`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, and with the `Programmatic` reason it ignores visibility. So `focus()` on a disabled control isn't a no-op: focus lands on whatever accepts next in tree order, a hidden dialog's `FocusScope` included, with no ring anywhere. Disable what's closed (`enabled: open` on a dialog's scope and buttons) and guard a programmatic `focus()` on a target that may be disabled.
 
 ### The Menu key's release opens a `ContextMenu` too
 
@@ -60,4 +64,4 @@ The focused item is brought into view edge to edge, through every enclosing scro
 
 ### `TextInput` focus rules
 
-`TextInput::focus_event` refuses focus while `enabled: false` (`focus()` on it is ignored), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.
+`TextInput::focus_event` refuses focus while `enabled: false` (a programmatic `focus()` then walks on, see above), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.

@@ -59,7 +59,7 @@ Two ways to teach Slint the tree; the first was chosen on 2026-11-07 and built (
 5. Tests: Down lands on the next row's control past its icons; Up lands on the previous row's control; Right and Left walk a profile row's icons and stop at its ends; a couch slider walks the row until Return and adjusts after; Escape returns to the primary; a dialog still cycles on Down.
 6. VM check with the virtual keyboard: the profile editor and the TV detail by rows.
 
-The Escape levels and the ringed "i", each row's last stop, followed in the same PR. All of this shipped; the property is `nav-row`, since `row` is a reserved name.
+The Escape levels and the ringed "i", each row's last stop, followed in the same PR. All of this shipped but one level: Escape from a trailing stop goes straight to the list row, not back to the row's primary (Left is the way back), so the "Escape returns to the primary" test above was never written. The property is `nav-row`, since `row` is a reserved name, and `stop-focused` took a third argument, the stop's id.
 
 ### Still deferred
 

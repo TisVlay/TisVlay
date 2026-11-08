@@ -143,7 +143,7 @@ component FormRow {
     in property <string> id-prefix;
     in property <length> label-width: Design.width-label-col;
     /// The row's id for the arrows: the control a site places here
-    /// takes it as its `row`, the trailing "i" does on its own.
+    /// takes it as its `nav-row`, the trailing "i" does on its own.
     out property <int> row-id;
     init => {
         root.row-id = Nav.next-row-id();

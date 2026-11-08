@@ -41,9 +41,9 @@ fn query_by_id(app: &AppWindow, id: &str) -> ElementQuery {
 ///
 /// Dispatch is synchronous: Slint routes the key through the focused
 /// item's capture and bubble handlers and applies its own Tab traversal
-/// before this returns, so a test can assert right after. Focus itself
-/// isn't readable through the testing backend; observe it through what
-/// the focused control does on Return or on typed text.
+/// before this returns, so a test can assert right after. Focus is read
+/// through the focused control's ring (`navigation.rs`'s `ring_on`), or
+/// through what the control does on Return or on typed text.
 pub(crate) fn press(app: &AppWindow, key: Key) {
     press_text(app, key.into());
 }
