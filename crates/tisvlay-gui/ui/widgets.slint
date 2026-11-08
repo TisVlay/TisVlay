@@ -162,11 +162,12 @@ export component Focusable inherits Rectangle {
     in property <bool> reveal: true;
     property <int> anchor: -1;
     function take-anchor() {
-        Nav.stop-focused(root.column, root.nav-row, root.accessible-id);
-        root.anchor = Nav.focus-seq;
         if (root.reveal) {
-            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+            Nav.stop-focused-at(root.column, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+        } else {
+            Nav.stop-focused(root.column, root.nav-row, root.accessible-id);
         }
+        root.anchor = Nav.focus-seq;
     }
     init => {
         if (fs.has-focus) {
@@ -1098,8 +1099,7 @@ export component LineEditField inherits Rectangle {
             reject
         }
         focus-gained(reason) => {
-            Nav.stop-focused(2, root.nav-row, root.accessible-id);
-            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
             root.anchor = Nav.focus-seq;
         }
         changed has-focus => {
@@ -1222,8 +1222,7 @@ export component LineEditField inherits Rectangle {
                     }
                     changed has-focus => {
                         if (self.has-focus) {
-                            Nav.stop-focused(2, root.nav-row, "");
-                            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+                            Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
                             root.anchor = Nav.focus-seq;
                         } else {
                             root.leaving-backwards = false;
@@ -1558,8 +1557,7 @@ export component OptimisticSlider {
                     changed has-focus => {
                         root.entered = false;
                         if (self.has-focus) {
-                            Nav.stop-focused(2, root.nav-row, "");
-                            Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+                            Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
                             root.seen-seq = Nav.focus-seq;
                             root.sync-idle();
                         } else if (Nav.focus-seq == root.seen-seq) {
@@ -1801,8 +1799,7 @@ export component ThemedSpinBox inherits Rectangle {
             }
             changed has-focus => {
                 if (self.has-focus) {
-                    Nav.stop-focused(2, root.nav-row, "");
-                    Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+                    Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
                     root.seen-seq = Nav.focus-seq;
                     root.sync-idle();
                 } else {

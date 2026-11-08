@@ -120,6 +120,13 @@ export global Nav {
         self.reveal-height = height;
         self.reveal-tick += 1;
     }
+    /// Both reports of a stop taking focus in one call: where it is,
+    /// for the walks and the anchors, and its window rectangle, for
+    /// the scroll margin.
+    public function stop-focused-at(column: int, row: int, id: string, x: length, y: length, height: length) {
+        self.stop-focused(column, row, id);
+        self.reveal(x, y, height);
+    }
 
     /// Escape's last levels (docs/gui/remote-navigation.md). Rust
     /// keeps the history: this is whether the current page was reached
