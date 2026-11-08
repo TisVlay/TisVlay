@@ -10,8 +10,10 @@
 //! takes no arguments, so the override for testing is an environment
 //! variable rather than a flag.
 
+use std::cell::Cell;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::warn;
@@ -148,6 +150,87 @@ pub(crate) fn save(path: &Path, prefs: CouchPrefs) -> io::Result<()> {
         couch: prefs,
     };
     tisvlay_runtime::fs::write_toml(path, &config).map(|_| ())
+}
+
+/// The preference's writer: one task writing in order, the latest
+/// value last. The scale spin box commits a value per step of a held
+/// arrow, and concurrent atomic writes would unlink each other's temp
+/// files. Each change carries a sequence number and the task reports
+/// the last one it attempted, written or not, so [`flush`](Self::flush)
+/// waits for exactly the changes made and never for a write that
+/// failed.
+pub(crate) struct PrefsWriter {
+    changes: tokio::sync::watch::Sender<(u64, CouchPrefs)>,
+    /// The sequence number of the last change sent.
+    sent: Cell<u64>,
+    /// The sequence number of the last change the task attempted.
+    settled: tokio::sync::watch::Receiver<u64>,
+}
+
+impl PrefsWriter {
+    /// Start the writer for `path` on the current runtime. `initial` is
+    /// what the file holds now; nothing is written until a change.
+    pub(crate) fn spawn(path: PathBuf, initial: CouchPrefs) -> Self {
+        let (changes, mut changes_rx) = tokio::sync::watch::channel((0, initial));
+        let (settled_tx, settled) = tokio::sync::watch::channel(0);
+        tokio::spawn(async move {
+            while changes_rx.changed().await.is_ok() {
+                let (seq, prefs) = *changes_rx.borrow_and_update();
+                let target = path.clone();
+                match tokio::task::spawn_blocking(move || save(&target, prefs)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        warn!(%error, file = %path.display(), "couch preference write failed");
+                    }
+                    Err(error) => warn!(%error, "couch preference writer stopped"),
+                }
+                // The receiver lives as long as the writer.
+                let _ = settled_tx.send(seq);
+            }
+        });
+        Self {
+            changes,
+            sent: Cell::new(0),
+            settled,
+        }
+    }
+
+    /// Queue a change. One queued over a change not yet written
+    /// replaces it.
+    pub(crate) fn send(&self, prefs: CouchPrefs) {
+        let seq = self.sent.get() + 1;
+        self.sent.set(seq);
+        // Only a closed channel refuses, and the task runs as long as
+        // the runtime.
+        let _ = self.changes.send((seq, prefs));
+    }
+
+    /// Wait until the task has attempted every change sent so far, at
+    /// most `timeout`; `false` when it hadn't by then.
+    pub(crate) async fn flush(&self, timeout: Duration) -> bool {
+        let last = self.sent.get();
+        let mut settled = self.settled.clone();
+        let drained = async move {
+            while *settled.borrow_and_update() < last {
+                if settled.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        tokio::time::timeout(timeout, drained).await.is_ok()
+    }
+}
+
+/// The window's scale: the compositor's times couch mode's factor, or
+/// the compositor's own when couch mode is off (`None`).
+pub(crate) fn window_scale(compositor: f32, factor: Option<f32>) -> f32 {
+    compositor * factor.unwrap_or(1.0)
+}
+
+/// Whether the window's scale is another than `wanted`, beyond float
+/// noise: a resize that finds the scale in place leaves it alone.
+pub(crate) fn scale_is_stale(applied: f32, wanted: f32) -> bool {
+    (applied - wanted).abs() > 1e-3
 }
 
 /// The 10-foot-session signals a desktop exposes to its apps.
@@ -302,5 +385,60 @@ mod tests {
         let default = (DEFAULT_SCALE * 100.0).round() as i32;
         assert_eq!(percent(f32::NAN), default);
         assert_eq!(percent(f32::INFINITY), default);
+    }
+
+    #[tokio::test]
+    async fn the_writer_lands_the_last_change_and_the_flush_waits_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("gui.toml");
+        let writer = PrefsWriter::spawn(path.clone(), CouchPrefs::default());
+        assert!(
+            writer.flush(Duration::from_secs(5)).await,
+            "nothing sent, nothing to wait for"
+        );
+        assert!(!path.exists(), "the initial value isn't written back");
+        for percent in [150, 160, 170] {
+            writer.send(CouchPrefs {
+                mode: CouchMode::On,
+                scale: percent as f32 / 100.0,
+            });
+        }
+        assert!(writer.flush(Duration::from_secs(5)).await);
+        assert_eq!(
+            load(&path),
+            CouchPrefs {
+                mode: CouchMode::On,
+                scale: 1.7,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn the_flush_doesnt_wait_for_a_write_that_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_dir = dir.path().join("file");
+        std::fs::write(&not_a_dir, "").unwrap();
+        let writer = PrefsWriter::spawn(not_a_dir.join("gui.toml"), CouchPrefs::default());
+        writer.send(CouchPrefs {
+            mode: CouchMode::Off,
+            scale: 1.2,
+        });
+        assert!(
+            writer.flush(Duration::from_secs(5)).await,
+            "an attempted write settles, written or not"
+        );
+    }
+
+    #[test]
+    fn the_window_scale_stacks_on_the_compositors_and_a_resize_finds_it_in_place() {
+        assert_eq!(window_scale(2.0, None), 2.0);
+        assert_eq!(window_scale(1.0, Some(1.5)), 1.5);
+        let wanted = window_scale(1.5, Some(1.4));
+        assert!(
+            scale_is_stale(1.5, wanted),
+            "the window's first size carries the compositor's scale alone"
+        );
+        assert!(!scale_is_stale(wanted, wanted));
+        assert!(!scale_is_stale(2.1, wanted), "float noise isn't a change");
     }
 }

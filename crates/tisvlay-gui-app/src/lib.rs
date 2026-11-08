@@ -865,54 +865,18 @@ pub fn run() -> Result<()> {
     };
     debug!(scale = couch_prefs.scale, "couch scale");
     let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
-    // One writer, in order, the latest value last: the scale spin box
-    // commits a value per step of a held arrow, and concurrent atomic
-    // writes would unlink each other's temp files. `written` is what
-    // reached the disk, for the flush at exit.
-    // Each change carries a sequence number, and the writer reports the
-    // last one it attempted, written or not, so the flush waits for
-    // exactly the changes made and never for a write that failed.
-    let (prefs_tx, mut prefs_rx) = tokio::sync::watch::channel((0u64, couch_prefs));
-    let (settled_tx, settled_rx) = tokio::sync::watch::channel(0u64);
-    {
-        let path = gui_config_path;
-        tokio::spawn(async move {
-            while prefs_rx.changed().await.is_ok() {
-                let (seq, prefs) = *prefs_rx.borrow_and_update();
-                let target = path.clone();
-                match tokio::task::spawn_blocking(move || couch::save(&target, prefs)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => {
-                        warn!(%error, file = %path.display(), "couch preference write failed");
-                    }
-                    Err(error) => warn!(%error, "couch preference writer stopped"),
-                }
-                // The receiver lives as long as the window.
-                let _ = settled_tx.send(seq);
-            }
-        });
-    }
-    let sent_seq = std::rc::Rc::new(std::cell::Cell::new(0u64));
+    // One writer, so a held arrow's run of scale changes lands in order
+    // and the exit below can wait for the last one.
+    let writer = std::rc::Rc::new(couch::PrefsWriter::spawn(gui_config_path, couch_prefs));
     {
         let couch = app.global::<Couch>();
         couch.set_active(couch_active);
         couch.set_mode(couch_prefs.mode.as_str().into());
         couch.set_scale_percent((couch_prefs.scale * 100.0).round() as i32);
 
-        let save = {
-            let tx = prefs_tx;
-            let sent_seq = sent_seq.clone();
-            // Only a closed channel refuses, and the writer runs as long
-            // as the runtime.
-            move |prefs: couch::CouchPrefs| {
-                sent_seq.set(sent_seq.get() + 1);
-                let _ = tx.send((sent_seq.get(), prefs));
-            }
-        };
-
         let app_weak = app.as_weak();
         let prefs_for_mode = prefs.clone();
-        let save_for_mode = save.clone();
+        let writer_for_mode = writer.clone();
         let scale_for_mode = compositor_scale.clone();
         let signals = session_signals;
         let env_override = couch_override;
@@ -923,7 +887,7 @@ pub fn run() -> Result<()> {
             let mut current = prefs_for_mode.get();
             current.mode = mode;
             prefs_for_mode.set(current);
-            save_for_mode(current);
+            writer_for_mode.send(current);
             if let Some(app) = app_weak.upgrade() {
                 let active = couch::active(mode, env_override.as_deref(), &signals);
                 let couch = app.global::<Couch>();
@@ -939,11 +903,12 @@ pub fn run() -> Result<()> {
 
         let app_weak = app.as_weak();
         let scale_for_pref = compositor_scale.clone();
+        let writer_for_pref = writer.clone();
         couch.on_scale_changed(move |percent| {
             let mut current = prefs.get();
             current.scale = percent as f32 / 100.0;
             prefs.set(current);
-            save(current);
+            writer_for_pref.send(current);
             if let Some(app) = app_weak.upgrade() {
                 let couch = app.global::<Couch>();
                 couch.set_scale_percent(percent);
@@ -1015,7 +980,8 @@ pub fn run() -> Result<()> {
                         // comes from the winit window underneath.
                         let compositor = compositor_scale_now(&app, &compositor_scale);
                         let factor = app.global::<Couch>().get_scale_percent() as f32 / 100.0;
-                        if (app.window().scale_factor() - compositor * factor).abs() > 1e-3 {
+                        let wanted = couch::window_scale(compositor, Some(factor));
+                        if couch::scale_is_stale(app.window().scale_factor(), wanted) {
                             apply_scale(&app, compositor, Some(factor));
                         }
                     }
@@ -1085,23 +1051,9 @@ pub fn run() -> Result<()> {
     // A preference changed just before the window closed may still be
     // on its way to the disk: wait for the writer to reach the last
     // change, briefly.
-    let last_sent = sent_seq.get();
-    let mut settled_rx = settled_rx;
-    rt.block_on(async {
-        let drained = async {
-            while *settled_rx.borrow_and_update() < last_sent {
-                if settled_rx.changed().await.is_err() {
-                    break;
-                }
-            }
-        };
-        if tokio::time::timeout(std::time::Duration::from_secs(2), drained)
-            .await
-            .is_err()
-        {
-            warn!("couch preference write didn't finish before exit");
-        }
-    });
+    if !rt.block_on(writer.flush(std::time::Duration::from_secs(2))) {
+        warn!("couch preference write didn't finish before exit");
+    }
 
     info!("tisvlay-gui shutting down");
     Ok(())
@@ -1153,7 +1105,7 @@ fn compositor_scale_now(app: &AppWindow, last: &std::cell::Cell<f32>) -> f32 {
 /// Set the window's scale to the compositor's times couch mode's
 /// factor, or back to the compositor's own when the factor is `None`.
 fn apply_scale(app: &AppWindow, compositor: f32, factor: Option<f32>) {
-    let scale_factor = compositor * factor.unwrap_or(1.0);
+    let scale_factor = couch::window_scale(compositor, factor);
     app.window()
         .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged { scale_factor });
 }

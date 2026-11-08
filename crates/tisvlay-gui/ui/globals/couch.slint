@@ -9,7 +9,9 @@ export global Couch {
     in-out property <bool> active;
     /// The preference: "auto" (follow the session), "on" or "off".
     in-out property <string> mode: "auto";
-    /// The scale on top of the display's own, in percent.
+    /// The scale on top of the display's own, in percent. The value
+    /// here is a placeholder: Rust sets it from the preference, whose
+    /// default is the `couch` module's, before the window shows.
     in-out property <int> scale-percent: 140;
     /// The scale's bounds, in percent: the Settings control's, and what
     /// Rust clamps a hand-edited file's value to. Defined here once.
