@@ -52,7 +52,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Re-enable Slint `accessibility` feature once upstream blockers clear](re-enable-slint-accessibility.md)
 - [Theme-icon upgrade for the default-profile indicator](profile-default-emblem-theme-icon.md)
 - [Contextual-help pencil/info double-affordance density](contextual-help-followups.md)
-- [Row navigation in the detail panes (research into TV and game menu navigation; the row model behind the GUI's remote navigation, and the deferred inline row editor and hint strip)](gui-spatial-navigation.md)
+- [Row navigation in the detail panes (how TV and game menus generalize directional navigation, behind the GUI's row model; the deferred inline row editor and hint strip)](gui-spatial-navigation.md)
 
 ## Build & CI
 

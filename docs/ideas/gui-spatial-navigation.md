@@ -1,10 +1,10 @@
 # Row navigation in the detail panes
 
-Research and design for the GUI's remote navigation ([docs/gui/remote-navigation.md](../gui/remote-navigation.md) is what shipped), written 2026-11-07 for review before any code. The train's plan had left "true 2D navigation" to this doc; the decision was to build the row model in the same PR, before its Escape chain, because the chain and the ringed help buttons both depend on the row vocabulary. The plan itself retired with the PR; git history has it.
+Research behind the GUI's row navigation, written 2026-11-07 before the code. What shipped is in [docs/gui/remote-navigation.md](../gui/remote-navigation.md): a tagged Tab order, walked from Rust, with rows stopping at the detail's ends. Git holds the design as it was reviewed. Kept here: how TV and game menus generalize directional navigation, and the ideas not built.
 
 ## The problem
 
-The sidebar and the lists are regions since the train's selection-follows-focus commit: Up and Down step inside them and Right or Return enters the next column. The detail column is still one linear Tab order, so every stop in a row is one Down away from the next: a profile editor row is a select plus up to three icons, and stepping through ten rows is thirty presses, with the ring hopping between a control and its icons. A remote user expects Up and Down to jump between rows and Left and Right to move along a row, which is what every TV and console form does.
+The GUI's sidebar and lists were regions (Up and Down step inside them, Right or Return enters the next column) while the detail was one linear Tab order, so every stop in a row was one Down away from the next: a profile editor row is a select plus up to three icons, and stepping through ten rows was thirty presses. A remote user expects Up and Down to jump between rows and Left and Right to move along a row, which is what every TV and console form does.
 
 ## How others generalize it
 
@@ -18,50 +18,9 @@ Three families, all in use today.
 
 **Value controls on TV platforms.** Leanback's `SeekBarPreference` adjusts on D-pad Left and Right when `adjustable`, with `seekBarIncrement` per press, and Leanback's preference rows carry one control each, secondary actions living in sub-screens. Apple's guidelines keep focus on content elements and off controls like sliders and toggles. Neither platform has a per-row icon strip to reach past a slider, which is the case our rows have; no citable description of the PlayStation or Switch slider gesture turned up, so this design doesn't lean on one.
 
-**What fits here.** The structural family: it needs no geometry, it's declarative, and it's what the train already built for the rail and the lists (regions with explicit stepping that stop at their ends). The detail is already a vertical stack of cards of rows, each row a horizontal line of stops in reading order; the tree exists, it only has to be told to the navigation.
+**What fits here.** The structural family: it needs no geometry, it's declarative, and it's what the GUI already had for the rail and the lists (regions with explicit stepping that stop at their ends). The detail is already a vertical stack of cards of rows, each row a horizontal line of stops in reading order; the tree exists, it only has to be told to the navigation.
 
-## The design
-
-The decisions taken on 2026-11-07, in the terms of the train's arrow and help rules.
-
-- **A detail is a vertical region of rows; a row is a horizontal region of stops in reading order.** The row's first stop is its primary: the control in a form row, the only stop in a row that has one (a FROM THE TV row's "i", a DANGER ZONE button), the Edit or Cancel button of the CONFIG title band, Rename in the profile header, the "i" of a FIELDS toolbar. Rows without a reachable stop (a couch-mode INFO row, whose copy button isn't focusable there; a row whose only control is disabled) are skipped.
-- **Up and Down move to the previous or next row and land on its primary** (not on the same column: the icons are secondary actions, and the control is the predictable landing). The detail stops at its first and last row, as the rail and the lists do; a desktop Tab still wraps.
-- **Right walks out from the primary to the row's trailing stops, Left walks back.** Right on the last stop does nothing. Left on the primary isn't the row's to take: it bubbles to the shell's column jump and goes to the list, as today.
-- **Every visible stop stays reachable by arrows, Return and Escape alone**, the train's invariant. The help "i" is the row's last stop and opens on Return; Menu stays the shortcut for the focused row's help. Reset, restore and gate are stops too; nothing moves behind a contextual key, since CEC remotes have none.
-- **A value control is entered, in couch mode.** Focused but not entered, a slider or a spin box is just the row's primary, so Left and Right walk the row. Return enters it: a slider's adjust mode takes Left and Right for the value and leaves on Return or Escape, with the ring saying so; a spin box's Return is today's editing (digits type, Left and Right step, Return commits, Escape reverts); a select's Return opens its list as today; switches and buttons act on Return. One press more per adjustment, and one gesture everywhere: Return goes into something (a pane, a detail, a control, a dialog), Escape comes out, arrows move between siblings. On a desktop nothing changes: arrows adjust a focused slider or spin box as in every desktop app, and Tab reaches the icons.
-- **Escape gains inner levels** for the Escape chain that followed: leave adjust mode; from a trailing stop, back to the row's primary; then the detail's row, the list, the rail.
-- **Tab order.** The detail's stops all stay Tab stops; roving stops remain the rail's and the lists' (ARIA roves toolbars and lists, not forms).
-
-### Rows, as inventoried
-
-The detail panes' rows and their stops in reading order, from a read of the components on 2026-11-07. Static rows unless noted.
-
-TV detail: STATUS has Power (`ThemedButton`, not a stop while a cycle is in flight or the TV can't be powered on) and Managed (`ThemedSwitch`, "i"); PROFILES has System and User (`ThemedSelect`, pencil `IconBtn`, "i"); FROM THE TV has three rows of text with an "i" each; PICTURE has Backlight (`OptimisticSlider`, "i") and Screen (`ThemedSwitch`, "i"), each behind an `if`; AUDIO has Volume (slider) and Mute (switch), no "i"; INPUT has Current and Primary (`ThemedSelect`, "i"); CONFIG's title band carries Edit, or Cancel and Save in edit mode, its view card is `LabeledRow`s with a `CopyBtn` each (not focusable in couch mode) and its edit card is the name `LineEditField` then `SchemaForm` rows of one stop each; INFO is `LabeledRow`s; DANGER ZONE has Re-pair and Remove TV. The header has no stops. An `InlineError` above the pane adds a row of action and dismiss buttons while shown.
-
-Profile detail: the header's title row is Rename and Delete (disabled on the default profile), or the rename field, Save and Cancel while renaming; the Used-by row is a line of `LinkText`s in a sideways `Flickable`; each FIELDS toolbar is "i", Duplicate, Reset all (STREAMING and FROM THE TV sections have their own "i"); field rows come from `for` loops over three kinds, `ThemedSelect`, `ThemedSpinBox` or `ThemedSwitch`, then `ProfileRowTrailing`: restore and stream-gate `IconBtn`s for action rows (stops only while enabled), then a reset `IconBtn` only while the field is set locally.
-
-Settings: every row has one stop (the couch-mode select and spin box, four notification switches, the test-notification button), so rows and stops coincide. About: the header is two visual lines, the brand link with the version chip, then Diagnostics and Report issue; component rows have at most a Config button; the license row has the notices button. Wizard: the discovered rows are the list region already; the manual-entry row is a vendor select, the address field and Continue; step 2's form rows have one stop each; the footer row is Cancel, Back, Next.
-
-### Mechanism
-
-Two ways to teach Slint the tree; the first was chosen on 2026-11-07 and built (the stops' `nav-row` property, `Nav.next-row-id`, the walks in `keys.rs`). The detail stops at its ends, like the rail and the lists, and the About header is two rows: the brand link with the version chip, then Diagnostics and Report issue.
-
-**Tagged Tab order (recommended).** The Tab order already runs through every row's stops in reading order, and Slint's traversal already skips what's disabled, hidden or not focusable and scrolls the landing into view. So rows don't need to step: they tag. A row takes a unique id at creation (a counter on `Nav`) and passes it to its stops; every stop reports it on focus-in next to its column (`Nav.stop-focused(column, row)`). The shell's row step, in Rust where the Tab keys are already synthesized: for Down, dispatch Tab until the reported row changes (now on the next row's first stop, its primary); for Up, Backtab until the row changes, then Backtab while it stays the same and one Tab back, landing on that row's first stop; if the column changes instead (the order wrapped past the detail's end, or left the pane), undo the dispatches, so the detail stops at its ends. Right and Left inside a row: one Tab or Backtab, undone if the row changed; Left on the primary is left unhandled so the shell's column jump takes it. Escape to the primary is the Up walk without the row change. Stops that report no row (a dialog's buttons, a pane that isn't a form) fall back to today's single Tab, which is how the dialogs keep cycling. Cost: a `row` property on `Focusable`, `ThemedSelect`, `OptimisticSlider`, `ThemedSpinBox`, `LineEditField` and `ContextualHelpButton`, a `row` passed down by each row component (about a dozen component types), the Rust loops in `keys.rs`, couch adjust mode on the slider, and the tests. Each row step is a handful of synthesized keys, cheap. About a day.
-
-**Row ordinals with explicit focus.** Each row gets an ordinal (static rows a literal, `for` rows a section base plus index, conditional sections an offset from their model lengths), the detail keeps a focus-row tick the rows observe to focus their primary, each row implements its own horizontal step over its children, and a row with no stops passes the request on in the same direction. Deterministic and all in Slint, but every row type carries stepping code, the ordinal bookkeeping spans conditional sections, and skipping disabled or hidden stops is reimplemented per row. Two to three days.
-
-### Path forward
-
-1. `Nav`: a row counter, `stop-focused(column, row)`, the row of the focused stop; `Focusable` and the five other stop types take a `row` and report it.
-2. The row components pass their id down: `FormRow`, `LabeledRow`, the CONFIG title band, the three profile field rows and `ProfileRowTrailing`, the FIELDS toolbars, the profile and About headers, `SchemaFieldRow`, the DANGER rows, the wizard's manual-entry and footer rows.
-3. `keys.rs`: row step and stop step as Tab loops with the wrap undo; `nav-scope` sends Up and Down in the detail there, and Left and Right first to the row, then to the column jump.
-4. `OptimisticSlider`: couch adjust mode on Return, with its ring state; `ThemedSpinBox` already has the editing state.
-5. Tests: Down lands on the next row's control past its icons; Up lands on the previous row's control; Right and Left walk a profile row's icons and stop at its ends; a couch slider walks the row until Return and adjusts after; Escape returns to the primary; a dialog still cycles on Down.
-6. VM check with the virtual keyboard: the profile editor and the TV detail by rows.
-
-The Escape levels and the ringed "i", each row's last stop, followed in the same PR. All of this shipped but one level: Escape from a trailing stop goes straight to the list row, not back to the row's primary (Left is the way back), so the "Escape returns to the primary" test above was never written. The property is `nav-row`, since `row` is a reserved name, and `stop-focused` took a third argument, the stop's id.
-
-### Still deferred
+## Still deferred
 
 The ideas the PR didn't build: an inline row editor for profile rows (one Return opens a row's full editor instead of its control), and a couch-mode hint strip showing the keys the focused stop takes (Return, Left/Right, Menu), as console menus' button legends do. True 2D navigation (the geometric family above) stays unbuilt: the tagged Tab order covers every pane the GUI has.
 
