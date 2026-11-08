@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.5.1...tisvlay-v0.6.0) - 2026-11-07
+
+### Other
+
+- No changes to this crate. It moves to 0.6.0 with the rest of the workspace, whose changes are in the unpublished crates (the settings GUI driven from a TV remote or gamepad): clients and services check each other's release on `major.minor`, so the published crates move with the binaries.
+
 ## [0.5.1](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.5.0...tisvlay-v0.5.1) - 2026-11-01
 
 ### Fixed
