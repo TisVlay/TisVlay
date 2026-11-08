@@ -193,7 +193,7 @@ release.yml
 
 ### Release checklist
 
-1. On a branch, run `just release-bump` (`release-plz update`, then the book's generated partials), review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`.
+1. On a branch, run `just release-bump` (`release-plz update`, then the book's generated partials), review the version and the CHANGELOGs, run `just package-check`, and merge it as a PR titled `chore(release): X.Y.Z`. When only the unpublished crates changed, `release-plz update` bumps nothing (it compares the three published crates with crates.io): set the shared version and the three workspace dependencies' `version` pins in the root `Cargo.toml` by hand (a `feat` still takes the minor), run `cargo update --workspace` and `just docs-gen`, and give each published crate's CHANGELOG an entry for the version saying it follows the workspace release. `release-plz set-version` isn't that tool: it renames the latest released entry in place and stops at the first crate without a CHANGELOG.
 2. Optionally rehearse: tag the merge commit `vX.Y.Z-rc.1`, watch the run, `just verify-release vX.Y.Z-rc.1` on the draft, then delete the draft and the tag.
 3. Run the Nix checks on the merge commit: `nix build .#checks.x86_64-linux.tests .#checks.x86_64-linux.vm` (the VM test needs KVM). No CI job runs them: the first is the test suite in the Nix sandbox, the second boots the `dist` package tisvlay.cachix.org will serve.
 4. Tag the merge commit `vX.Y.Z` and run `just verify-release vX.Y.Z` on the draft.
