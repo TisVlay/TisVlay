@@ -18,7 +18,7 @@ import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
 import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Focusable, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Focusable, Group, ListRow, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
@@ -215,50 +215,15 @@ component FormRow {
 // Master list — left column, 260px.
 // =============================================================================
 
-component TvListRow inherits Focusable {
+component TvListRow inherits ListRow {
     in property <TvViewModel> tv;
-    in property <bool> selected;
-    callback clicked();
 
-    accessible-role: list-item;
     accessible-label: root.tv.name;
     accessible-id: "tvs-row-" + root.tv.uuid;
-    activated => {
-        root.clicked();
-    }
-    // Right opens the detail, like Return.
-    key(event) => {
-        if (event.text == Key.RightArrow) {
-            root.clicked();
-            return accept;
-        }
-        reject
-    }
-    /// The list asks a row to take focus by bumping `focus-tick` with
-    /// `focus-wanted` set on the one it means.
-    in property <int> focus-tick;
-    in property <bool> focus-wanted;
-    changed focus-tick => {
-        if (root.focus-wanted) {
-            root.focus();
-        }
-    }
-    /// Up or Down while the row has focus: the list moves focus to the
-    /// neighbor (`Nav.list-step-tick`).
-    callback step(bool);
-    property <int> step-mirror: Nav.list-step-tick;
-    changed step-mirror => {
-        if (root.focused) {
-            root.step(Nav.list-step-forward);
-        }
-    }
 
-    column: 1;
-    ring-inside: true;
     height: 64px;
-    background: selected ? Theme.row-selected
+    background: root.selected ? Theme.row-selected
               : (root.hovered ? Theme.row-hover : transparent);
-    animate background { duration: 150ms; }
 
     // 3px left accent stripe when selected.
     Rectangle {

@@ -304,6 +304,57 @@ export component Chip inherits Focusable {
 }
 
 // =============================================================================
+// ListRow — a row of a list region: the TVs, the profiles, the wizard's
+// discovered TVs.
+// =============================================================================
+//
+// A focusable in the list column with its ring inside its bounds (the
+// list clips), that `clicked`s on Return, Space and Right (which open
+// the detail; focusing the row is what selects it, in each list's own
+// `focus-in`), takes focus when its list asks (`focus-tick`, with
+// `focus-wanted` on the row meant), and hands Up and Down to its list
+// through `step` (`Nav.list-step-tick`). What a row shows, its height
+// and its background stay with each list.
+export component ListRow inherits Focusable {
+    in property <bool> selected;
+    callback clicked();
+    /// The list asks a row to take focus by bumping `focus-tick` with
+    /// `focus-wanted` set on the one it means.
+    in property <int> focus-tick;
+    in property <bool> focus-wanted;
+    /// Up or Down while the row has focus: the list moves focus to the
+    /// neighbor.
+    callback step(bool);
+
+    accessible-role: list-item;
+    column: 1;
+    ring-inside: true;
+    animate background { duration: 150ms; }
+
+    activated => {
+        root.clicked();
+    }
+    key(event) => {
+        if (event.text == Key.RightArrow) {
+            root.clicked();
+            return accept;
+        }
+        reject
+    }
+    changed focus-tick => {
+        if (root.focus-wanted) {
+            root.focus();
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (root.focused) {
+            root.step(Nav.list-step-forward);
+        }
+    }
+}
+
+// =============================================================================
 // ContextualHelpButton — KDE-style "i" toggletip for settings-row help.
 // =============================================================================
 //

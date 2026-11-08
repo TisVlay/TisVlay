@@ -19,7 +19,7 @@ import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Nav } from "../globals/nav.slint";
-import { Chip, Focusable, LineEditField, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
+import { Chip, Focusable, LineEditField, ListRow, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
 // =============================================================================
@@ -133,57 +133,22 @@ component Stepper inherits Rectangle {
 // Discovered-TV row.
 // =============================================================================
 
-component DiscoveryRow inherits Focusable {
+component DiscoveryRow inherits ListRow {
     in property <WizardDiscoveredTv> tv;
-    in property <bool> selected;
-    callback clicked();
 
-    accessible-role: list-item;
     accessible-label: root.tv.name == "" ? root.tv.address : root.tv.name;
     accessible-id: "wizard-row-" + root.tv.id;
-    activated => {
-        root.clicked();
-    }
-    // Right picks the TV, like Return.
-    key(event) => {
-        if (event.text == Key.RightArrow) {
-            root.clicked();
-            return accept;
-        }
-        reject
-    }
     hover-changed(hovering) => {
         warn-tip.set-hover(hovering);
     }
-    /// The step asks a row to take focus by bumping `focus-tick` with
-    /// `focus-wanted` set on the one it means.
-    in property <int> focus-tick;
-    in property <bool> focus-wanted;
-    changed focus-tick => {
-        if (root.focus-wanted) {
-            root.focus();
-        }
-    }
-    /// Up or Down while the row has focus: the step moves focus to the
-    /// neighbor (`Nav.list-step-tick`).
-    callback step(bool);
-    property <int> step-mirror: Nav.list-step-tick;
-    changed step-mirror => {
-        if (root.focused) {
-            root.step(Nav.list-step-forward);
-        }
-    }
 
-    column: 1;
-    ring-inside: true;
     height: 56px;
-    background: selected ? Theme.row-selected
+    background: root.selected ? Theme.row-selected
               : (root.hovered ? Theme.row-hover : Theme.surface);
-    animate background { duration: 150ms; }
 
     Rectangle {
         x: 0;
-        width: selected ? 3px : 0;
+        width: root.selected ? 3px : 0;
         background: Theme.accent;
     }
 
