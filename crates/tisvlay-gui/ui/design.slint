@@ -36,6 +36,7 @@ export global Design {
     out property <length> size-status-dot: 6px;
     out property <length> size-glyph: 14px;         // action-icon glyph in buttons
     out property <length> size-card-header: 24px;   // card title-band height — reserves room for an action IconBtn so headers with and without actions stay the same height (cards never shift when actions are added)
+    out property <length> scroll-margin: 56px;      // kept in view around a focused stop as a pane scrolls to it: its row's neighbors, and a group's title band when landing on its first row
 
     // -- Layout widths --
     out property <length> width-sidebar: 110px;
@@ -50,6 +51,8 @@ export global Design {
     out property <length> radius-card: 6px;        // Groups, modals
     out property <length> radius-pill: 10px;       // chips
     out property <length> border-thin: 1px;
+    out property <length> ring-width: 2px;         // keyboard-focus ring stroke
+    out property <length> ring-offset: 3px;        // gap between a control and its ring
 
     // -- Opacity --
     out property <float> opacity-disabled: 0.4;    // dimmed disabled controls

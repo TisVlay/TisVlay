@@ -12,13 +12,14 @@
 // callback interfaces and the outer pane forwards them to the
 // global.
 
-import { Button, CheckBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow, PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
-import { Chip, LineEditField, PulseDot, ScanLine, SpinnerArc, VendorTile } from "../widgets.slint";
+import { Nav } from "../globals/nav.slint";
+import { Chip, LineEditField, ListRow, PulseDot, ScanLine, SpinnerArc, ThemedButton, ThemedCheckBox, VendorTile } from "../widgets.slint";
 import { SchemaForm } from "schema_form.slint";
 
 // =============================================================================
@@ -132,21 +133,17 @@ component Stepper inherits Rectangle {
 // Discovered-TV row.
 // =============================================================================
 
-component DiscoveryRow inherits Rectangle {
+component DiscoveryRow inherits ListRow {
     in property <WizardDiscoveredTv> tv;
-    in property <bool> selected;
-    callback clicked();
+
+    accessible-label: root.tv.name == "" ? root.tv.address : root.tv.name;
+    accessible-id: "wizard-row-" + root.tv.id;
+    hover-changed(hovering) => {
+        warn-tip.set-hover(hovering);
+    }
 
     height: 56px;
-    background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : Theme.surface);
-    animate background { duration: 150ms; }
-
-    Rectangle {
-        x: 0;
-        width: selected ? 3px : 0;
-        background: Theme.accent;
-    }
+    resting-background: Theme.surface;
 
     HorizontalLayout {
         width: 100%;
@@ -188,9 +185,9 @@ component DiscoveryRow inherits Rectangle {
                 Text {
                     horizontal-stretch: 1;
                     text: root.tv.name == "" ? root.tv.address : root.tv.name;
-                    color: root.selected ? Theme.row-selected-text : Theme.text;
+                    color: root.title-color;
                     font-size: Design.font-body;
-                    font-weight: root.selected ? 600 : 500;
+                    font-weight: root.title-weight;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -243,23 +240,16 @@ component DiscoveryRow inherits Rectangle {
 
     // Whole-row help anchor. Kept out of the layout (an absolutely
     // positioned child overlaying the right column) so it stays
-    // referenceable from `touch` — an `if`-gated element would not be —
-    // and the entire row is the hover target, so the user is most likely
-    // to surface the full remedy. Invisible (no background, no
-    // TouchArea): `touch` above it still owns clicks and hover.
+    // referenceable from the hover handler — an `if`-gated element would
+    // not be — and the entire row is the hover target, so the user is
+    // most likely to surface the full remedy. Invisible (no background,
+    // no hit area of its own): the row's hit area owns clicks and hover.
     warn-tip := HelpTrigger {
         x: parent.width - self.width - 12px;
         y: 0;
         width: 180px;
         height: parent.height;
         text: root.tv.access-warning ? @tr("The daemon can't access {} \u{2014} insufficient permissions. Check that node's permissions or the daemon user's group membership.", root.tv.address) : "";
-    }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-        changed has-hover => {
-            warn-tip.set-hover(self.has-hover);
-        }
     }
 }
 
@@ -285,8 +275,54 @@ component StepDiscover {
     in-out property <int> manual-vendor-index;
     in-out property <string> manual-ip;
     callback selection-changed(int);
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its TV: the wizard moves focus on to Next.
+    callback row-activated();
     callback manual-ip-edited(string);
     callback manual-add();
+
+    // The manual-entry line is a row for the arrows: vendor, address,
+    // Continue.
+    property <int> manual-row;
+    init => {
+        root.manual-row = Nav.next-row-id();
+    }
+
+    // A column request while this step shows: the selected discovered
+    // row, else the first, else the manual-entry address field.
+    property <int> focus-row-index;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        // The request the wizard's exit makes is the list's: this step
+        // is on its way out then. One for the sidebar is the shell's.
+        if (!PairingWizard.active || Nav.column-target == 0) {
+            return;
+        }
+        Nav.column-served = Nav.column-tick;
+        if (root.discovered.length > 0) {
+            root.focus-row-index = root.selected-index >= 0 ? root.selected-index : 0;
+            root.focus-row-tick += 1;
+        } else {
+            address-field.take-focus();
+        }
+    }
+    // Up and Down among the discovered rows; past the last row the
+    // request goes unserved, and the shell steps the Tab order on to
+    // the manual-entry fields below.
+    function step-from(index: int, forward: bool) {
+        if (forward && index + 1 >= root.discovered.length) {
+            return;
+        }
+        Nav.list-step-served = Nav.list-step-tick;
+        if (forward) {
+            root.focus-row-index = index + 1;
+            root.focus-row-tick += 1;
+        } else if (index > 0) {
+            root.focus-row-index = index - 1;
+            root.focus-row-tick += 1;
+        }
+    }
 
     VerticalLayout {
         spacing: Design.gap-block;
@@ -391,7 +427,23 @@ component StepDiscover {
                             for tv[i] in root.discovered: DiscoveryRow {
                                 tv: tv;
                                 selected: i == root.selected-index;
-                                clicked => { root.selection-changed(i); }
+                                tab-stop: root.selected-index >= 0 ? i == root.selected-index : i == 0;
+                                focus-tick: root.focus-row-tick;
+                                focus-wanted: i == root.focus-row-index;
+                                // Selection follows focus; Return, Right or
+                                // a click then move on to Next.
+                                focus-in => {
+                                    if (i != root.selected-index) {
+                                        root.selection-changed(i);
+                                    }
+                                }
+                                clicked => {
+                                    root.selection-changed(i);
+                                    root.row-activated();
+                                }
+                                step(forward) => {
+                                    root.step-from(i, forward);
+                                }
                             }
                         }
                     }
@@ -492,6 +544,7 @@ component StepDiscover {
                             }
                         }
                         if root.supported-vendors.length > 1: ThemedSelect {
+                            nav-row: root.manual-row;
                             model: root.supported-vendor-names;
                             // Clamp: the vendor set can shrink under a stale
                             // index (daemon re-publishes fewer vendors), which
@@ -518,7 +571,8 @@ component StepDiscover {
                             font-size: Design.font-helper;
                             font-weight: 500;
                         }
-                        LineEditField {
+                        address-field := LineEditField {
+                            nav-row: root.manual-row;
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
                                     ? root.supported-vendors[root.manual-vendor-index].primary-placeholder
@@ -531,7 +585,8 @@ component StepDiscover {
 
                     VerticalLayout {
                         alignment: end;
-                        Button {
+                        ThemedButton {
+                            nav-row: root.manual-row;
                             text: root.manual-lookup-streaming
                                 ? @tr("Looking up…")
                                 : @tr("Continue");
@@ -697,7 +752,7 @@ component StepConfigure {
                 padding: 12px;
                 spacing: Design.gap-tight;
 
-                CheckBox {
+                ThemedCheckBox {
                     text: @tr("Managed by TisVlay");
                     checked: root.managed;
                     toggled => { root.managed-toggled(self.checked); }
@@ -719,6 +774,11 @@ component StepPair {
     in property <string> tv-address;
     callback retry();
     callback back-to-discovery();
+    // The failed phase's two buttons are a row for the arrows.
+    property <int> actions-row;
+    init => {
+        root.actions-row = Nav.next-row-id();
+    }
 
     Rectangle {
         background: Theme.surface2;
@@ -814,12 +874,14 @@ component StepPair {
             if root.phase == "failed": HorizontalLayout {
                 alignment: center;
                 spacing: Design.gap-stack;
-                Button {
+                ThemedButton {
+                    nav-row: root.actions-row;
                     text: @tr("Retry pairing");
                     primary: true;
                     clicked => { root.retry(); }
                 }
-                Button {
+                ThemedButton {
+                    nav-row: root.actions-row;
                     text: @tr("Back to discovery");
                     clicked => { root.back-to-discovery(); }
                 }
@@ -829,6 +891,11 @@ component StepPair {
 }
 
 component StepDone {
+    // The MAC notice's two buttons are a row for the arrows.
+    property <int> mac-row;
+    init => {
+        root.mac-row = Nav.next-row-id();
+    }
     in property <string> tv-name;
     in property <string> tv-vendor;
     // Display name for `tv-vendor`, looked up in Rust via the
@@ -923,12 +990,14 @@ component StepDone {
                 if root.mac-notice == "differs": HorizontalLayout {
                     alignment: center;
                     spacing: Design.gap-row;
-                    Button {
+                    ThemedButton {
+                        nav-row: root.mac-row;
                         text: @tr("Use reported");
                         primary: true;
                         clicked => { root.use-reported-mac(); }
                     }
-                    Button {
+                    ThemedButton {
+                        nav-row: root.mac-row;
                         text: @tr("Keep mine");
                         clicked => { root.keep-configured-mac(); }
                     }
@@ -1010,6 +1079,45 @@ export component PairingWizardPane inherits Rectangle {
     /// TvDetail's profile dropdown. Not wizard-specific, so kept as
     /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
+    // The footer's buttons are a row for the arrows.
+    property <int> footer-row;
+    init => {
+        root.footer-row = Nav.next-row-id();
+        // Opened by key (the "+" is gone with the list): focus the
+        // discovery step a tick later, once it exists.
+        if (Nav.focus-visible) {
+            open-focus.running = true;
+        }
+    }
+    open-focus := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            Nav.request-column(2);
+        }
+    }
+
+    // A column request on a step past discovery (its rows answer
+    // there): the footer's primary button, else Cancel, else Back. A
+    // dialog closing onto a destroyed opener (Re-pair) and a key that
+    // arrives with nothing focused (Retry, the MAC buttons) both land
+    // here. Cancel and Back exist conditionally, so they focus
+    // themselves on a tick.
+    property <int> footer-target;
+    property <int> footer-focus-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (PairingWizard.active && PairingWizard.step != 1 && Nav.column-target != 0) {
+            Nav.column-served = Nav.column-tick;
+            if (root.next-enabled) {
+                next-button.focus();
+            } else {
+                root.footer-target = PairingWizard.cancel-enabled ? 1 : PairingWizard.back-enabled ? 2 : 0;
+                root.footer-focus-tick += 1;
+            }
+        }
+    }
 
     background: Theme.surface-alt;
 
@@ -1059,7 +1167,16 @@ export component PairingWizardPane inherits Rectangle {
                     selected-index: PairingWizard.selected-index;
                     manual-vendor-index <=> PairingWizard.manual-vendor-index;
                     manual-ip <=> PairingWizard.manual-ip;
-                    selection-changed(i) => { PairingWizard.selected-changed(i); }
+                    selection-changed(i) => {
+                        PairingWizard.selected-changed(i);
+                    }
+                    // An activated row hands focus to Next, past the
+                    // manual entry fields, once the pick enabled it.
+                    row-activated => {
+                        if (root.next-enabled) {
+                            next-button.focus();
+                        }
+                    }
                     manual-ip-edited(v) => { PairingWizard.manual-ip-edited(v); }
                     manual-add => { PairingWizard.manual-add(); }
                 }
@@ -1119,16 +1236,34 @@ export component PairingWizardPane inherits Rectangle {
                 spacing: Design.gap-stack;
                 alignment: stretch;
 
-                if PairingWizard.step != 4: Button {
+                if PairingWizard.cancel-enabled: ThemedButton {
+                    nav-row: root.footer-row;
+                    accessible-id: "wizard-cancel-button";
                     text: @tr("Cancel");
                     clicked => { PairingWizard.cancel(); }
+                    property <int> focus-mirror: root.footer-focus-tick;
+                    changed focus-mirror => {
+                        if (root.footer-target == 1) {
+                            self.focus();
+                        }
+                    }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if PairingWizard.step == 2 || (PairingWizard.step == 3 && PairingWizard.pair-phase != "awaiting_tv" && PairingWizard.pair-phase != "awaiting_input"): Button {
+                if PairingWizard.back-enabled: ThemedButton {
+                    nav-row: root.footer-row;
+                    accessible-id: "wizard-back-button";
                     text: @tr("Back");
                     clicked => { PairingWizard.step-back(); }
+                    property <int> focus-mirror: root.footer-focus-tick;
+                    changed focus-mirror => {
+                        if (root.footer-target == 2) {
+                            self.focus();
+                        }
+                    }
                 }
-                Button {
+                next-button := ThemedButton {
+                    nav-row: root.footer-row;
+                    accessible-id: "wizard-next-button";
                     text: root.next-label;
                     primary: true;
                     enabled: root.next-enabled;

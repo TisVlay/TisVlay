@@ -1,6 +1,6 @@
 # Contextual help (GUI) — KDE-style "i" toggletip + hover hints
 
-`tisvlay-gui`'s in-window help system: an "i" **toggletip** (click/tap, plus hover-linger) for longer per-option help, and **hover tips** on icon-only buttons, links, and chips. All drawn by a single custom overlay at the window root — not Slint's built-in `Tooltip` (see [Why a custom overlay](#why-a-custom-overlay)).
+`tisvlay-gui`'s in-window help system: an "i" **toggletip** (click or tap, Return on its focus ring, Menu on its row, plus hover-linger) for longer per-option help, and **hover tips** on icon-only buttons, links, and chips (shown on focus-linger too). All drawn by a single custom overlay at the window root — not Slint's built-in `Tooltip` (see [Why a custom overlay](#why-a-custom-overlay)).
 
 ## Model (KDE HIG)
 
@@ -12,7 +12,7 @@ The bubble can't be a child of its trigger: detail panes live in a clipping `Scr
 
 ### `Help` global (`ui/globals/help.slint`)
 
-Holds the single active request: `text`, `anchor` (window-space geometry), `clip` (the originating ScrollView's viewport rect), `owner` id, `pinned`, and hover bookkeeping (`requester-hovered`, `bubble-hovered`). `shown = text != "" && (pinned || requester-hovered || bubble-hovered)` — the KDE **two-source open model** (a click latch ORed with a transient hover, so a click never closes what a hover opened). `begin-request()` resets per-request state (incl. `clip`, and bumps `reposition-tick` so an in-scroll bubble re-clips even on a pin→pin handoff with no `shown`-transition); `hover-open`/`hover-close`/`toggle`/`dismiss` are the mutators; `set-clip-if-inside()` confines the bubble to a ScrollView only when the anchor lies inside it.
+Holds the single active request: `text`, `anchor` (window-space geometry), `clip` (the originating ScrollView's viewport rect), `owner` id, `pinned`, and hover bookkeeping (`requester-hovered`, `bubble-hovered`). `shown = text != "" && (pinned || requester-hovered || bubble-hovered)` — the KDE **two-source open model** (a click latch ORed with a transient hover, so a click never closes what a hover opened). `begin-request()` resets per-request state (incl. `clip`, and bumps `reposition-tick` so an in-scroll bubble re-clips even on a pin→pin handoff with no `shown`-transition); `hover-open`/`hover-close`/`toggle`/`dismiss` are the mutators; `set-clip-if-inside()` confines the bubble to a ScrollView only when the anchor lies inside it. `menu-toggle(row)` is the keyboard's way in: it records the row (`menu-row`) and bumps `menu-tick`, and the "i" whose `nav-row` matches toggles its pin, so Menu works from any stop of the row without moving focus ([remote-navigation.md](remote-navigation.md)).
 
 ### `HelpOverlay` (rendered once in `main.slint`)
 
@@ -24,18 +24,18 @@ Fills the window. Places `HelpBubble` **centered over the anchor**, flipped belo
 
 ### `HelpScrollView`
 
-Drop-in `ScrollView` for a scrollable pane body: pins `content-width`, bumps `reposition-tick` on scroll, and pushes its post-layout viewport rect to `Help` (via `push-clip()`/`set-clip-if-inside`) so bubbles anchored inside it clamp to the viewport. Used by the TVs / Profiles detail bodies and the About pane.
+Drop-in `ScrollView` for a scrollable pane body: pins `content-width`, bumps `reposition-tick` on scroll, and pushes its post-layout viewport rect to `Help` (via `push-clip()`/`set-clip-if-inside`) so bubbles anchored inside it clamp to the viewport. It also keeps `Design.scroll-margin` around the stop that just took keyboard focus (`Nav.reveal`), since Slint's own scroll-into-view brings the item alone to the edge. Used by the TVs / Profiles detail bodies, the Settings pane and the About pane.
 
 ### Triggers (`ui/globals/help.slint`) — push model
 
 A shared **`HelpTrigger`** carries the id / live-anchor / reposition-repush / hover-`Timer` + `set-hover(bool)`, embedded by every host so adding help is a one-liner:
 
-- **`ContextualHelpButton`** — the "i" glyph (ghost `IconBtn` look; `Icons.info` = `help-contextual-symbolic` with fallbacks). Click pins + focuses; hover-linger (700 ms) opens transiently. a11y: `accessible-description` carries the help copy so screen-reader users who can't hover still hear it.
-- **`tip` slots** on `IconBtn` / `UriBtn` / `Chip` / `LinkText` (hover-only) and the bespoke hosts (the Reload button, the pair/create "+" buttons, the About brand area). Each clears its tip on click **and on going non-interactive** — a destroyed (`if`-gated) or disabled trigger never emits `has-hover = false`, which would otherwise strand the bubble over a dead control.
+- **`ContextualHelpButton`** — the "i" glyph (ghost `IconBtn` look; `Icons.info` = `help-contextual-symbolic` with fallbacks), a `Focusable` stop of its row, the last one. Click, Return or Space pins (and again unpins); Menu on any stop of the row does the same through `Help.menu-toggle`; hover-linger (700 ms) opens transiently. A profile field row has no "i" of its own and relays Menu to its section toolbar's (`section-row`). a11y: `accessible-description` carries the help copy so screen-reader users who can't hover still hear it.
+- **`tip` slots** on `IconBtn` / `UriBtn` / `Chip` / `LinkText` and the bespoke hosts (the Reload button, the pair/create "+" buttons, the About brand area). An icon-only `IconBtn` also shows its tip when keyboard focus lingers on it (`set-hover` follows `focused`), the only explanation of a glyph a remote user gets. Each clears its tip on click **and on going non-interactive** — a destroyed (`if`-gated) or disabled trigger never emits `has-hover = false`, which would otherwise strand the bubble over a dead control.
 
-### Dismissal — focus-out (KDE's `onActiveFocusChanged`), no scrim
+### Dismissal — the row, Escape, and a click away; no scrim
 
-A pin focuses a `FocusScope` on the button; losing that focus dismisses. Focus leaves on **Tab away**, **Escape**, **re-click**, **switch "i"**, **clicking another focusable control**, and — because the window's `forward-focus` targets a full-area `nav-scope` `FocusScope` (default `focus-on-click`) — **clicking empty background space anywhere in (or outside) the window**, which routes focus to `nav-scope` and off the button. So a click-anywhere dismiss falls out of the focus model with **no blocking scrim**. Plus a belt-and-suspenders **pane-change dismiss** (`changed active-pane → Help.dismiss()`) since navigating away leaves the owning button unable to fire its own dismiss.
+A pinned bubble follows its row. The "i" watches `Nav.focus-row` and dismisses when focus leaves its row (focus moving to another row, to the list or to the rail), however the pin was made; moving along the row, from the "i" back to the control, keeps it. It also dismisses on **Escape** (on the "i" itself, and the shell's Escape chain closes any visible bubble first), on **re-click or a second Return**, and when **another "i" pins**. Clicking **empty background space** still dismisses: `nav-scope` keeps `focus-on-click`, so the click focuses it and moves `focus-row` off the "i"'s row. So a click-anywhere dismiss falls out of the focus model with **no blocking scrim**. Plus a belt-and-suspenders **pane-change dismiss** (`changed active-pane → Help.dismiss()`) since navigating away leaves the owning button unable to fire its own dismiss. (The first version dismissed on the "i"'s own focus-out, KDE's `onActiveFocusChanged`; that closed the bubble on Left to the row's control once the "i" became a stop.)
 
 ### Anchor tracking on scroll/resize
 

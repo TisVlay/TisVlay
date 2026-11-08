@@ -228,6 +228,8 @@ The contributing guide's § Where to read more lists the main developer docs (ar
 - [docs/discovery.md](../docs/discovery.md) - SSDP transport, streaming discovery, manual-entry MAC enrichment
 - [docs/firewall.md](../docs/firewall.md) - Why SSDP discovery needs a firewall rule
 - [docs/i18n.md](../docs/i18n.md) - Translation architecture and workflow
+- [docs/gui/remote-navigation.md](../docs/gui/remote-navigation.md) - The GUI by keys: regions, rows, anchors, the Escape chain, couch mode, the winit hook
+- [docs/gui/contextual-help.md](../docs/gui/contextual-help.md) - The GUI's help overlay, its triggers and dismissal
 - [docs/lg/firmware-quirks.md](../docs/lg/firmware-quirks.md) - LG WebOS firmware quirks
 - [docs/cec/protocol.md](../docs/cec/protocol.md) - HDMI-CEC backend model
 - [docs/cec/testing.md](../docs/cec/testing.md) - CecLink seam + FakeCecLink

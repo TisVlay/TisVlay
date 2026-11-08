@@ -296,14 +296,14 @@ pub(crate) fn make_about_components(
                 "tisvlay-daemon" => peer_row(daemon),
                 "tisvlay-session" => peer_row(session),
                 "tisvlay-tray" => peer_row(tray),
-                // GUI has no config file yet (passes `None` to dbus::register).
+                // The GUI's own file holds its couch-mode preference.
                 "tisvlay-gui" => Cells {
                     version: GUI_VERSION.to_string(),
                     health: ServiceHealth::Ok,
                     online: true,
                     chip: format!("v{GUI_VERSION}"),
                     tip: gettext("This window's release"),
-                    config_path: String::new(),
+                    config_path: crate::couch::default_config_path().display().to_string(),
                 },
                 // CLI has no per-binary config of its own — its
                 // settings live in the daemon/session configs.

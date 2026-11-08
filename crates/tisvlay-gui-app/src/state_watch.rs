@@ -320,7 +320,9 @@ impl View {
             app.set_daemon_health(daemon_health);
             app.set_session_health(session_health);
             app.set_tray_health(tray_health);
-            app.set_about_components(ModelRc::new(VecModel::from(rows)));
+            sync_vec_model(&app.get_about_components(), rows, |m| {
+                app.set_about_components(m);
+            });
             app.global::<Errors>().set_version(banner);
             if let Some(settings) = changed_settings {
                 app.global::<Tray>().set_notifications(settings);
@@ -555,7 +557,20 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     // in a pure-binding context, so the GUI's master-list header
     // reads this precomputed value.
     let connected_count = tvs.iter().filter(|t| t.connected).count() as i32;
-    sync_vec_model(&app.get_tvs(), tvs, |m| app.set_tvs(m));
+    // A TV's nested lists keep their handles across refreshes: a new
+    // handle would rebuild the rows they drive and destroy a focused
+    // Copy button with them.
+    sync_vec_model_merging(
+        &app.get_tvs(),
+        tvs,
+        |old, mut new| {
+            sync_nested(&old.available_input_ids, &mut new.available_input_ids);
+            sync_nested(&old.vendor_config, &mut new.vendor_config);
+            sync_nested(&old.vendor_info, &mut new.vendor_info);
+            new
+        },
+        |m| app.set_tvs(m),
+    );
     app.set_tvs_connected_count(connected_count);
     sync_vec_model(&app.get_system_profiles(), snapshot.system_profiles, |m| {
         app.set_system_profiles(m);
@@ -594,23 +609,42 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     // we push a blank row so the detail-pane gate flips back to
     // the empty state — mirrors the per-removal handler in
     // `profiles::clear_selection_in_slint`.
+    // The lists first, keeping each row's `referenced_by` handle, then
+    // the selected row from the synced list, so the detail's "Used by"
+    // links keep their model too.
+    let keep_refs = |old: &ProfileRow, mut new: ProfileRow| {
+        sync_nested(&old.referenced_by, &mut new.referenced_by);
+        new
+    };
+    sync_vec_model_merging(&profiles.get_system(), system_rows, keep_refs, |m| {
+        profiles.set_system(m);
+    });
+    sync_vec_model_merging(&profiles.get_user(), user_rows, keep_refs, |m| {
+        profiles.set_user(m);
+    });
+
     let selected_uuid = profiles.get_selected_uuid();
     if !selected_uuid.is_empty() {
         let lookup = match profiles.get_selected_kind() {
-            ProfileKind::System => system_rows
+            ProfileKind::System => profiles
+                .get_system()
                 .iter()
-                .find(|r| r.uuid == selected_uuid)
-                .cloned(),
-            ProfileKind::User => user_rows.iter().find(|r| r.uuid == selected_uuid).cloned(),
+                .find(|r| r.uuid == selected_uuid),
+            ProfileKind::User => profiles.get_user().iter().find(|r| r.uuid == selected_uuid),
             ProfileKind::None => None,
         };
         profiles.set_selected_row(lookup.unwrap_or_else(blank_profile_row));
     }
+}
 
-    sync_vec_model(&profiles.get_system(), system_rows, |m| {
-        profiles.set_system(m);
-    });
-    sync_vec_model(&profiles.get_user(), user_rows, |m| profiles.set_user(m));
+/// Bring a row's nested list up to date in place and hand its existing
+/// handle to the new row, so the repeater it drives updates rather than
+/// rebuilds.
+fn sync_nested<T: Clone + 'static>(old: &ModelRc<T>, new: &mut ModelRc<T>) {
+    let rows: Vec<T> = new.iter().collect();
+    let mut replacement = None;
+    sync_vec_model(old, rows, |m| replacement = Some(m));
+    *new = replacement.unwrap_or_else(|| old.clone());
 }
 
 /// Empty `ProfileRow` value used when the previously-selected
@@ -676,6 +710,18 @@ fn sync_vec_model<T: Clone + 'static>(
     new_rows: Vec<T>,
     fallback: impl FnOnce(ModelRc<T>),
 ) {
+    sync_vec_model_merging(current, new_rows, |_, new| new, fallback);
+}
+
+/// [`sync_vec_model`] with a say in each replaced row: `merge` sees the
+/// row being replaced and the new one, and returns what to store, so a
+/// row's nested model handles can be carried over.
+fn sync_vec_model_merging<T: Clone + 'static>(
+    current: &ModelRc<T>,
+    new_rows: Vec<T>,
+    merge: impl Fn(&T, T) -> T,
+    fallback: impl FnOnce(ModelRc<T>),
+) {
     let Some(vec_model) = current.as_any().downcast_ref::<VecModel<T>>() else {
         fallback(ModelRc::new(VecModel::from(new_rows)));
         return;
@@ -684,7 +730,11 @@ fn sync_vec_model<T: Clone + 'static>(
     let new_len = new_rows.len();
     for (i, row) in new_rows.into_iter().enumerate() {
         if i < cur_len {
-            vec_model.set_row_data(i, row);
+            let merged = match vec_model.row_data(i) {
+                Some(old) => merge(&old, row),
+                None => row,
+            };
+            vec_model.set_row_data(i, merged);
         } else {
             vec_model.push(row);
         }
@@ -695,10 +745,88 @@ fn sync_vec_model<T: Clone + 'static>(
 }
 
 #[cfg(test)]
+mod focus_tests {
+    use std::time::Duration;
+
+    use i_slint_backend_testing::{ElementHandle, ElementQuery};
+    use slint::platform::{Key, WindowEvent};
+
+    use super::version_banner_tests::raw_tv;
+    use super::*;
+    use crate::Pane;
+
+    fn snapshot() -> StateSnapshot {
+        StateSnapshot {
+            tvs: vec![raw_tv("tv-1", "Living room", true)],
+            system_profiles: vec![],
+            user_profiles: vec![],
+            system_profile_rows: vec![],
+            user_profile_rows: vec![],
+        }
+    }
+
+    fn press(app: &AppWindow, key: Key) {
+        let text: SharedString = key.into();
+        app.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        app.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+        i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+        slint::platform::update_timers_and_animations();
+    }
+
+    /// The INFO card's Copy button for the "transport" row, found by the
+    /// label `CopyBtn` composes, and whether its ring shows.
+    fn copy_button_focused(app: &AppWindow) -> Option<bool> {
+        let button = ElementQuery::from_root(app)
+            .match_descendants()
+            .match_predicate(|e| e.accessible_label().as_deref() == Some("Copy transport"))
+            .find_first()?;
+        let ring: ElementHandle = button
+            .query_descendants()
+            .match_predicate(|e| e.id().as_deref() == Some("Focusable::ring"))
+            .find_first()?;
+        Some(ring.computed_opacity() > 0.5)
+    }
+
+    #[test]
+    fn a_refresh_keeps_focus_on_a_copy_button() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        app.set_active_pane(Pane::Tvs);
+        push_snapshot(&app, snapshot());
+        app.set_selected_tv_index(0);
+        // A tall window, so the INFO card is in view for the query.
+        app.window()
+            .set_size(slint::LogicalSize::new(1280.0, 3000.0));
+
+        let mut reached = false;
+        for _ in 0..60 {
+            press(&app, Key::Tab);
+            if copy_button_focused(&app) == Some(true) {
+                reached = true;
+                break;
+            }
+        }
+        assert!(reached, "Tab reaches the INFO card's Copy button");
+
+        // The same facts again, as every reconcile pushes them: the
+        // row's nested models update in place, so the button and its
+        // focus survive.
+        push_snapshot(&app, snapshot());
+        assert_eq!(
+            copy_button_focused(&app),
+            Some(true),
+            "focus survived the refresh"
+        );
+    }
+}
+
+#[cfg(test)]
 mod version_banner_tests {
     use super::*;
 
-    fn raw_tv(uuid: &str, name: &str, connected: bool) -> crate::state::TvViewRaw {
+    pub(super) fn raw_tv(uuid: &str, name: &str, connected: bool) -> crate::state::TvViewRaw {
         crate::state::TvViewRaw {
             uuid: SharedString::from(uuid),
             name: SharedString::from(name),

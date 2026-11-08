@@ -2,9 +2,9 @@
 //! TVs-pane detail. Like `about_pane.rs`, it uses
 //! `i_slint_backend_testing::init_no_event_loop()` to query the rendered
 //! element tree (no event loop, no pixels). It locks the accessibility
-//! contract of the help affordance — the open/close interaction (hover
-//! timer, Escape, anchoring) is verified manually, since the testing
-//! backend has no event loop to drive a `PopupWindow`.
+//! contract of the help affordance; the hover timer and the anchoring
+//! are verified manually, since the testing backend has no pointer
+//! timing, while keys can be driven through `support::press`.
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
@@ -57,9 +57,9 @@ fn tvs_detail_renders_contextual_help_buttons_with_accessible_label() {
 
 /// Locks the pin/toggle wiring of the `Help` global: a click latches the
 /// bubble open (pinned), and re-clicking the same button toggles it off.
-/// (The focus-out dismiss — clicking another control or tabbing away —
-/// and the live cursor are interactive and verified manually; the
-/// testing backend has no event loop to drive real focus changes.)
+/// (The click-elsewhere dismiss and the live cursor are pointer-driven
+/// and verified manually; tabbing away is a key sequence `support::press`
+/// can drive.)
 #[test]
 fn contextual_help_click_pins_then_re_click_dismisses() {
     i_slint_backend_testing::init_no_event_loop();

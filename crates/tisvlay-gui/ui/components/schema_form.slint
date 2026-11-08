@@ -13,12 +13,11 @@
 // "password" / "ip" / "mac" / "port" / "int" / "bool" / "select" /
 // "path"). `FieldRenderer` switches on it to pick the right widget.
 
-import { CheckBox, LineEdit } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { PairingFieldRow } from "../globals/pairing_wizard.slint";
-import { LineEditField } from "../widgets.slint";
+import { LineEditField, ThemedCheckBox } from "../widgets.slint";
 
 // =============================================================================
 // FieldRenderer — renders one row of the dynamic schema.
@@ -59,13 +58,13 @@ export component FieldRenderer {
             font-family: root.is-mono ? Theme.mono-font : "";
             edited(v) => { root.value-edited(v); }
         }
-        if root.field.field-type == "password": LineEdit {
+        if root.field.field-type == "password": LineEditField {
             placeholder-text: root.field.placeholder;
             text: root.field.value;
             input-type: password;
             edited(v) => { root.value-edited(v); }
         }
-        if root.field.field-type == "bool": CheckBox {
+        if root.field.field-type == "bool": ThemedCheckBox {
             text: root.field.label;
             checked: root.field.value == "true";
             toggled => { root.value-edited(self.checked ? "true" : "false"); }

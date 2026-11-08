@@ -1,11 +1,12 @@
 import { AboutSlint } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
-import { Group, Chip, UriBtn, IconBtn } from "../widgets.slint";
+import { Group, Chip, Focusable, UriBtn, IconBtn } from "../widgets.slint";
 import { Clipboard } from "../globals/clipboard.slint";
 import { Icons } from "../globals/icons.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Health, ServiceHealth } from "../globals/health.slint";
+import { Nav } from "../globals/nav.slint";
 
 // One row in the COMPONENTS table. Two visual lines per row: title
 // (friendly name + monospace wire identity in parens) above a rich
@@ -201,6 +202,25 @@ export component AboutPane inherits Rectangle {
     in property <[AboutComponentRow]> components;
     in property <image> logo;
 
+    // A column request lands on the pane's first control; one for the
+    // sidebar is the shell's.
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 0) {
+            return;
+        }
+        Nav.column-served = Nav.column-tick;
+        brand.focus();
+    }
+    // The header's two lines are two rows for the arrows: the brand
+    // link with the version chip, then Diagnostics and Report issue.
+    property <int> header-row-1;
+    property <int> header-row-2;
+    init => {
+        root.header-row-1 = Nav.next-row-id();
+        root.header-row-2 = Nav.next-row-id();
+    }
+
     callback view-source-clicked();
     callback view-release-clicked();
     callback view-notices-clicked();
@@ -247,8 +267,20 @@ export component AboutPane inherits Rectangle {
                 // cursor; the title brightens to accent on hover so
                 // the affordance reads even before the cursor change
                 // registers.
-                Rectangle {
+                brand := Focusable {
+                    nav-row: root.header-row-1;
                     horizontal-stretch: 1;
+                    border-radius: Design.radius-card;
+                    mouse-cursor: pointer;
+                    accessible-label: @tr("Open TisVlay website");
+                    accessible-id: "about-brand-link";
+                    activated => {
+                        root.view-source-clicked();
+                        brand-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        brand-help.set-hover(hovering);
+                    }
                     HorizontalLayout {
                         width: 100%;
                         height: 100%;
@@ -281,7 +313,7 @@ export component AboutPane inherits Rectangle {
                                     text: "TisVlay";
                                     font-size: Design.font-title-1;
                                     font-weight: 700;
-                                    color: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                    color: brand.hovered ? Theme.accent : Theme.text;
                                     animate color { duration: 150ms; }
                                     vertical-alignment: center;
                                 }
@@ -291,7 +323,7 @@ export component AboutPane inherits Rectangle {
                                         source: Icons.open-link;
                                         width: Design.size-glyph;
                                         height: Design.size-glyph;
-                                        colorize: brand-touch.has-hover ? Theme.accent : Theme.text;
+                                        colorize: brand.hovered ? Theme.accent : Theme.text;
                                         animate colorize { duration: 150ms; }
                                     }
                                 }
@@ -309,13 +341,6 @@ export component AboutPane inherits Rectangle {
                         height: 100%;
                         text: @tr("Open TisVlay website");
                     }
-                    brand-touch := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.view-source-clicked(); }
-                        changed has-hover => {
-                            brand-help.set-hover(self.has-hover);
-                        }
-                    }
                 }
 
                 VerticalLayout {
@@ -325,6 +350,7 @@ export component AboutPane inherits Rectangle {
                     HorizontalLayout {
                         alignment: end;
                         Chip {
+                            nav-row: root.header-row-1;
                             label: "v" + root.gui-version;
                             // `info`: a link to the release notes, not
                             // a status like the COMPONENTS chips.
@@ -339,6 +365,7 @@ export component AboutPane inherits Rectangle {
                         alignment: end;
                         spacing: Design.gap-stack;
                         IconBtn {
+                            nav-row: root.header-row-2;
                             source: Clipboard.copy-icon;
                             label: @tr("Diagnostics");
                             tip: @tr("Copy diagnostics to clipboard");
@@ -351,6 +378,7 @@ export component AboutPane inherits Rectangle {
                             clicked => { root.copy-diagnostic-clicked(); }
                         }
                         UriBtn {
+                            nav-row: root.header-row-2;
                             text: @tr("Report issue");
                             tip: @tr("Open issue tracker");
                             icon: Icons.open-link;

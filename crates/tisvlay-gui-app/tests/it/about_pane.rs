@@ -8,9 +8,11 @@
 //! Imports the `AppWindow` and row types from the `tisvlay_gui`
 //! library target.
 
-use i_slint_backend_testing::{ElementHandle, ElementQuery};
+use i_slint_backend_testing::ElementHandle;
 use slint::{ModelRc, SharedString, VecModel};
 use tisvlay_gui::{AboutComponentRow, AppWindow, Pane, ServiceHealth};
+
+use crate::support::{count_by_id, find_by_accessible_id};
 
 /// Pre-canned multi-row state mirroring `about::make_about_components`'s
 /// production output. Inlined rather than calling the library's
@@ -74,35 +76,6 @@ fn boot_app_with_about_active() -> AppWindow {
     app.set_gui_version(SharedString::from("0.1.0"));
     app.set_active_pane(Pane::About);
     app
-}
-
-/// Find the (single) widget whose `accessible-id` matches. The 1.16
-/// testing backend ships `find_by_accessible_label` and
-/// `find_by_element_id` but no `find_by_accessible_id`; we reach
-/// for the property via `match_predicate` until upstream adds a
-/// direct finder.
-///
-/// Slint propagates accessibility properties to descendants, so the
-/// underlying query returns one hit per matching descendant —
-/// conceptually all the same widget. Take the first; callers wanting
-/// to assert "exactly one widget set this ID" can use [`count_by_id`]
-/// instead.
-fn find_by_accessible_id(app: &AppWindow, id: &str) -> Option<ElementHandle> {
-    query_by_id(app, id).find_first()
-}
-
-/// Like [`find_by_accessible_id`] but returns the count of distinct
-/// *descendants* reporting that ID. Useful only for "is this widget
-/// rendered or not" assertions; a single rendered widget yields >1.
-fn count_by_id(app: &AppWindow, id: &str) -> usize {
-    query_by_id(app, id).find_all().len()
-}
-
-fn query_by_id(app: &AppWindow, id: &str) -> ElementQuery {
-    let id = id.to_string();
-    ElementQuery::from_root(app)
-        .match_descendants()
-        .match_predicate(move |e| e.accessible_id().as_deref() == Some(id.as_str()))
 }
 
 #[test]

@@ -342,6 +342,12 @@ impl ApplicationService {
                     app.window().with_winit_window(|w| {
                         w.request_user_attention(Some(UserAttentionType::Informational));
                     });
+                    // A remote user re-opening the window sees where
+                    // they are: focus the active pane's sidebar item,
+                    // unless something already has focus.
+                    if app.global::<crate::Couch>().get_active() {
+                        app.invoke_focus_on_reactivation();
+                    }
                 }
             });
             return;

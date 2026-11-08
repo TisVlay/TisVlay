@@ -18,40 +18,28 @@
 // section title row above the FIELDS card groups catalog-body
 // actions (Duplicate, Reset all) with the body they act on.
 
-import { ScrollView, Switch } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
 import { Icons } from "../globals/icons.slint";
+import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind, ProfileFieldEntry, ProfileRow, ProfileTvRef } from "../globals/profiles.slint";
-import { ConfirmDialog, Chip, ContextualHelpButton, IconBtn, LineEditField, LinkText, NameInputDialog, ProfileTile, ThemedSpinBox } from "../widgets.slint";
-import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
+import { ConfirmDialog, Chip, ContextualHelpButton, Focusable, IconBtn, LineEditField, LinkText, ListRow, NameInputDialog, ProfileTile, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
+import { Help, HelpScrollView, HelpTrigger } from "../globals/help.slint";
 
 // =============================================================================
 // Master list — left column, stacked System / User sections.
 // =============================================================================
 
-component ProfileListRow inherits Rectangle {
+component ProfileListRow inherits ListRow {
     in property <ProfileRow> entry;
     in property <ProfileKind> kind;
-    in property <bool> selected;
-    callback clicked();
 
     height: 64px;
-    background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : transparent);
-    animate background { duration: 150ms; }
 
-    accessible-role: list-item;
     accessible-label: root.entry.name;
-    accessible-action-default => { root.clicked(); }
-
-    // 3px left accent stripe when selected — mirrors TvListRow.
-    Rectangle {
-        x: 0;
-        width: 3px;
-        background: root.selected ? Theme.accent : transparent;
-    }
+    accessible-id: "profiles-row-" + root.entry.uuid;
 
     HorizontalLayout {
         width: 100%;
@@ -81,9 +69,9 @@ component ProfileListRow inherits Rectangle {
             // every row reads its label from the same field.
             Text {
                 text: root.entry.display-name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
+                color: root.title-color;
                 font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
+                font-weight: root.title-weight;
                 overflow: elide;
                 accessible-label: root.entry.is-default
                     ? @tr("{}, default profile", root.entry.name)
@@ -126,10 +114,6 @@ component ProfileListRow inherits Rectangle {
             }
         }
     }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
 }
 
 component ProfileSectionHeader inherits Rectangle {
@@ -137,7 +121,22 @@ component ProfileSectionHeader inherits Rectangle {
     /// `+` enabled flag. False when the corresponding daemon isn't
     /// reachable (no session bus → user-profile create disabled).
     in property <bool> add-enabled: true;
+    /// The `+` button's test selector (`profiles-add-<kind>`).
+    in property <string> add-id;
     callback add-clicked();
+    /// Focus the `+` button: the list's first stop when it has no rows.
+    public function focus-add() {
+        add.focus();
+    }
+    /// Up or Down while the `+` has focus: the list moves focus to the
+    /// neighbor (`Nav.list-step-tick`).
+    callback step(bool);
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (add.focused) {
+            root.step(Nav.list-step-forward);
+        }
+    }
 
     height: 40px;
     // Header band — a distinct surface from the surface-alt master
@@ -180,22 +179,28 @@ component ProfileSectionHeader inherits Rectangle {
         }
 
         // "+" New-profile button — same shape as TvList's pair button.
-        Rectangle {
+        add := Focusable {
             width: 24px;
             height: 24px;
             y: (parent.height - self.height) / 2;
             border-radius: 12px;
+            column: 1;
+            enabled: root.add-enabled;
             background: !root.add-enabled
                 ? Theme.text-faint
-                : (add-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+                : (add.hovered ? Theme.accent-pressed : Theme.accent);
             animate background { duration: 150ms; }
 
-            accessible-role: button;
             accessible-label: @tr("Create new {} profile", root.title);
-            accessible-action-default => {
-                if (root.add-enabled) {
-                    root.add-clicked();
-                }
+            accessible-id: root.add-id;
+            // Clear the tip on activation: it opens a modal name dialog
+            // the window-root tip would otherwise float over.
+            activated => {
+                root.add-clicked();
+                add-help.hover-leave();
+            }
+            hover-changed(hovering) => {
+                add-help.set-hover(hovering);
             }
 
             Text {
@@ -214,18 +219,6 @@ component ProfileSectionHeader inherits Rectangle {
                 height: 100%;
                 text: @tr("Create a new profile.");
             }
-            add-touch := TouchArea {
-                enabled: root.add-enabled;
-                // Clear on click: the click opens a modal name dialog the
-                // window-root tip would otherwise float over.
-                clicked => {
-                    root.add-clicked();
-                    add-help.hover-leave();
-                }
-                changed has-hover => {
-                    add-help.set-hover(self.has-hover);
-                }
-            }
         }
     }
 }
@@ -235,6 +228,103 @@ component ProfileList inherits Rectangle {
     /// name-input dialog. The section header itself can't host the
     /// dialog (it needs to render over the whole pane).
     callback request-create(ProfileKind);
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its profile: the pane moves focus into the detail.
+    callback activated();
+
+    // A column request for the list: the selected row, else the first
+    // system row, else the first user row, else the system "+". Also
+    // answers a request for the detail when nothing is selected, since
+    // there's no detail to go to.
+    property <ProfileKind> focus-kind;
+    property <string> focus-uuid;
+    property <int> focus-index;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target != 0 && (Nav.column-target == 1 || Profiles.selected-uuid == "")) {
+            Nav.column-served = Nav.column-tick;
+            if (Profiles.selected-uuid != "") {
+                root.focus-kind = Profiles.selected-kind;
+                root.focus-uuid = Profiles.selected-uuid;
+            } else if (Profiles.system.length > 0) {
+                root.focus-row(ProfileKind.system, 0);
+                return;
+            } else if (Profiles.user.length > 0) {
+                root.focus-row(ProfileKind.user, 0);
+                return;
+            } else {
+                system-header.focus-add();
+                return;
+            }
+            root.focus-row-tick += 1;
+        }
+    }
+    function wants-row(kind: ProfileKind, uuid: string, index: int) -> bool {
+        root.focus-kind == kind
+            && (root.focus-uuid != "" ? root.focus-uuid == uuid : root.focus-index == index)
+    }
+    function focus-row(kind: ProfileKind, index: int) {
+        root.focus-kind = kind;
+        root.focus-uuid = "";
+        root.focus-index = index;
+        root.focus-row-tick += 1;
+    }
+
+    // Selection follows focus (a row's focus-in), and a click or Return
+    // then enters the detail. `selected-row` is handed off here so the
+    // detail header (gated on `selected-row.uuid != ""`) materializes on
+    // the same frame; Rust's push would follow a state-refresh tick,
+    // leaving the detail empty until the next poll.
+    function select-row(kind: ProfileKind, r: ProfileRow) {
+        Profiles.selected-kind = kind;
+        Profiles.selected-uuid = r.uuid;
+        Profiles.selected-row = r;
+        Profiles.select(kind, r.uuid);
+    }
+    function is-selected(kind: ProfileKind, uuid: string) -> bool {
+        Profiles.selected-kind == kind && Profiles.selected-uuid == uuid
+    }
+
+    // The list's stops, in order: the system "+", the system rows, the
+    // user "+", the user rows. The selected row (the first, with nothing
+    // selected) is the one Tab stop; Up and Down step the rest here and
+    // stop at the ends. A disabled user "+" (no session service) is
+    // passed over, and Rust leaves the user list empty then.
+    function step-from(kind: ProfileKind, index: int, forward: bool) {
+        Nav.list-step-served = Nav.list-step-tick;
+        if (kind == ProfileKind.system) {
+            if (forward) {
+                if (index + 1 < Profiles.system.length) {
+                    root.focus-row(kind, index + 1);
+                } else if (Profiles.session-available) {
+                    user-header.focus-add();
+                } else if (Profiles.user.length > 0) {
+                    root.focus-row(ProfileKind.user, 0);
+                }
+            } else if (index > 0) {
+                root.focus-row(kind, index - 1);
+            } else {
+                system-header.focus-add();
+            }
+        } else if (forward) {
+            if (index + 1 < Profiles.user.length) {
+                root.focus-row(kind, index + 1);
+            }
+        } else if (index > 0) {
+            root.focus-row(kind, index - 1);
+        } else if (Profiles.session-available) {
+            user-header.focus-add();
+        } else if (Profiles.system.length > 0) {
+            root.focus-row(ProfileKind.system, Profiles.system.length - 1);
+        } else {
+            system-header.focus-add();
+        }
+    }
+    function is-first-stop-row(kind: ProfileKind, index: int) -> bool {
+        Profiles.selected-uuid == "" && index == 0
+            && (kind == ProfileKind.system || Profiles.system.length == 0)
+    }
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -269,10 +359,23 @@ component ProfileList inherits Rectangle {
         VerticalLayout {
             vertical-stretch: 1;
             spacing: 0;
-            ProfileSectionHeader {
+            system-header := ProfileSectionHeader {
                 title: @tr("SYSTEM PROFILES");
                 add-enabled: true;
+                add-id: "profiles-add-system";
                 add-clicked => { root.request-create(ProfileKind.system); }
+                step(forward) => {
+                    Nav.list-step-served = Nav.list-step-tick;
+                    if (forward) {
+                        if (Profiles.system.length > 0) {
+                            root.focus-row(ProfileKind.system, 0);
+                        } else if (Profiles.session-available) {
+                            user-header.focus-add();
+                        } else if (Profiles.user.length > 0) {
+                            root.focus-row(ProfileKind.user, 0);
+                        }
+                    }
+                }
             }
             if Profiles.system-loading: Rectangle {
                 height: 56px;
@@ -296,20 +399,23 @@ component ProfileList inherits Rectangle {
                     for r[i] in Profiles.system: ProfileListRow {
                         entry: r;
                         kind: ProfileKind.system;
-                        selected: Profiles.selected-kind == ProfileKind.system
-                               && Profiles.selected-uuid == r.uuid;
+                        selected: root.is-selected(ProfileKind.system, r.uuid);
+                        tab-stop: self.selected || root.is-first-stop-row(ProfileKind.system, i);
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: root.wants-row(ProfileKind.system, r.uuid, i);
+                        focus-in => {
+                            if (!self.selected) {
+                                root.select-row(ProfileKind.system, r);
+                            }
+                        }
                         clicked => {
-                            // Hand the row off to `selected-row` here so the
-                            // detail header (gated on `selected-row.uuid != ""`)
-                            // materializes on the same frame as the click. Rust
-                            // can't push `selected-row` in response to a click
-                            // without a state-refresh tick, which previously
-                            // left the detail pane empty until the next
-                            // fallback poll (up to 30 s of dead air).
-                            Profiles.selected-kind = ProfileKind.system;
-                            Profiles.selected-uuid = r.uuid;
-                            Profiles.selected-row = r;
-                            Profiles.select(ProfileKind.system, r.uuid);
+                            if (!self.selected) {
+                                root.select-row(ProfileKind.system, r);
+                            }
+                            root.activated();
+                        }
+                        step(forward) => {
+                            root.step-from(ProfileKind.system, i, forward);
                         }
                     }
                 }
@@ -324,10 +430,23 @@ component ProfileList inherits Rectangle {
         VerticalLayout {
             vertical-stretch: 1;
             spacing: 0;
-            ProfileSectionHeader {
+            user-header := ProfileSectionHeader {
                 title: @tr("USER PROFILES");
                 add-enabled: Profiles.session-available;
+                add-id: "profiles-add-user";
                 add-clicked => { root.request-create(ProfileKind.user); }
+                step(forward) => {
+                    Nav.list-step-served = Nav.list-step-tick;
+                    if (forward) {
+                        if (Profiles.user.length > 0) {
+                            root.focus-row(ProfileKind.user, 0);
+                        }
+                    } else if (Profiles.system.length > 0) {
+                        root.focus-row(ProfileKind.system, Profiles.system.length - 1);
+                    } else {
+                        system-header.focus-add();
+                    }
+                }
             }
             if !Profiles.session-available: Rectangle {
                 height: 56px;
@@ -366,13 +485,23 @@ component ProfileList inherits Rectangle {
                     for r[i] in Profiles.user: ProfileListRow {
                         entry: r;
                         kind: ProfileKind.user;
-                        selected: Profiles.selected-kind == ProfileKind.user
-                               && Profiles.selected-uuid == r.uuid;
+                        selected: root.is-selected(ProfileKind.user, r.uuid);
+                        tab-stop: self.selected || root.is-first-stop-row(ProfileKind.user, i);
+                        focus-tick: root.focus-row-tick;
+                        focus-wanted: root.wants-row(ProfileKind.user, r.uuid, i);
+                        focus-in => {
+                            if (!self.selected) {
+                                root.select-row(ProfileKind.user, r);
+                            }
+                        }
                         clicked => {
-                            Profiles.selected-kind = ProfileKind.user;
-                            Profiles.selected-uuid = r.uuid;
-                            Profiles.selected-row = r;
-                            Profiles.select(ProfileKind.user, r.uuid);
+                            if (!self.selected) {
+                                root.select-row(ProfileKind.user, r);
+                            }
+                            root.activated();
+                        }
+                        step(forward) => {
+                            root.step-from(ProfileKind.user, i, forward);
                         }
                     }
                 }
@@ -425,6 +554,12 @@ component ProfileList inherits Rectangle {
 // `enabled: false`, which dims it and drops interactivity.
 component ProfileRowTrailing inherits HorizontalLayout {
     in property <ProfileFieldEntry> entry;
+    /// The field row's id for the arrows; the icons take it.
+    in property <int> nav-row;
+    /// The reset button is about to go (a reset clears the local
+    /// value, and the button exists only while one is set); the row
+    /// moves focus to its control first.
+    callback reset-requested();
 
     spacing: Design.gap-form;
     alignment: end;
@@ -450,6 +585,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
             IconBtn {
                 width: 100%;
                 height: 100%;
+                nav-row: root.nav-row;
                 source: Icons.restore-input;
                 enabled: root.entry.restore-enabled;
                 active: root.entry.restore-differs;
@@ -469,6 +605,7 @@ component ProfileRowTrailing inherits HorizontalLayout {
             IconBtn {
                 width: 100%;
                 height: 100%;
+                nav-row: root.nav-row;
                 source: root.entry.stream-gate-value
                     ? Icons.stream-gate-on
                     : Icons.stream-gate-off;
@@ -509,17 +646,39 @@ component ProfileRowTrailing inherits HorizontalLayout {
         if root.entry.is-locally-set: IconBtn {
             width: 100%;
             height: 100%;
+            nav-row: root.nav-row;
             source: Icons.reload;
             accessible-label: @tr("Reset {} to default", root.entry.label);
+            accessible-id: "profiles-field-" + root.entry.field-name + "-reset";
             tip: @tr("Reset field");
-            clicked => { Profiles.reset-field(root.entry.field-name); }
+            clicked => {
+                root.reset-requested();
+                Profiles.reset-field(root.entry.field-name);
+            }
         }
     }
 }
 
-component ProfileFieldRowEnum inherits Rectangle {
+// A row of the editor's FIELDS card, whatever its control: the field's
+// entry, a row id for the arrows, and Menu relayed to the section's
+// toolbar "i", since the row has none of its own.
+component ProfileFieldRow inherits Rectangle {
     in property <ProfileFieldEntry> entry;
+    out property <int> row-id;
+    /// The section toolbar's row: its "i" answers Menu on this row.
+    in property <int> section-row;
+    property <int> menu-mirror: Help.menu-tick;
+    changed menu-mirror => {
+        if (Help.menu-row == root.row-id) {
+            Help.menu-toggle(root.section-row);
+        }
+    }
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
+}
 
+component ProfileFieldRowEnum inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
@@ -565,7 +724,9 @@ component ProfileFieldRowEnum inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ThemedSelect {
+                enum-control := ThemedSelect {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     model: root.entry.options;
                     current-value: root.entry.current-value;
                     selected(v) => { Profiles.value-edited(root.entry.field-name, v); }
@@ -576,15 +737,15 @@ component ProfileFieldRowEnum inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
+                    reset-requested => { enum-control.focus(); }
                 }
             }
         }
     }
 }
 
-component ProfileFieldRowNumber inherits Rectangle {
-    in property <ProfileFieldEntry> entry;
-
+component ProfileFieldRowNumber inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
@@ -637,7 +798,9 @@ component ProfileFieldRowNumber inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                ThemedSpinBox {
+                number-control := ThemedSpinBox {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     value: root.entry.number-value;
                     minimum: root.entry.min-value;
                     maximum: root.entry.max-value;
@@ -654,15 +817,15 @@ component ProfileFieldRowNumber inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
+                    reset-requested => { number-control.focus(); }
                 }
             }
         }
     }
 }
 
-component ProfileFieldRowBool inherits Rectangle {
-    in property <ProfileFieldEntry> entry;
-
+component ProfileFieldRowBool inherits ProfileFieldRow {
     height: row-layout.preferred-height;
 
     HorizontalLayout {
@@ -699,7 +862,9 @@ component ProfileFieldRowBool inherits Rectangle {
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
-                Switch {
+                bool-control := ThemedSwitch {
+                    nav-row: root.row-id;
+                    accessible-id: "profiles-field-" + root.entry.field-name;
                     checked: root.entry.bool-value;
                     accessible-label: root.entry.label;
                     toggled => {
@@ -716,6 +881,8 @@ component ProfileFieldRowBool inherits Rectangle {
                 alignment: center;
                 ProfileRowTrailing {
                     entry: root.entry;
+                    nav-row: root.row-id;
+                    reset-requested => { bool-control.focus(); }
                 }
             }
         }
@@ -728,7 +895,7 @@ component ProfileFieldRowBool inherits Rectangle {
 
 component ProfileDetailHeader inherits Rectangle {
     /// Bare name as the daemon stores it. Used by the rename-pencil
-    /// `LineEdit` prefill (the daemon validates the name; the
+    /// field's prefill (the daemon validates the name; the
     /// default-indicator glyph is not a legal name character, so the
     /// buffer must start from the bare value).
     in property <string> name;
@@ -738,6 +905,14 @@ component ProfileDetailHeader inherits Rectangle {
     in property <string> display-name;
     in property <ProfileKind> kind;
     in property <[ProfileTvRef]> referenced-by;
+    // Two rows for the arrows: the title row's buttons (or the rename
+    // field with its two), and the Used-by links.
+    property <int> title-row;
+    property <int> usedby-row;
+    init => {
+        root.title-row = Nav.next-row-id();
+        root.usedby-row = Nav.next-row-id();
+    }
     /// True iff at least one referencing TV is currently automated.
     /// Drives the Active/Inactive status badge.
     in property <bool> active;
@@ -776,12 +951,17 @@ component ProfileDetailHeader inherits Rectangle {
     /// daemon's signal echo.
     property <string> pending-name;
 
+    /// Set when the rename ends by key: the Rename button that replaces
+    /// the field takes focus on creation.
+    property <bool> focus-rename-when-shown;
+
     /// Enter edit mode: snapshot the current name into the buffer +
     /// flip the inline-edit toggle. The `LineEditField` is `if`-gated
-    /// on `editing-name`, so the widget materializes here and grabs
+    /// on `editing-name`, so the widget materializes here and takes
     /// keyboard focus from its `init` block; nothing else needs to
     /// reach into it.
     function begin-rename() {
+        root.focus-rename-when-shown = false;
         root.pending-name = root.name;
         root.editing-name = true;
     }
@@ -871,14 +1051,15 @@ component ProfileDetailHeader inherits Rectangle {
                             : @tr("{}, default profile", root.name);
                     }
                     // Wrap the field in a FocusScope so Escape (which
-                    // the inner LineEdit lets bubble out — only
-                    // printable text and Enter are consumed) reaches
-                    // `cancel-rename()`. Enter still rides
+                    // the field lets bubble out once it isn't editing;
+                    // only printable text and Enter are consumed)
+                    // reaches `cancel-rename()`. Enter still rides
                     // `LineEditField.accepted(...)` and routes to
                     // `commit-rename()` directly.
                     if root.editing-name: FocusScope {
                         key-pressed(event) => {
                             if (event.text == Key.Escape) {
+                                root.focus-rename-when-shown = true;
                                 root.cancel-rename();
                                 return accept;
                             }
@@ -886,18 +1067,19 @@ component ProfileDetailHeader inherits Rectangle {
                         }
 
                         LineEditField {
+                            nav-row: root.title-row;
                             placeholder-text: @tr("Profile name");
                             text <=> root.pending-name;
-                            accepted(v) => { root.commit-rename(); }
-                            // `init => self.focus-input()` removed
-                            // — Slint trips its property-recursion
-                            // guard when the LineEditField
-                            // materializes inside this `if`-branch
-                            // and immediately asks the inner
-                            // LineEdit to grab focus. User clicks
-                            // into the field manually for now;
-                            // revisit when we have a non-recursive
-                            // way to drive focus on materialization.
+                            accessible-id: "profile-rename-field";
+                            accepted(v) => {
+                                root.focus-rename-when-shown = true;
+                                root.commit-rename();
+                            }
+                            // A rename is what the user just asked
+                            // for: the field edits as it appears.
+                            init => {
+                                self.focus-input();
+                            }
                         }
                     }
                 }
@@ -913,18 +1095,27 @@ component ProfileDetailHeader inherits Rectangle {
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.edit;
                         accessible-label: @tr("Rename profile");
+                        accessible-id: "profile-rename-button";
                         tip: @tr("Rename profile");
                         enabled: root.can-delete;
                         clicked => { root.begin-rename(); }
+                        init => {
+                            if (root.focus-rename-when-shown) {
+                                self.focus();
+                            }
+                        }
                     }
                 }
                 if !root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.delete;
                         accessible-label: @tr("Delete profile");
+                        accessible-id: "profiles-delete-button";
                         tip: @tr("Delete profile");
                         enabled: root.can-delete;
                         clicked => { root.request-delete(); }
@@ -933,17 +1124,25 @@ component ProfileDetailHeader inherits Rectangle {
                 if root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.save;
                         accessible-label: @tr("Save rename");
-                        clicked => { root.commit-rename(); }
+                        clicked => {
+                            root.focus-rename-when-shown = self.focused;
+                            root.commit-rename();
+                        }
                     }
                 }
                 if root.editing-name: VerticalLayout {
                     alignment: center;
                     IconBtn {
+                        nav-row: root.title-row;
                         source: Icons.cancel;
                         accessible-label: @tr("Cancel rename");
-                        clicked => { root.cancel-rename(); }
+                        clicked => {
+                            root.focus-rename-when-shown = self.focused;
+                            root.cancel-rename();
+                        }
                     }
                 }
             }
@@ -968,41 +1167,55 @@ component ProfileDetailHeader inherits Rectangle {
             // which falls back to `—` when the descriptor values
             // are empty); wrapped in a Flickable so a wide list
             // scrolls sideways (drag) instead of clipping into the
-            // status-badges column.
-            Flickable {
+            // status-badges column. The Flickable clips, so it
+            // overhangs a box of the row's own height by a focus
+            // ring's room: a link's ring isn't cut, and the header
+            // keeps the height the TVs pane's has.
+            usedby-box := Rectangle {
                 height: usedby-row.preferred-height;
-                content-width: usedby-row.preferred-width;
-                usedby-row := HorizontalLayout {
-                    spacing: Design.gap-meta;
-                    alignment: start;
-                    Text {
-                        text: @tr("Used by:");
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                    }
-                    if root.referenced-by.length == 0: Text {
-                        text: "—";
-                        color: Theme.text-dim;
-                        font-size: Design.font-helper;
-                    }
-                    for tv[i] in root.referenced-by: HorizontalLayout {
+                property <length> ring-room: Design.ring-offset + Design.ring-width;
+                Flickable {
+                    x: -usedby-box.ring-room;
+                    y: -usedby-box.ring-room;
+                    width: usedby-box.width + 2 * usedby-box.ring-room;
+                    height: usedby-box.height + 2 * usedby-box.ring-room;
+                    content-width: usedby-row.preferred-width + 2 * usedby-box.ring-room;
+                    content-height: self.height;
+                    usedby-row := HorizontalLayout {
+                        x: usedby-box.ring-room;
+                        y: usedby-box.ring-room;
                         spacing: Design.gap-meta;
                         alignment: start;
-                        if i > 0: Text {
-                            text: "·";
+                        Text {
+                            text: @tr("Used by:");
                             color: Theme.text-dim;
                             font-size: Design.font-helper;
                         }
-                        LinkText {
-                            text: tv.name;
-                            tip: @tr("Edit {} config", tv.name);
-                            text-color: tv.automated
-                                ? Theme.success-text
-                                : Theme.info-text;
-                            accessible-label-override: tv.automated
-                                ? @tr("{}, automated", tv.name)
-                                : "";
-                            clicked => { Profiles.open-tv(tv.uuid); }
+                        if root.referenced-by.length == 0: Text {
+                            text: "—";
+                            color: Theme.text-dim;
+                            font-size: Design.font-helper;
+                        }
+                        for tv[i] in root.referenced-by: HorizontalLayout {
+                            spacing: Design.gap-meta;
+                            alignment: start;
+                            if i > 0: Text {
+                                text: "·";
+                                color: Theme.text-dim;
+                                font-size: Design.font-helper;
+                            }
+                            LinkText {
+                                nav-row: root.usedby-row;
+                                text: tv.name;
+                                tip: @tr("Edit {} config", tv.name);
+                                text-color: tv.automated
+                                    ? Theme.success-text
+                                    : Theme.info-text;
+                                accessible-label-override: tv.automated
+                                    ? @tr("{}, automated", tv.name)
+                                    : "";
+                                clicked => { Profiles.open-tv(tv.uuid); }
+                            }
                         }
                     }
                 }
@@ -1047,6 +1260,41 @@ component ProfileDetail inherits Rectangle {
     callback request-delete();
     callback request-duplicate();
     callback request-reset-all();
+
+    /// Bumped by the pane when a list row is activated: the detail
+    /// takes focus. Its entry stop is Duplicate, the first control that
+    /// isn't inside a conditional (the header's Rename and Delete
+    /// buttons swap with the rename field, so they can't be a
+    /// `forward-focus` target).
+    ///
+    /// The first selection creates this detail on the activation that
+    /// bumps the tick, so it's born with the new value and sees no
+    /// change: `init` takes the request too. `focus-done` is the pane's
+    /// record of the last request served, so a detail recreated later
+    /// (a reselection from Rust) doesn't take focus for an old one.
+    in property <int> focus-tick;
+    in-out property <int> focus-done;
+    function take-requested-focus() {
+        if (root.focus-tick != root.focus-done) {
+            root.focus-done = root.focus-tick;
+            root.focus();
+        }
+    }
+    init => {
+        root.take-requested-focus();
+        root.fields-row = Nav.next-row-id();
+        root.from-tv-row = Nav.next-row-id();
+        root.stream-row = Nav.next-row-id();
+    }
+    changed focus-tick => {
+        root.take-requested-focus();
+    }
+    forward-focus: duplicate-button;
+    // The three section toolbars are rows for the arrows: the "i",
+    // then Duplicate and Reset profile on the first.
+    property <int> fields-row;
+    property <int> from-tv-row;
+    property <int> stream-row;
 
     background: Theme.surface-alt;
 
@@ -1120,15 +1368,19 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.fields-row;
+                                accessible-id: "profiles-fields-help";
                                 text: @tr("Profile automation maps events to actions. Unset fields inherit from default.");
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout {
                             alignment: center;
-                            IconBtn {
+                            duplicate-button := IconBtn {
+                                nav-row: root.fields-row;
                                 source: Icons.copy;
                                 accessible-label: @tr("Duplicate profile");
+                                accessible-id: "profiles-duplicate-button";
                                 tip: @tr("Duplicate profile");
                                 clicked => { root.request-duplicate(); }
                             }
@@ -1136,8 +1388,10 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             IconBtn {
+                                nav-row: root.fields-row;
                                 source: Icons.reload;
                                 accessible-label: @tr("Reset profile");
+                                accessible-id: "profiles-reset-all-button";
                                 tip: @tr("Reset profile");
                                 enabled: Profiles.editor-can-reset-all;
                                 clicked => { root.request-reset-all(); }
@@ -1177,12 +1431,15 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "number": ProfileFieldRowNumber {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.fields-row;
                                     entry: entry;
                                 }
                             }
@@ -1213,6 +1470,8 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.from-tv-row;
+                                accessible-id: "profiles-from-tv-help";
                                 text: @tr("What this PC does when the TV powers off by itself, or when the TV's remote powers this PC off, whether the TV powering on wakes this PC, and whether the remote's keys reach the desktop. TisVlay's own power-offs never count, and neither event acts while a stream arms the TV. The TV's pane shows what its connection supports.");
                             }
                         }
@@ -1232,9 +1491,11 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-from-tv-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.from-tv-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.from-tv-row;
                                     entry: entry;
                                 }
                             }
@@ -1268,6 +1529,8 @@ component ProfileDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             ContextualHelpButton {
+                                nav-row: root.stream-row;
+                                accessible-id: "profiles-stream-help";
                                 text: @tr("What counts as a stream, so events can be suppressed for an empty room. Suppress an individual event with the network toggle on its row in FIELDS above.");
                             }
                         }
@@ -1287,12 +1550,15 @@ component ProfileDetail inherits Rectangle {
                             alignment: start;
                             for entry[i] in Profiles.editor-stream-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "number": ProfileFieldRowNumber {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 if entry.kind == "bool": ProfileFieldRowBool {
+                                    section-row: root.stream-row;
                                     entry: entry;
                                 }
                                 // Helper copy under the screencast-arms
@@ -1386,6 +1652,26 @@ export component ProfilesPane {
     property <string> pending-new-error;
 
     // --- Pending Duplicate dialog state ---
+    // Bumped when a list row is activated; the detail takes focus and
+    // records the request it served in `focus-detail-done`. A column
+    // request for the detail does the same while a profile is selected
+    // (the list answers it otherwise).
+    property <int> focus-detail-tick;
+    property <int> focus-detail-done;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-detail-tick += 1;
+        }
+    }
+    // The detail went away under focus (its profile was deleted, here
+    // or by another client): the list takes over.
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
     property <ProfileKind> pending-duplicate-kind: ProfileKind.none;
     property <string> pending-duplicate-source-uuid;
     property <string> pending-duplicate-name;
@@ -1474,6 +1760,7 @@ export component ProfilesPane {
 
             ProfileList {
                 request-create(kind) => { root.open-create-dialog(kind); }
+                activated => { root.focus-detail-tick += 1; }
             }
 
             // Detail column — fills remaining width.
@@ -1495,6 +1782,8 @@ export component ProfilesPane {
                     referenced-by: Profiles.selected-row.referenced-by;
                     active: Profiles.selected-row.active;
                     can-delete: !Profiles.selected-row.is-default;
+                    focus-tick: root.focus-detail-tick;
+                    focus-done <=> root.focus-detail-done;
                     request-delete => { root.open-delete-dialog(); }
                     request-duplicate => { root.open-duplicate-dialog(); }
                     request-reset-all => { root.open-reset-all-dialog(); }

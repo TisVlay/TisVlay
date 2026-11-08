@@ -102,6 +102,12 @@ export global PairingWizard {
     /// `Daemon.request-pair()` and false on cancel/finish.
     in-out property <bool> active;
     in-out property <int> step: 1;
+    /// The footer's Back and Cancel, which Escape mirrors: Back on the
+    /// configure step and on a pair step that isn't mid-handshake,
+    /// Cancel on every step but the last.
+    out property <bool> back-enabled: root.step == 2
+        || (root.step == 3 && root.pair-phase != "awaiting_tv" && root.pair-phase != "awaiting_input");
+    out property <bool> cancel-enabled: root.step != 4;
     in-out property <[WizardDiscoveredTv]> discovered;
     in-out property <bool> discovery-streaming;
     in-out property <string> discovery-error;

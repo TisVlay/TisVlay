@@ -8,7 +8,7 @@
 // VendorTile, Group, …) come from ../widgets.slint; pane-local
 // helpers like `FormRow` and `LabeledRow` live further down.
 
-import { Button, ListView, ScrollView, VerticalBox, HorizontalBox, Switch } from "std-widgets.slint";
+import { ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
@@ -16,8 +16,9 @@ import { Daemon } from "../globals/daemon.slint";
 import { PairingWizard, WizardDiscoveredTv, VendorOption } from "../globals/pairing_wizard.slint";
 import { EditPane } from "../globals/edit_pane.slint";
 import { Icons } from "../globals/icons.slint";
+import { Nav } from "../globals/nav.slint";
 import { Profiles, ProfileKind } from "../globals/profiles.slint";
-import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Group, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, VendorTile } from "../widgets.slint";
+import { DangerBtn, Chip, ConfirmDialog, ContextualHelpButton, Focusable, Group, ListRow, InlineError, OptimisticSlider, CopyBtn, IconBtn, LineEditField, ThemedButton, ThemedSwitch, VendorTile } from "../widgets.slint";
 import { HelpScrollView, HelpTrigger } from "../globals/help.slint";
 import { Errors } from "../globals/errors.slint";
 import { PairingWizardPane } from "pairing_wizard.slint";
@@ -136,7 +137,17 @@ component FormRow {
     // Optional longer / optional help, revealed by a trailing "i"
     // ContextualHelpButton.
     in property <string> help;
+    /// Prefix for the "i"'s `accessible-id`, unique per TV: a detail
+    /// exists for every TV, hidden when not selected, and an anchor
+    /// found by id must name the one shown.
+    in property <string> id-prefix;
     in property <length> label-width: Design.width-label-col;
+    /// The row's id for the arrows: the control a site places here
+    /// takes it as its `nav-row`, the trailing "i" does on its own.
+    out property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
 
     HorizontalLayout {
         width: 100%;
@@ -184,6 +195,8 @@ component FormRow {
                     width: 24px;
                     ContextualHelpButton {
                         text: root.help;
+                        nav-row: root.row-id;
+                        accessible-id: root.id-prefix + "help-" + root.label;
                     }
                 }
             }
@@ -202,22 +215,13 @@ component FormRow {
 // Master list — left column, 260px.
 // =============================================================================
 
-component TvListRow inherits Rectangle {
+component TvListRow inherits ListRow {
     in property <TvViewModel> tv;
-    in property <bool> selected;
-    callback clicked();
+
+    accessible-label: root.tv.name;
+    accessible-id: "tvs-row-" + root.tv.uuid;
 
     height: 64px;
-    background: selected ? Theme.row-selected
-              : (touch.has-hover ? Theme.row-hover : transparent);
-    animate background { duration: 150ms; }
-
-    // 3px left accent stripe when selected.
-    Rectangle {
-        x: 0;
-        width: 3px;
-        background: root.selected ? Theme.accent : transparent;
-    }
 
     HorizontalLayout {
         width: 100%;
@@ -243,9 +247,9 @@ component TvListRow inherits Rectangle {
 
             Text {
                 text: root.tv.name;
-                color: root.selected ? Theme.row-selected-text : Theme.text;
+                color: root.title-color;
                 font-size: Design.font-body;
-                font-weight: root.selected ? 600 : 500;
+                font-weight: root.title-weight;
                 overflow: elide;
             }
 
@@ -278,10 +282,6 @@ component TvListRow inherits Rectangle {
             }
         }
     }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
 }
 
 component TvList inherits Rectangle {
@@ -291,6 +291,79 @@ component TvList inherits Rectangle {
     in property <bool> daemon-loading;
     in property <ServiceHealth> daemon-health;
     in-out property <int> selected-index;
+    /// A row was activated (clicked, or Return on it) after selecting
+    /// its TV: the pane moves focus into the detail.
+    callback activated();
+
+    // A column request for the list: the selected row, else the first,
+    // else the pair button. Also answers a request for the detail when
+    // nothing is selected, since there's no detail to go to; one for
+    // the sidebar is the shell's.
+    // The row is named by uuid, not index: a removal drops the instance
+    // at that index at once and leaves the survivors' indexes stale until
+    // the next update, so an index names no live row for a while.
+    property <string> focus-row-uuid;
+    property <int> focus-row-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        root.serve-column-request();
+    }
+    property <bool> has-selection: root.selected-index >= 0 && root.selected-index < root.tvs.length;
+
+    // The list's stops, in order: the pair button, then the rows. The
+    // selected row (the first, with nothing selected) is the one Tab
+    // stop; Up and Down step the rest here and stop at the ends.
+    function focus-slot(slot: int) {
+        if (slot < 0) {
+            pair.focus();
+        } else if (slot < root.tvs.length) {
+            root.focus-row-uuid = root.tvs[slot].uuid;
+            root.focus-row-tick += 1;
+        }
+    }
+    property <int> step-mirror: Nav.list-step-tick;
+    changed step-mirror => {
+        if (pair.focused) {
+            Nav.list-step-served = Nav.list-step-tick;
+            if (Nav.list-step-forward) {
+                root.focus-slot(0);
+            }
+        }
+    }
+    // The list is created by the change that closes the wizard, the
+    // same one that asks for the list: no tick change to see, so
+    // check for an unserved request here too. Served a frame later,
+    // once the rows exist to take the focus.
+    init => {
+        if (Nav.column-tick != Nav.column-served) {
+            serve-later.running = true;
+        }
+    }
+    serve-later := Timer {
+        interval: 1ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.serve-column-request();
+        }
+    }
+    function serve-column-request() {
+        if (Nav.column-target == 1 || (Nav.column-target == 2 && !root.has-selection)) {
+            Nav.column-served = Nav.column-tick;
+            if (root.tvs.length > 0) {
+                // The selection may name a row that is gone (the last TV removed).
+                root.focus-row-uuid = root.tvs[root.has-selection ? root.selected-index : 0].uuid;
+                root.focus-row-tick += 1;
+            } else if (pair.enabled) {
+                pair.focus();
+            } else {
+                // Nothing here can take focus (the daemon is down):
+                // back to the sidebar, rather than a focus that walks
+                // on into whatever accepts next.
+                Nav.request-column(0);
+            }
+        }
+    }
 
     width: Design.width-master;
     background: Theme.surface-alt;
@@ -364,15 +437,30 @@ component TvList inherits Rectangle {
                 // "+" Pair-new-TV button. Disabled when the daemon is
                 // offline — pairing requires an active daemon
                 // connection, so without one the wizard is futile.
-                Rectangle {
+                pair := Focusable {
                     width: 24px;
                     height: 24px;
                     y: (parent.height - self.height) / 2;
                     border-radius: 12px;
+                    column: 1;
+                    enabled: root.daemon-available;
                     background: !root.daemon-available
                         ? Theme.text-faint
-                        : (pair-touch.has-hover ? Theme.accent-pressed : Theme.accent);
+                        : (pair.hovered ? Theme.accent-pressed : Theme.accent);
                     animate background { duration: 150ms; }
+
+                    accessible-label: @tr("Pair a new TV");
+                    accessible-id: "tvs-pair-button";
+                    // Clear the tip on activation: it swaps to the
+                    // pairing wizard, removing this button before it
+                    // could dismiss its own tip.
+                    activated => {
+                        Daemon.request-pair();
+                        pair-help.hover-leave();
+                    }
+                    hover-changed(hovering) => {
+                        pair-help.set-hover(hovering);
+                    }
 
                     Text {
                         text: "+";
@@ -390,19 +478,6 @@ component TvList inherits Rectangle {
                         width: 100%;
                         height: 100%;
                         text: @tr("Pair a new TV — opens the pairing wizard.");
-                    }
-                    pair-touch := TouchArea {
-                        enabled: root.daemon-available;
-                        // Clear on click: the click swaps to the pairing
-                        // wizard, removing this button before it could
-                        // dismiss its own tip.
-                        clicked => {
-                            Daemon.request-pair();
-                            pair-help.hover-leave();
-                        }
-                        changed has-hover => {
-                            pair-help.set-hover(self.has-hover);
-                        }
                     }
                 }
             }
@@ -469,11 +544,34 @@ component TvList inherits Rectangle {
             }
         }
 
-        ListView {
-            for tv[i] in root.tvs: TvListRow {
-                tv: tv;
-                selected: i == root.selected-index;
-                clicked => { root.selected-index = i; }
+        // A ScrollView over a `for`, not a ListView: a virtualized list
+        // keeps the rows outside its viewport out of the item tree,
+        // where Tab and the arrows can't reach them.
+        ScrollView {
+            content-width: self.visible-width;
+            VerticalLayout {
+                spacing: 0;
+                alignment: start;
+                for tv[i] in root.tvs: TvListRow {
+                    tv: tv;
+                    selected: i == root.selected-index;
+                    tab-stop: root.has-selection ? i == root.selected-index : i == 0;
+                    focus-tick: root.focus-row-tick;
+                    focus-wanted: tv.uuid == root.focus-row-uuid;
+                    // Selection follows focus; Return, Right or a click
+                    // then enter the detail.
+                    focus-in => {
+                        root.selected-index = i;
+                    }
+                    clicked => {
+                        root.selected-index = i;
+                        root.activated();
+                    }
+                    step(forward) => {
+                        Nav.list-step-served = Nav.list-step-tick;
+                        root.focus-slot(forward ? i + 1 : i - 1);
+                    }
+                }
             }
         }
 
@@ -488,6 +586,10 @@ component LabeledRow {
     in property <string> label;
     in property <string> value;
     in property <bool> mono: false;
+    property <int> row-id;
+    init => {
+        root.row-id = Nav.next-row-id();
+    }
 
     HorizontalLayout {
         width: 100%;
@@ -530,6 +632,7 @@ component LabeledRow {
             CopyBtn {
                 value: root.value;
                 label: root.label;
+                nav-row: root.row-id;
             }
         }
     }
@@ -644,6 +747,14 @@ component TvDetailHeader inherits Rectangle {
 // inline layout that has a sibling ahead of it, so the card ended before
 // the form did. See `SchemaFieldRow` in schema_form.slint.
 component TvConfigEditForm {
+    /// The edit was entered by key: the name field takes focus as the
+    /// form appears.
+    in property <bool> focus-on-create;
+    property <int> name-row;
+    init => {
+        root.name-row = Nav.next-row-id();
+    }
+
     VerticalLayout {
         spacing: Design.gap-row;
 
@@ -658,7 +769,14 @@ component TvConfigEditForm {
             LineEditField {
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> EditPane.name;
+                accessible-id: "tv-edit-name";
+                nav-row: root.name-row;
                 edited(v) => { EditPane.name-edited(v); }
+                init => {
+                    if (root.focus-on-create) {
+                        self.take-focus();
+                    }
+                }
             }
         }
 
@@ -671,6 +789,10 @@ component TvConfigEditForm {
 
 component TvDetail inherits Rectangle {
     in property <TvViewModel> tv;
+    // Every id in the detail carries the TV: a detail exists per TV,
+    // hidden when not selected, and an anchor found by id must name
+    // the one shown.
+    property <string> id-prefix: "tv-detail-" + root.tv.uuid + "-";
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
 
@@ -689,6 +811,49 @@ component TvDetail inherits Rectangle {
     /// this and shows the confirm dialog (re-pair disconnects the
     /// active connection and requires user interaction on the TV).
     callback request-re-pair();
+
+    /// Set when Cancel or Save is activated by key: the Edit button
+    /// that replaces them takes focus on creation. And the reverse: Edit
+    /// activated by key, the form's name field takes focus.
+    property <bool> focus-edit-when-shown;
+    property <bool> focus-form-when-shown;
+    changed in-edit-mode => {
+        if (!root.in-edit-mode) {
+            root.focus-form-when-shown = false;
+        }
+    }
+    /// Escape asked the edit to cancel (`EditPane.request-cancel`): the
+    /// pane decides, asking first when the draft has changes, and the
+    /// Edit button takes focus when the edit ends.
+    callback cancel-requested();
+    property <int> cancel-mirror: EditPane.cancel-tick;
+    changed cancel-mirror => {
+        if (root.in-edit-mode) {
+            root.focus-edit-when-shown = true;
+            root.cancel-requested();
+        }
+    }
+
+    /// Bumped by the pane when a list row is activated: the visible
+    /// detail takes focus, landing on its first stop.
+    in property <int> focus-tick;
+    changed focus-tick => {
+        if (root.visible) {
+            root.focus();
+        }
+    }
+    forward-focus: power-button;
+
+    // The rows the arrows walk that no row component makes: the CONFIG
+    // title band's buttons and the DANGER ZONE's two.
+    property <int> config-row;
+    property <int> re-pair-row;
+    property <int> remove-row;
+    init => {
+        root.config-row = Nav.next-row-id();
+        root.re-pair-row = Nav.next-row-id();
+        root.remove-row = Nav.next-row-id();
+    }
 
     background: Theme.surface-alt;
 
@@ -738,13 +903,13 @@ component TvDetail inherits Rectangle {
                         property <bool> can-power-on:
                             root.tv.connected || root.tv.supports-wake;
 
-                        Button {
+                        power-button := ThemedButton {
+                            accessible-id: root.id-prefix + "power";
                             // Keyed on `is-on`, not `connected`: a CEC TV
                             // reachable in standby is connected-but-off, and
                             // must still offer "Power on".
                             text: root.tv.is-on ? @tr("Power off") : @tr("Power on");
                             icon: Icons.shutdown;
-                            colorize-icon: true;
                             primary: !root.tv.is-on;
                             enabled: !power-row.power-cycle-in-flight && power-row.can-power-on;
                             clicked => {
@@ -786,7 +951,8 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    FormRow {
+                    managed-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Managed");
                         help: @tr("Let this TV's System and User profiles act: on the TV, and on this PC for the TV's own events.");
                         HorizontalLayout {
@@ -794,7 +960,9 @@ component TvDetail inherits Rectangle {
                             alignment: start;
                             VerticalLayout {
                                 alignment: center;
-                                Switch {
+                                ThemedSwitch {
+                                    nav-row: managed-row.row-id;
+                                    accessible-id: root.id-prefix + "managed";
                                     checked: root.tv.managed;
                                     toggled => { Daemon.set-managed(root.tv.uuid, self.checked); }
                                 }
@@ -814,12 +982,15 @@ component TvDetail inherits Rectangle {
                     // chips that route the other way. Trailing-icon
                     // placement matches the INFO group's CopyBtn and
                     // the Profiles-pane field-row reset glyph.
-                    FormRow {
+                    system-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("system profile" => "System");
                         help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                nav-row: system-row.row-id;
+                                accessible-id: root.id-prefix + "system-profile";
                                 model: root.system-profiles;
                                 current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
                                 enabled: root.system-profiles.length > 0;
@@ -829,6 +1000,8 @@ component TvDetail inherits Rectangle {
                                 alignment: center;
                                 width: 24px;
                                 IconBtn {
+                                    nav-row: system-row.row-id;
+                                    accessible-id: root.id-prefix + "system-profile-edit";
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit system profile");
                                     tip: @tr("Edit system profile");
@@ -844,12 +1017,14 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    FormRow {
+                    user-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("user profile" => "User");
                         help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                nav-row: user-row.row-id;
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
                                 enabled: root.user-profiles.length > 0;
@@ -859,6 +1034,7 @@ component TvDetail inherits Rectangle {
                                 alignment: center;
                                 width: 24px;
                                 IconBtn {
+                                    nav-row: user-row.row-id;
                                     source: Icons.edit;
                                     accessible-label: @tr("Edit user profile");
                                     tip: @tr("Edit user profile");
@@ -884,6 +1060,7 @@ component TvDetail inherits Rectangle {
                     title: @tr("FROM THE TV");
 
                     FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Remote power key");
                         help: @tr("Whether the TV's remote can power this PC off (on HDMI-CEC, the TV's \"power off this device\"), for the profiles' \"On remote power key\".");
                         Text {
@@ -895,6 +1072,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Remote keys");
                         help: @tr("Whether the TV remote's other keys can reach this PC's desktop (on HDMI-CEC, through an adapter with a remote-control device), for the system profile's \"Remote keys reach the desktop\".");
                         Text {
@@ -906,6 +1084,7 @@ component TvDetail inherits Rectangle {
                     }
 
                     FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Wakes this PC");
                         help: @tr("Whether the TV powering on can wake this PC from sleep (on HDMI-CEC, through a USB adapter allowed to wake the system), for the system profile's \"On TV power on\".");
                         Text {
@@ -928,10 +1107,12 @@ component TvDetail inherits Rectangle {
                 if root.tv.has-backlight || root.tv.has-screen: Group {
                     title: @tr("PICTURE");
 
-                    if root.tv.has-backlight: FormRow {
+                    if root.tv.has-backlight: backlight-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Backlight");
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
+                            nav-row: backlight-row.row-id;
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
                             value-visible: root.tv.connected;
@@ -939,14 +1120,16 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    if root.tv.has-screen: FormRow {
+                    if root.tv.has-screen: screen-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("screen power" => "Screen");
                         help: @tr("Turn off the display — a dedicated screen-blank with instant resume where the TV supports it, otherwise emulated by powering the set off and on.");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
                                 alignment: center;
-                                Switch {
+                                ThemedSwitch {
+                                    nav-row: screen-row.row-id;
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
                                     toggled => { Daemon.set-screen(root.tv.uuid, self.checked); }
@@ -960,9 +1143,11 @@ component TvDetail inherits Rectangle {
                 if root.tv.has-volume || root.tv.has-mute: Group {
                     title: @tr("AUDIO");
 
-                    if root.tv.has-volume: FormRow {
+                    if root.tv.has-volume: volume-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Volume");
                         OptimisticSlider {
+                            nav-row: volume-row.row-id;
                             model-value: root.tv.volume;
                             enabled: root.tv.connected && !root.tv.muted;
                             value-visible: root.tv.connected;
@@ -970,9 +1155,11 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    if root.tv.has-mute: FormRow {
+                    if root.tv.has-mute: mute-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("Mute");
-                        Switch {
+                        ThemedSwitch {
+                            nav-row: mute-row.row-id;
                             checked: root.tv.muted;
                             enabled: root.tv.connected;
                             toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
@@ -984,10 +1171,12 @@ component TvDetail inherits Rectangle {
                 if root.tv.has-input: Group {
                     title: @tr("INPUT");
 
-                    FormRow {
+                    current-input-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("current input" => "Current");
                         help: @tr("Current input shown now; changing it switches the live input.");
                         ThemedSelect {
+                            nav-row: current-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
                             enabled: root.tv.connected
@@ -996,10 +1185,12 @@ component TvDetail inherits Rectangle {
                         }
                     }
 
-                    FormRow {
+                    primary-input-row := FormRow {
+                        id-prefix: root.id-prefix;
                         label: @tr("primary input" => "Primary");
                         help: @tr("Primary input gating automation; E.g. input used for display.");
                         ThemedSelect {
+                            nav-row: primary-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
                             enabled: root.tv.available-input-ids.length > 0;
@@ -1047,25 +1238,47 @@ component TvDetail inherits Rectangle {
                         // Spacer pushes action icons to the right.
                         Rectangle { horizontal-stretch: 1; }
                         if !root.in-edit-mode: IconBtn {
+                            nav-row: root.config-row;
                             source: Icons.edit;
                             label: @tr("Edit");
-                            accessible-id: "tv-detail-" + root.tv.uuid + "-edit-button";
-                            clicked => { EditPane.start(root.tv.uuid); }
+                            accessible-id: root.id-prefix + "edit-button";
+                            clicked => {
+                                root.focus-form-when-shown = self.focused;
+                                EditPane.start(root.tv.uuid);
+                            }
+                            // Leaving edit mode destroys the Cancel and
+                            // Save buttons with focus on one of them;
+                            // this button, created in their place,
+                            // takes it.
+                            init => {
+                                if (root.focus-edit-when-shown) {
+                                    root.focus-edit-when-shown = false;
+                                    self.focus();
+                                }
+                            }
                         }
                         if root.in-edit-mode: IconBtn {
+                            nav-row: root.config-row;
                             source: Icons.cancel;
                             label: @tr("Cancel");
                             enabled: !EditPane.saving;
-                            accessible-id: "tv-detail-" + root.tv.uuid + "-cancel-button";
-                            clicked => { EditPane.cancel(); }
+                            accessible-id: root.id-prefix + "cancel-button";
+                            clicked => {
+                                root.focus-edit-when-shown = self.focused;
+                                EditPane.cancel();
+                            }
                         }
                         if root.in-edit-mode: IconBtn {
+                            nav-row: root.config-row;
                             source: Icons.save;
                             label: @tr("Save");
                             enabled: EditPane.valid;
                             loading: EditPane.saving;
-                            accessible-id: "tv-detail-" + root.tv.uuid + "-save-button";
-                            clicked => { EditPane.save(); }
+                            accessible-id: root.id-prefix + "save-button";
+                            clicked => {
+                                root.focus-edit-when-shown = self.focused;
+                                EditPane.save();
+                            }
                         }
                     }
 
@@ -1088,7 +1301,9 @@ component TvDetail inherits Rectangle {
                                 dismissable: false;
                             }
 
-                            if root.in-edit-mode: TvConfigEditForm {}
+                            if root.in-edit-mode: TvConfigEditForm {
+                                focus-on-create: root.focus-form-when-shown;
+                            }
 
                             // View mode: name + vendor `UserInput`
                             // rows as read-only labels. Same set
@@ -1159,7 +1374,8 @@ component TvDetail inherits Rectangle {
                         }
                         VerticalLayout {
                             alignment: center;
-                            Button {
+                            ThemedButton {
+                                nav-row: root.re-pair-row;
                                 text: @tr("Re-pair");
                                 clicked => { root.request-re-pair(); }
                             }
@@ -1182,7 +1398,9 @@ component TvDetail inherits Rectangle {
                         VerticalLayout {
                             alignment: center;
                             DangerBtn {
+                                nav-row: root.remove-row;
                                 text: @tr("Remove TV");
+                                accessible-id: root.id-prefix + "remove-button";
                                 clicked => { root.request-remove(); }
                             }
                         }
@@ -1247,6 +1465,53 @@ export component TvsPane {
     property <string> pending-remove-name: "";
     property <string> pending-re-pair-id: "";
     property <string> pending-re-pair-name: "";
+    // Bumped when a list row is activated; the selected detail takes
+    // focus on the change. A column request for the detail does the
+    // same while a TV is selected (the list answers it otherwise).
+    property <int> focus-detail-tick;
+    property <int> column-mirror: Nav.column-tick;
+    changed column-mirror => {
+        if (Nav.column-target == 2 && root.has-selection && !PairingWizard.active) {
+            Nav.column-served = Nav.column-tick;
+            root.focus-detail-tick += 1;
+        }
+    }
+    property <bool> has-selection: root.selected-index >= 0 && root.selected-index < root.tvs.length;
+    // The detail went away under focus (its TV was removed): the list
+    // takes over.
+    changed has-selection => {
+        if (!root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+    // The TV under the selection changed without the selection moving
+    // (a TV before it was removed): the detail under focus is gone too.
+    property <string> selected-uuid: root.has-selection ? root.tvs[root.selected-index].uuid : "";
+    changed selected-uuid => {
+        if (root.has-selection && Nav.column == 2) {
+            Nav.request-column(1);
+        }
+    }
+
+    // Leaving an edit with unsaved changes asks first (the Escape key
+    // routes here); an explicit Cancel is deliberate and doesn't.
+    property <bool> pending-discard;
+    public function cancel-edit() {
+        if (EditPane.dirty) {
+            root.pending-discard = true;
+        } else {
+            EditPane.cancel();
+        }
+    }
+    // The wizard's exit destroys whatever it had focused; the list
+    // takes over (the new TV's row once it's selected, else the first
+    // row, else the pair button).
+    property <bool> wizard-mirror: PairingWizard.active;
+    changed wizard-mirror => {
+        if (!root.wizard-mirror) {
+            Nav.request-column(1);
+        }
+    }
 
     // Pairing wizard takes over the whole pane when active.
     if PairingWizard.active: PairingWizardPane {
@@ -1297,6 +1562,7 @@ export component TvsPane {
                 daemon-loading: root.daemon-loading;
                 daemon-health: root.daemon-health;
                 selected-index <=> root.selected-index;
+                activated => { root.focus-detail-tick += 1; }
             }
 
             // Detail column — fills remaining width.
@@ -1320,6 +1586,7 @@ export component TvsPane {
                     tv: tv;
                     system-profiles: root.system-profiles;
                     user-profiles: root.user-profiles;
+                    focus-tick: root.focus-detail-tick;
 
                     request-remove => {
                         root.pending-remove-id = tv.uuid;
@@ -1329,6 +1596,7 @@ export component TvsPane {
                         root.pending-re-pair-id = tv.uuid;
                         root.pending-re-pair-name = tv.name;
                     }
+                    cancel-requested => { root.cancel-edit(); }
                 }
             }
         }
@@ -1348,6 +1616,18 @@ export component TvsPane {
             root.pending-remove-id = "";
             root.pending-remove-name = "";
         }
+    }
+
+    ConfirmDialog {
+        open: root.pending-discard;
+        title: @tr("Discard changes");
+        message: @tr("Leave the TV's config without saving the changes?");
+        confirm-label: @tr("Discard");
+        confirmed => {
+            root.pending-discard = false;
+            EditPane.cancel();
+        }
+        cancelled => { root.pending-discard = false; }
     }
 
     ConfirmDialog {

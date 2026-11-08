@@ -20,8 +20,10 @@
 
 import { ScrollView } from "std-widgets.slint";
 import { OverlayAnchor, OverlayIds } from "overlay.slint";
+import { Nav } from "nav.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { FocusRing } from "../widgets.slint";
 
 export global Select {
     // Open state + the active request's data.
@@ -226,6 +228,8 @@ export component SelectOverlay inherits Rectangle {
 // The visible select button — a drop-in for `ComboBox` on the subset the
 // panes use (`model` / `current-value` / `selected`).
 export component ThemedSelect inherits Rectangle {
+    /// The detail row the select sits in (`Nav.next-row-id`); 0 for none.
+    in property <int> nav-row: 0;
     in property <[string]> model;
     in property <string> current-value;
     // Emitted on pick with the chosen value; `selected-index` carries the
@@ -247,12 +251,19 @@ export component ThemedSelect inherits Rectangle {
     // native ComboBox.
     opacity: root.enabled ? 1.0 : 0.45;
     background: Theme.surface2;
-    // Accent border when open OR keyboard-focused (the focus-visible ring
-    // a native combobox shows when you Tab onto it).
-    border-color: root.is-open || fs.has-focus ? Theme.accent : Theme.border;
-    border-width: root.is-open || fs.has-focus ? 2px : Design.border-thin;
+    // Accent border while open; keyboard focus draws the shared ring
+    // outside instead, so the two states read differently.
+    border-color: root.is-open ? Theme.accent : Theme.border;
+    border-width: root.is-open ? 2px : Design.border-thin;
     border-radius: Design.radius-control;
     forward-focus: fs;
+
+    ring := FocusRing {
+        shown: fs.has-focus && Nav.focus-visible && !root.is-open;
+        host-width: root.width;
+        host-height: root.height;
+        host-radius: root.border-radius;
+    }
 
     accessible-role: combobox;
     accessible-expandable: true;
@@ -329,18 +340,37 @@ export component ThemedSelect inherits Rectangle {
                 // above dismiss it.
                 return accept;
             }
-            if (event.text == Key.Return
-                || event.text == " "
-                || event.text == Key.DownArrow) {
+            // Return or Space opens; Down doesn't, it steps focus.
+            if (event.text == Key.Return || event.text == " ") {
                 root.open-list();
                 return accept;
             }
             return reject;
         }
+        focus-gained(reason) => {
+            Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
+            root.anchor = Nav.focus-seq;
+        }
+    }
+
+    // The select's focus anchor, so a dialog opened from it (Escape in
+    // a dirty config edit) comes back to it; a focusable keeps its own.
+    property <int> anchor: -1;
+    property <int> anchor-mirror: Nav.anchor-tick;
+    changed anchor-mirror => {
+        if (root.enabled && Nav.anchor-matches(root.anchor, root.accessible-id)) {
+            Nav.anchor-served = Nav.anchor-tick;
+            fs.focus();
+        }
     }
 
     touch := TouchArea {
         enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                Nav.focus-visible = false;
+            }
+        }
         clicked => {
             root.focus();
             root.open-list();

@@ -16,6 +16,7 @@ import { ScrollView } from "std-widgets.slint";
 import { OverlayAnchor, OverlayIds } from "overlay.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
+import { Nav } from "nav.slint";
 
 export global Help {
     // Active request (empty `text` ⇒ nothing shown).
@@ -46,6 +47,16 @@ export global Help {
 
     out property <bool> shown: root.text != ""
         && (root.pinned || root.requester-hovered || root.bubble-hovered);
+
+    // Menu on a stop: the "i" of that stop's row toggles its help (a
+    // profile field row, which has none, passes the request on to its
+    // section's "i"). The buttons observe `menu-tick`.
+    in-out property <int> menu-row;
+    in-out property <int> menu-tick;
+    public function menu-toggle(row: int) {
+        root.menu-row = row;
+        root.menu-tick += 1;
+    }
 
     // Shared setup for a new request (hover or click). Resets the
     // per-request state — crucially the `clip` back to the whole-window
@@ -145,8 +156,9 @@ export global Help {
 // trip a reentrant layout-cache panic; the tick fires post-layout.
 //
 // Toggletip-specific focus-out/Escape dismissal stays in the host
-// (`ContextualHelpButton`), so hover-only hosts don't carry a FocusScope
-// (which would add a phantom tab stop). The host reads `pinned-mine`.
+// (`ContextualHelpButton`). Focus belongs to the host too (a
+// `Focusable` for the controls a remote reaches), never to the trigger,
+// so a tip adds no stop of its own. The host reads `pinned-mine`.
 export component HelpTrigger inherits Rectangle {
     in property <string> text;
     in property <duration> delay: 700ms;
@@ -342,6 +354,31 @@ export component HelpScrollView inherits ScrollView {
     content-width: self.visible-width;
     changed content-y => {
         Help.reposition-tick += 1;
+    }
+
+    // Keep a margin around the focused stop (`Nav.reveal`), on top of
+    // Slint's own edge-to-edge reveal of the item. Only for a stop
+    // inside this view's area: the one detail view at a time, not a
+    // list's. Reading `absolute-position` here, in a change handler,
+    // never forces it during layout.
+    property <int> reveal-mirror: Nav.reveal-tick;
+    changed reveal-mirror => {
+        if (Nav.reveal-x < self.absolute-position.x
+            || Nav.reveal-x >= self.absolute-position.x + self.width) {
+            return;
+        }
+        self.keep-in-view(Nav.reveal-y - self.absolute-position.y, Nav.reveal-height);
+    }
+    function keep-in-view(top: length, height: length) {
+        if (self.content-height <= self.visible-height) {
+            return;
+        }
+        if (top < Design.scroll-margin) {
+            self.content-y = min(0px, self.content-y + (Design.scroll-margin - top));
+        } else if (top + height > self.visible-height - Design.scroll-margin) {
+            self.content-y = max(self.visible-height - self.content-height,
+                self.content-y - (top + height - (self.visible-height - Design.scroll-margin)));
+        }
     }
     property <bool> help-shown-mirror: Help.shown;
     property <int> reposition-mirror: Help.reposition-tick;
