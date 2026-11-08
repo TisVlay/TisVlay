@@ -343,9 +343,10 @@ impl ApplicationService {
                         w.request_user_attention(Some(UserAttentionType::Informational));
                     });
                     // A remote user re-opening the window sees where
-                    // they are: focus the active pane's sidebar item.
+                    // they are: focus the active pane's sidebar item,
+                    // unless something already has focus.
                     if app.global::<crate::Couch>().get_active() {
-                        app.invoke_focus_active_sidebar_item();
+                        app.invoke_focus_on_reactivation();
                     }
                 }
             });

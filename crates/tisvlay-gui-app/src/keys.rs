@@ -80,7 +80,7 @@ fn position(app: &AppWindow) -> (i32, i32) {
 
 /// Up or Down in the detail: the previous or next row's first stop. A
 /// stop in no row (0) steps one stop, as the plain Tab order does.
-pub fn row_step(app: &AppWindow, forward: bool) {
+pub(crate) fn row_step(app: &AppWindow, forward: bool) {
     let (column, row) = position(app);
     if row == 0 {
         // One stop, undone when it left the column: a stop in no row
@@ -132,7 +132,7 @@ pub fn row_step(app: &AppWindow, forward: bool) {
 /// Right or Left in the detail: the next or previous stop of the same
 /// row. False, with focus where it was, when the row has none that
 /// way, so the shell jumps columns instead.
-pub fn stop_step(app: &AppWindow, forward: bool) -> bool {
+pub(crate) fn stop_step(app: &AppWindow, forward: bool) -> bool {
     let (column, row) = position(app);
     if row == 0 {
         return false;
@@ -145,17 +145,22 @@ pub fn stop_step(app: &AppWindow, forward: bool) -> bool {
     false
 }
 
-/// The keys Plasma Bigscreen's input handler sends that Slint's winit
-/// backend drops, as the Slint key they mean: a gamepad's Share or L2
-/// (KEY_BACK, `XF86Back`) is Escape, and its Square (KEY_MENU, the
-/// `XF86MenuKB` keysym winit leaves unidentified) is Menu. The hook
-/// dispatches that key instead.
-pub fn remap_dropped_key(key: &slint::winit_030::winit::keyboard::Key) -> Option<Key> {
+/// The keys a remote sends that Slint's winit backend drops, as the
+/// Slint key they mean; the hook dispatches that key instead. From
+/// Plasma Bigscreen's input handler: a gamepad's Share or L2 (KEY_BACK,
+/// `XF86Back`) is Escape, and its Square (KEY_MENU, the `XF86MenuKB`
+/// keysym winit leaves unidentified) is Menu. From the kernel's CEC
+/// remote keymap, when a TV forwards its remote's keys: Exit (KEY_EXIT,
+/// `XF86Close`, which winit names but Slint doesn't) is Escape, and
+/// Info (KEY_INFO, the `XF86Info` keysym winit leaves unidentified) is
+/// Menu.
+pub(crate) fn remap_dropped_key(key: &slint::winit_030::winit::keyboard::Key) -> Option<Key> {
     use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey, NativeKey};
     const XF86_MENU_KB: u32 = 0x1008_ff65;
+    const XF86_INFO: u32 = 0x1008_1166;
     match key {
-        WinitKey::Named(NamedKey::BrowserBack) => Some(Key::Escape),
-        WinitKey::Unidentified(NativeKey::Xkb(XF86_MENU_KB)) => Some(Key::Menu),
+        WinitKey::Named(NamedKey::BrowserBack | NamedKey::Close) => Some(Key::Escape),
+        WinitKey::Unidentified(NativeKey::Xkb(XF86_MENU_KB | XF86_INFO)) => Some(Key::Menu),
         _ => None,
     }
 }
@@ -181,14 +186,24 @@ mod tests {
     use slint::winit_030::winit::keyboard::{Key as WinitKey, NamedKey};
 
     #[test]
-    fn xf86back_and_xf86menukb_are_remapped_and_the_rest_is_left_alone() {
+    fn the_dropped_back_and_menu_keys_are_remapped_and_the_rest_is_left_alone() {
         use slint::winit_030::winit::keyboard::NativeKey;
+        // The gamepad's, through Bigscreen's input handler.
         assert_eq!(
             remap_dropped_key(&WinitKey::Named(NamedKey::BrowserBack)),
             Some(Key::Escape)
         );
         assert_eq!(
             remap_dropped_key(&WinitKey::Unidentified(NativeKey::Xkb(0x1008_ff65))),
+            Some(Key::Menu)
+        );
+        // The CEC remote's, through the kernel's keymap.
+        assert_eq!(
+            remap_dropped_key(&WinitKey::Named(NamedKey::Close)),
+            Some(Key::Escape)
+        );
+        assert_eq!(
+            remap_dropped_key(&WinitKey::Unidentified(NativeKey::Xkb(0x1008_1166))),
             Some(Key::Menu)
         );
         assert_eq!(remap_dropped_key(&WinitKey::Named(NamedKey::Escape)), None);

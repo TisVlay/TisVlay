@@ -851,26 +851,56 @@ pub fn run() -> Result<()> {
     // and the preference to the panes; the Settings pane's edits come
     // back through its callbacks and are saved and applied at once.
     // The scale is relative: every compositor scale event is multiplied
-    // by the preference and re-dispatched (the raw value is kept for
-    // later changes), and applied once here for the scale the window
-    // was created with, which bypasses the hook.
+    // by the preference and re-dispatched, and the window's first size
+    // puts it on for the scale the window was created with, which
+    // bypasses the hook. The raw value is kept for later changes, and
+    // read from the live window once there is one.
     let compositor_scale = std::rc::Rc::new(std::cell::Cell::new(1.0f32));
+    // The file is hand-editable: its scale is held to the Settings
+    // control's bounds.
+    let couch_prefs = {
+        let couch = app.global::<Couch>();
+        couch_prefs.sanitized(couch.get_scale_min_percent(), couch.get_scale_max_percent())
+    };
+    let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
+    let prefs_at_exit = prefs.clone();
+    // One writer, in order, the latest value last: the scale spin box
+    // commits a value per step of a held arrow, and concurrent atomic
+    // writes would unlink each other's temp files. `written` is what
+    // reached the disk, for the flush at exit.
+    let (prefs_tx, mut prefs_rx) = tokio::sync::watch::channel(couch_prefs);
+    let (written_tx, written_rx) = tokio::sync::watch::channel(couch_prefs);
+    {
+        let path = gui_config_path;
+        tokio::spawn(async move {
+            while prefs_rx.changed().await.is_ok() {
+                let prefs = *prefs_rx.borrow_and_update();
+                let target = path.clone();
+                match tokio::task::spawn_blocking(move || couch::save(&target, prefs)).await {
+                    Ok(Ok(())) => {
+                        // The receiver lives as long as the window.
+                        let _ = written_tx.send(prefs);
+                    }
+                    Ok(Err(e)) => {
+                        warn!(%e, file = %path.display(), "couch preference write failed");
+                    }
+                    Err(e) => warn!(%e, "couch preference writer stopped"),
+                }
+            }
+        });
+    }
     {
         let couch = app.global::<Couch>();
         couch.set_active(couch_active);
         couch.set_mode(couch_prefs.mode.as_str().into());
         couch.set_scale_percent((couch_prefs.scale * 100.0).round() as i32);
 
-        let prefs = std::rc::Rc::new(std::cell::Cell::new(couch_prefs));
         let save = {
-            let path = gui_config_path;
+            let tx = prefs_tx;
+            // Only a closed channel refuses, and the writer runs as long
+            // as the runtime.
             move |prefs: couch::CouchPrefs| {
-                let path = path.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Err(e) = couch::save(&path, prefs) {
-                        warn!(%e, file = %path.display(), "couch preference write failed");
-                    }
-                });
+                let _ = tx.send(prefs);
             }
         };
 
@@ -893,7 +923,11 @@ pub fn run() -> Result<()> {
                 let couch = app.global::<Couch>();
                 couch.set_mode(mode.as_str().into());
                 couch.set_active(active);
-                apply_scale(&app, scale_for_mode.get(), active.then_some(current.scale));
+                apply_scale(
+                    &app,
+                    compositor_scale_now(&app, &scale_for_mode),
+                    active.then_some(current.scale),
+                );
             }
         });
 
@@ -909,7 +943,7 @@ pub fn run() -> Result<()> {
                 couch.set_scale_percent(percent);
                 apply_scale(
                     &app,
-                    scale_for_pref.get(),
+                    compositor_scale_now(&app, &scale_for_pref),
                     couch.get_active().then_some(current.scale),
                 );
             }
@@ -930,9 +964,8 @@ pub fn run() -> Result<()> {
         let app_weak = app.as_weak();
         let back = nav.back.clone();
         let forward = nav.forward.clone();
-        let compositor_scale = compositor_scale.clone();
         app.window()
-            .on_winit_window_event(move |_window, event| match event {
+            .on_winit_window_event(move |window, event| match event {
                 WindowEvent::MouseInput {
                     state: ElementState::Pressed,
                     button,
@@ -961,8 +994,28 @@ pub fn run() -> Result<()> {
                         _ => EventResult::Propagate,
                     }
                 }
-                // A key the backend would drop (a gamepad's Share or L2
-                // as `XF86Back`): dispatch the key it means instead.
+                // Slint creates the window when the loop starts and
+                // sets its scale straight from winit, past this hook, so
+                // the first size is where couch mode's scale goes on
+                // top; a compositor that then sends a scale event of its
+                // own (Wayland) takes the arm above as well. Idempotent:
+                // a later resize finds the scale in place.
+                WindowEvent::Resized(_) => {
+                    if let Some(app) = app_weak.upgrade()
+                        && app.global::<Couch>().get_active()
+                    {
+                        compositor_scale.set(window.scale_factor());
+                        let factor = app.global::<Couch>().get_scale_percent() as f32 / 100.0;
+                        let wanted = compositor_scale.get() * factor;
+                        if (app.window().scale_factor() - wanted).abs() > 1e-3 {
+                            apply_scale(&app, compositor_scale.get(), Some(factor));
+                        }
+                    }
+                    EventResult::Propagate
+                }
+                // A key the backend would drop (a gamepad's Share, L2 or
+                // Square; a CEC remote's Exit or Info): dispatch the key it
+                // means instead.
                 WindowEvent::KeyboardInput { event, .. }
                     if !event.repeat && keys::remap_dropped_key(&event.logical_key).is_some() =>
                 {
@@ -997,15 +1050,16 @@ pub fn run() -> Result<()> {
             });
     }
 
-    // Open maximized and scaled in couch mode, with focus on the active
-    // sidebar item so the ring shows from the first frame.
+    // Open maximized in couch mode, with focus on the active sidebar
+    // item so the ring shows from the first frame. The scale goes on
+    // once the window exists (the hook's `Resized` arm): there is none
+    // before the loop runs, and a scale set now would be replaced by
+    // the compositor's at creation.
     if couch_active {
         app.window().set_maximized(true);
     }
     app.show()?;
-    compositor_scale.set(app.window().scale_factor());
     if couch_active {
-        apply_scale(&app, compositor_scale.get(), Some(couch_prefs.scale));
         app.invoke_focus_active_sidebar_item();
     }
 
@@ -1013,6 +1067,26 @@ pub fn run() -> Result<()> {
     // driving tasks. `rt` drops at end of `main`, aborting any
     // remaining tasks.
     app.run()?;
+
+    // A preference changed just before the window closed may still be
+    // on its way to the disk: wait for the writer, briefly.
+    let pending = prefs_at_exit.get();
+    let mut written_rx = written_rx;
+    rt.block_on(async {
+        let drained = async {
+            while *written_rx.borrow_and_update() != pending {
+                if written_rx.changed().await.is_err() {
+                    break;
+                }
+            }
+        };
+        if tokio::time::timeout(std::time::Duration::from_secs(2), drained)
+            .await
+            .is_err()
+        {
+            warn!("couch preference write didn't finish before exit");
+        }
+    });
     // The name claim and the object server live exactly as long as this
     // connection, so release it only once the window has closed.
     drop(gui_dbus);
@@ -1051,6 +1125,17 @@ fn is_navigation_key(key: &slint::winit_030::winit::keyboard::Key) -> bool {
                 | NamedKey::Escape
         )
     )
+}
+
+/// The compositor's own scale for the window: what winit reports once
+/// the window exists (Slint creates it when the event loop starts),
+/// else the last scale event seen.
+fn compositor_scale_now(app: &AppWindow, last: &std::cell::Cell<f32>) -> f32 {
+    use slint::winit_030::WinitWindowAccessor;
+    if let Some(scale) = app.window().with_winit_window(|w| w.scale_factor() as f32) {
+        last.set(scale);
+    }
+    last.get()
 }
 
 /// Set the window's scale to the compositor's times couch mode's

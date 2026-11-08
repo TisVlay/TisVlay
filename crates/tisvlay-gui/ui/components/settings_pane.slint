@@ -158,8 +158,8 @@ export component SettingsPane inherits Rectangle {
                     ThemedSpinBox {
                         width: 200px;
                         value: Couch.scale-percent;
-                        minimum: 100;
-                        maximum: 250;
+                        minimum: Couch.scale-min-percent;
+                        maximum: Couch.scale-max-percent;
                         step: 10;
                         accessible-label: @tr("Scale");
                         accessible-id: "settings-couch-scale";

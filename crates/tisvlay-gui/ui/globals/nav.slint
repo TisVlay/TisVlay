@@ -78,6 +78,8 @@ export global Nav {
         self.focus-row = row;
         self.focus-id = id;
         self.focus-seq += 1;
+        // A new stop isn't an idle value control until it says so.
+        self.value-idle = false;
     }
 
     /// Rows (docs/ideas/gui-spatial-navigation.md). A detail row takes

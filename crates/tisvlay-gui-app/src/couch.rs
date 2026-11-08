@@ -71,6 +71,21 @@ impl Default for CouchPrefs {
     }
 }
 
+impl CouchPrefs {
+    /// The scale within the Settings control's bounds (in percent):
+    /// the file is hand-editable, so a value outside them is clamped,
+    /// and one that isn't a number (TOML's `nan`, `inf`) is the default.
+    pub(crate) fn sanitized(self, min_percent: i32, max_percent: i32) -> Self {
+        let scale = if self.scale.is_finite() {
+            self.scale
+                .clamp(min_percent as f32 / 100.0, max_percent as f32 / 100.0)
+        } else {
+            DEFAULT_SCALE
+        };
+        Self { scale, ..self }
+    }
+}
+
 /// `gui.toml`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct GuiConfig {
@@ -89,8 +104,8 @@ pub(crate) fn default_config_path() -> PathBuf {
 }
 
 /// The preference on disk, or the default when the file is missing. An
-/// unreadable file is reported and read as the default: the GUI must
-/// still open.
+/// unreadable file is reported and read as the default, since the GUI
+/// must still open, and set aside: the next save would overwrite it.
 pub(crate) fn load(path: &Path) -> CouchPrefs {
     if matches!(path.try_exists(), Ok(false)) {
         return CouchPrefs::default();
@@ -98,7 +113,20 @@ pub(crate) fn load(path: &Path) -> CouchPrefs {
     match tisvlay_runtime::fs::read_toml::<GuiConfig>(path) {
         Ok(config) => config.couch,
         Err(e) => {
-            warn!(file = %path.display(), "{e}");
+            match tisvlay_runtime::fs::set_aside(path) {
+                Ok(aside) => warn!(
+                    error = %e,
+                    file = %path.display(),
+                    aside = %aside.display(),
+                    "couch preference file unreadable; set aside"
+                ),
+                Err(aside_error) => warn!(
+                    error = %e,
+                    file = %path.display(),
+                    %aside_error,
+                    "couch preference file unreadable, and couldn't be set aside"
+                ),
+            }
             CouchPrefs::default()
         }
     }
@@ -238,10 +266,35 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_file_reads_as_the_default() {
+    fn an_unreadable_file_reads_as_the_default_and_is_set_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("gui.toml");
         std::fs::write(&path, "version = = 1\n").unwrap();
         assert_eq!(load(&path), CouchPrefs::default());
+        assert!(
+            !path.exists(),
+            "the unreadable file is out of the next save's way"
+        );
+        assert!(dir.path().join("gui.toml.edited").exists());
+    }
+
+    #[test]
+    fn a_scale_outside_the_controls_bounds_is_clamped_and_nonsense_is_the_default() {
+        let percent = |scale: f32| {
+            let prefs = CouchPrefs {
+                mode: CouchMode::On,
+                scale,
+            }
+            .sanitized(100, 250);
+            assert_eq!(prefs.mode, CouchMode::On, "only the scale is touched");
+            (prefs.scale * 100.0).round() as i32
+        };
+        assert_eq!(percent(0.0), 100);
+        assert_eq!(percent(-1.0), 100);
+        assert_eq!(percent(1e9), 250);
+        assert_eq!(percent(1.8), 180);
+        let default = (DEFAULT_SCALE * 100.0).round() as i32;
+        assert_eq!(percent(f32::NAN), default);
+        assert_eq!(percent(f32::INFINITY), default);
     }
 }

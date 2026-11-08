@@ -1757,7 +1757,10 @@ fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
 
     // Right to the row's "i", a ringed stop; Return pins its help.
     press(&app, Key::RightArrow);
-    assert!(ring_on(&app, "tv-detail-tv-1-help-Managed"), "the \"i\" is a ringed stop");
+    assert!(
+        ring_on(&app, "tv-detail-tv-1-help-Managed"),
+        "the \"i\" is a ringed stop"
+    );
     press(&app, Key::Return);
     assert!(
         help.get_shown() && help.get_pinned(),
@@ -1938,7 +1941,10 @@ fn right_into_an_empty_tvs_pane_with_no_daemon_keeps_the_sidebar() {
     assert!(ring_on(&app, "sidebar-tvs"), "the sidebar keeps focus");
     assert_eq!(visible_rings(&app), 1);
     press(&app, Key::Escape);
-    assert!(ring_on(&app, "sidebar-tvs"), "and the shell still sees keys");
+    assert!(
+        ring_on(&app, "sidebar-tvs"),
+        "and the shell still sees keys"
+    );
 }
 
 #[test]
@@ -2110,4 +2116,97 @@ fn right_at_the_end_of_a_row_keeps_its_pinned_help() {
     // Leaving the row for real still closes it.
     press(&app, Key::DownArrow);
     assert!(!help.get_shown());
+}
+
+/// A number field of the profile editor, inheriting its value: no reset
+/// icon, so its spin box is the row's only stop.
+fn number_field(name: &str, value: i32) -> ProfileFieldEntry {
+    ProfileFieldEntry {
+        field_name: SharedString::from(name),
+        label: SharedString::from(name),
+        kind: SharedString::from("number"),
+        number_value: value,
+        min_value: 0,
+        max_value: 600,
+        step: 5,
+        is_locally_set: false,
+        ..ProfileFieldEntry::default()
+    }
+}
+
+/// The number edits a test saw: field name and value.
+type NumberEdits = Rc<RefCell<Vec<(String, i32)>>>;
+
+/// The profile editor showing two adjacent number rows, as the user
+/// profile's idle timeouts are, and the number edits it commits.
+fn boot_two_number_rows() -> (AppWindow, NumberEdits) {
+    let app = boot_profile_selected();
+    app.global::<Profiles>()
+        .set_editor_fields(ModelRc::new(VecModel::from(vec![
+            number_field("locked_idle_timeout_seconds", 30),
+            number_field("unlocked_idle_timeout_seconds", 60),
+        ])));
+    make_tall(&app);
+    bind_key_router(&app);
+    let edits = Rc::new(RefCell::new(Vec::new()));
+    let sink = edits.clone();
+    app.global::<Profiles>()
+        .on_value_edited_number(move |name, v| sink.borrow_mut().push((name.to_string(), v)));
+    (app, edits)
+}
+
+#[test]
+fn in_couch_mode_down_from_one_value_control_to_the_next_keeps_it_idle() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, edits) = boot_two_number_rows();
+    app.global::<Couch>().set_active(true);
+    let nav = app.global::<Nav>();
+
+    // Couch mode's Tab cycles the panes, so the arrows get there: the
+    // sidebar item, the selected row, the detail's Duplicate button,
+    // then the first field row's control.
+    press(&app, Key::DownArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::RightArrow);
+    press(&app, Key::DownArrow);
+    assert!(ring_on(&app, "profiles-field-locked_idle_timeout_seconds"));
+    assert!(nav.get_value_idle(), "a focused spin box starts idle");
+    press(&app, Key::DownArrow);
+    assert!(ring_on(
+        &app,
+        "profiles-field-unlocked_idle_timeout_seconds"
+    ));
+    assert!(
+        nav.get_value_idle(),
+        "the next spin box is idle too, whichever focus handler ran last"
+    );
+    press(&app, Key::RightArrow);
+    assert!(
+        edits.borrow().is_empty(),
+        "Right walked the row (alone in it) rather than stepping the value"
+    );
+    assert!(ring_on(
+        &app,
+        "profiles-field-unlocked_idle_timeout_seconds"
+    ));
+}
+
+#[test]
+fn walking_through_a_number_row_writes_nothing_but_a_typed_edit_still_commits() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, edits) = boot_two_number_rows();
+
+    assert!(tab_to(&app, "profiles-field-locked_idle_timeout_seconds"));
+    press(&app, Key::DownArrow);
+    press(&app, Key::UpArrow);
+    assert!(
+        edits.borrow().is_empty(),
+        "passing through a spin box commits nothing"
+    );
+    // A typed edit does commit on the way out.
+    press_text(&app, SharedString::from("9"));
+    press(&app, Key::DownArrow);
+    let edits = edits.borrow();
+    assert_eq!(edits.len(), 1, "{edits:?}");
+    assert_eq!(edits[0].0, "locked_idle_timeout_seconds");
 }

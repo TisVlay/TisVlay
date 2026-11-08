@@ -1456,6 +1456,9 @@ export component OptimisticSlider {
     // until Return or Escape. On a desktop arrows adjust at once.
     property <bool> couch: Couch.active;
     property <bool> entered;
+    // `Nav.focus-seq` as of this slider's focus-in: whether it's still
+    // the last stop to have reported when it loses focus.
+    property <int> seen-seq: -1;
     function sync-idle() {
         Nav.value-idle = root.couch && slider.has-focus && !root.entered;
     }
@@ -1502,12 +1505,19 @@ export component OptimisticSlider {
                     enabled: root.enabled;
                     changed(v) => { root.committed(round(v)); }
                     changed has-focus => {
+                        root.entered = false;
                         if (self.has-focus) {
                             Nav.stop-focused(2, root.nav-row, "");
                             Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+                            root.seen-seq = Nav.focus-seq;
+                            root.sync-idle();
+                        } else if (Nav.focus-seq == root.seen-seq) {
+                            // Change handlers run newest first, so the
+                            // stop gaining focus has usually reported by
+                            // now and the flag is its to set; clear it
+                            // only while nobody has.
+                            root.sync-idle();
                         }
-                        root.entered = false;
-                        root.sync-idle();
                     }
                 }
             }
@@ -1639,6 +1649,13 @@ export component ThemedSpinBox inherits Rectangle {
     // ends by re-taking focus around the `read-only` flip.
     property <bool> couch: Couch.active;
     property <bool> editing;
+    // Whether the text was typed into since focus arrived: only a typed
+    // edit is committed on the way out. A row walk passes through the
+    // field too, and must not write the value it shows.
+    property <bool> typed;
+    // `Nav.focus-seq` as of the field's focus-in: whether it's still the
+    // last stop to have reported when it loses focus.
+    property <int> seen-seq: -1;
     function start-editing() {
         root.editing = true;
         field.clear-focus();
@@ -1723,8 +1740,10 @@ export component ThemedSpinBox inherits Rectangle {
             read-only: !root.enabled || (root.couch && !root.editing);
             selection-background-color: Theme.accent-soft;
             text: root.display;
+            edited => { root.typed = true; }
             accepted => {
                 root.commit-text(self.text);
+                root.typed = false;
                 if (root.couch) {
                     root.stop-editing();
                 }
@@ -1733,11 +1752,21 @@ export component ThemedSpinBox inherits Rectangle {
                 if (self.has-focus) {
                     Nav.stop-focused(2, root.nav-row, "");
                     Nav.reveal(root.absolute-position.x, root.absolute-position.y, root.height);
+                    root.seen-seq = Nav.focus-seq;
+                    root.sync-idle();
                 } else {
-                    root.commit-text(self.text);
+                    if (root.typed) {
+                        root.commit-text(self.text);
+                    }
+                    root.typed = false;
                     root.editing = false;
+                    // Change handlers run newest first, so the stop
+                    // gaining focus has usually reported by now and the
+                    // flag is its to set; clear it only while nobody has.
+                    if (Nav.focus-seq == root.seen-seq) {
+                        root.sync-idle();
+                    }
                 }
-                root.sync-idle();
             }
             // Left/Right step the value, as a slider's do, so a remote
             // can change a number without the on-screen keyboard. A
@@ -1758,6 +1787,7 @@ export component ThemedSpinBox inherits Rectangle {
                 }
                 if (root.couch && root.editing && event.text == Key.Escape) {
                     self.text = root.display;
+                    root.typed = false;
                     root.stop-editing();
                     return accept;
                 }

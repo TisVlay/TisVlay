@@ -330,6 +330,14 @@ export component AppWindow inherits Window {
         root.focus-active-sidebar-item();
     }
 
+    // Re-activation (a second launch handing off to this window) in
+    // couch mode: only when nothing of ours has focus, so a dialog or a
+    // field being edited keeps it.
+    public function focus-on-reactivation() {
+        if (nav-scope.has-focus) {
+            root.focus-active-sidebar-item();
+        }
+    }
     // Put keyboard focus on the sidebar item of the active pane, with
     // the ring showing: couch mode's launch and re-activation state, so
     // a remote user sees where they are before pressing anything.
