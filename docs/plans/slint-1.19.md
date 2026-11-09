@@ -70,4 +70,4 @@ Each step is a commit on `feat/slint-1.19`, passing `just check`. The KDE neon V
 
 ## Deviations
 
-None yet.
+- **Step 3:** the component lost its `forward-focus` instead of keeping it on a scope that is disabled on a desktop. Nothing called `focus()` on a field (the ways in are `take-focus` and `focus-input`), and without `forward-focus` such a call doesn't compile, which pins the invariant harder than the runtime test the step planned. The input already reported its row to `Nav` from its `changed has-focus`; the scope's synchronous report stays for couch mode, and a test reads the row after a desktop Tab.

@@ -30,10 +30,6 @@ The rest were hit making the GUI navigable from a remote ([gui/remote-navigation
 
 A key with neither a Slint name nor text never reaches a handler. A gamepad's Square under Plasma Bigscreen arrives as the `XF86MenuKB` keysym (winit: `Key::Unidentified(NativeKey::Xkb(0x1008ff65))`) and its Share and L2 as `XF86Back` (winit: `NamedKey::BrowserBack`, which Slint has no name for). The `on_winit_window_event` hook sees them first: `keys::remap_dropped_key` maps them to Menu and Escape, the hook dispatches that key through `Window::dispatch_event` and prevents the original.
 
-### Tab skips a stop under a clipping ancestor while it's scrolled out of view
-
-Traversal forgives an item hidden only by a `Flickable`, but its walk stops at the first clipping ancestor, and that ancestor's own clip rect is already empty below the fold (`item_tree.rs`, `is_visible_or_clipped_by_flickable`), so a `TextInput` or `FocusScope` under a `Rectangle { clip: true }` is skipped while a bare one is reached. `LineEdit` clips its `TextInput`. Keep the stop's `FocusScope` outside any clip, or take the Tab in a reach scope outside the clip and forward focus programmatically: programmatic focus ignores visibility and still scrolls into view.
-
 ### No focus, no key handlers
 
 When the focused item is hidden or destroyed, Slint clears focus, and with nothing focused it runs no key handler at all, not even a window-filling `FocusScope`'s capture phase; only the built-in Tab still works. `has-focus` is set only on the focused scope, never on an ancestor, so the state can't be observed from the shell either. The GUI counts the keys its capture handler sees and compares the count around each dispatch from the winit hook; a key that didn't move it had no focus, and focus is restored to its last column.

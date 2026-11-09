@@ -144,9 +144,8 @@ fn tab_reaches_a_text_field_below_the_fold() {
     i_slint_backend_testing::init_no_event_loop();
     let app = boot_tv_in_edit_mode();
 
-    // The field is under the LineEdit's clip and scrolled out of view,
-    // which Slint's Tab traversal skips on its own; the field's reach
-    // scope takes the Tab and forwards focus in.
+    // The field's input is under a clip and scrolled out of view; the
+    // traversal reaches it anyway, and selects its text on the way in.
     let stop = tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
     assert!(
         stop > 1,
@@ -161,9 +160,9 @@ fn shift_tab_leaves_a_text_field_without_bouncing_back() {
     let edit = app.global::<EditPane>();
     tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
 
-    // Backwards out of the field: the reach scope is disabled while the
-    // field has focus, so focus moves to the previous stop and typing
-    // no longer reaches the field.
+    // Backwards out of the field: couch mode's scope is off on a
+    // desktop, so focus moves to the previous stop and typing no longer
+    // reaches the field.
     press_shift_tab(&app);
     press_text(&app, SharedString::from("y"));
     assert_eq!(edit.get_name(), "x", "Shift+Tab left the field");
@@ -176,6 +175,20 @@ fn shift_tab_leaves_a_text_field_without_bouncing_back() {
         "z",
         "Tab re-entered the field (its text was selected on tab-in)"
     );
+}
+
+/// The input is the field's desktop stop and reports the field's row
+/// and id to `Nav` itself, from its deferred focus handler.
+#[test]
+fn tab_into_a_text_field_reports_its_row_and_id() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+    settle();
+    let nav = app.global::<Nav>();
+    assert_eq!(nav.get_column(), 2, "the field is a detail stop");
+    assert_eq!(nav.get_focus_id(), "tv-edit-name", "the field's id");
+    assert!(nav.get_focus_row() > 0, "the field's row");
 }
 
 /// Focus rings drawn at full opacity: the focused control's, and only
