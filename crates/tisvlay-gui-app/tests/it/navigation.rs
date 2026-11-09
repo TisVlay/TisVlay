@@ -2430,6 +2430,50 @@ fn removing_the_last_tv_with_others_left_lands_on_the_list() {
     );
 }
 
+/// The list is updated in place, so removing a TV before the selected
+/// one hands the selected detail instance the next TV: it opens at its
+/// top, not where the removed TV's detail was scrolled to.
+#[test]
+fn a_detail_reused_for_another_tv_opens_at_its_top() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-a", "tv-b", "tv-c"]);
+    app.set_selected_tv_index(1);
+    settle();
+    let top = find_by_accessible_id(&app, "tv-detail-tv-b-power")
+        .expect("tv-b's detail shows its Power button")
+        .absolute_position()
+        .y;
+    // Wheel down over the detail's body: the Power button scrolls out.
+    scroll_at(&app, 500.0, 300.0, -600.0);
+    elapse(300);
+    assert!(
+        find_by_accessible_id(&app, "tv-detail-tv-b-power")
+            .is_none_or(|power| power.absolute_position().y < top),
+        "the detail scrolled"
+    );
+    // The daemon removes tv-a: the surviving rows shift down in place
+    // and the last row goes, as sync_vec_model_merging leaves it.
+    let tvs = app.get_tvs();
+    let model = tvs
+        .as_any()
+        .downcast_ref::<VecModel<TvViewModel>>()
+        .expect("the test's own VecModel");
+    let b = model.row_data(1).expect("tv-b");
+    let c = model.row_data(2).expect("tv-c");
+    model.set_row_data(0, b);
+    model.set_row_data(1, c);
+    model.remove(2);
+    settle();
+    settle();
+    let power = find_by_accessible_id(&app, "tv-detail-tv-c-power")
+        .expect("tv-c's detail shows, with its Power button in view");
+    assert_eq!(
+        power.absolute_position().y,
+        top,
+        "the body is back at its top"
+    );
+}
+
 #[test]
 fn a_column_request_for_the_sidebar_isnt_answered_by_a_single_column_pane() {
     i_slint_backend_testing::init_no_event_loop();

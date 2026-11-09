@@ -868,6 +868,15 @@ component TvDetail inherits Rectangle {
         // the card, not the window) and confines help bubbles to this
         // viewport on scroll/resize. See globals/help.slint.
         HelpScrollView {
+            // The list is updated in place, so when a TV before this
+            // one is removed this instance shows the next TV: the body
+            // goes back to the top, as a fresh detail opens, rather
+            // than staying where the removed TV's was (its danger zone,
+            // under the pointer that just confirmed the removal).
+            property <string> shown-uuid: root.tv.uuid;
+            changed shown-uuid => {
+                self.content-y = 0;
+            }
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;
