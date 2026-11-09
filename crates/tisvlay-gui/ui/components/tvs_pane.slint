@@ -166,6 +166,9 @@ component FormRow {
                 color: Theme.text;
                 font-size: Design.font-body;
                 vertical-alignment: root.helper != "" ? top : center;
+                // A label longer than the column (a translation, "Remote
+                // power key") takes a second line instead of clipping.
+                wrap: word-wrap;
             }
         }
 
