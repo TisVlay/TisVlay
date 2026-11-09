@@ -122,8 +122,6 @@ export component Focusable inherits Rectangle {
     }
 
     fs := FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.enabled && root.focusable;
         focus-on-tab-navigation: root.tab-stop;
         focus-on-click: false;
@@ -1096,8 +1094,6 @@ export component LineEditField inherits Rectangle {
     property <bool> leaving-backwards;
 
     reach := FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.enabled && root.couch && !field.has-focus && !root.leaving-backwards;
         focus-on-click: false;
         key-pressed(event) => {
@@ -1187,7 +1183,6 @@ export component LineEditField inherits Rectangle {
                     width: max(parent.width - self.text-cursor-width, self.preferred-width);
                     height: 100%;
                     vertical-alignment: center;
-                    single-line: true;
                     color: Theme.text;
                     font-size: Design.font-body;
                     selection-background-color: Theme.accent-soft;
@@ -1333,7 +1328,6 @@ export component InlineError inherits Rectangle {
         width: 100%;
         padding: 12px;
         spacing: Design.gap-row;
-        alignment: stretch;
 
         // Leading icon — uses a glyph instead of a freedesktop
         // image so the inline message renders identically without
@@ -1527,8 +1521,6 @@ export component OptimisticSlider {
             background: root.entered ? Theme.accent-soft : transparent;
             // The keys the slider leaves (Return, Escape) bubble here.
             FocusScope {
-                width: 100%;
-                height: 100%;
                 focus-on-tab-navigation: false;
                 focus-on-click: false;
                 key-pressed(event) => {
@@ -1785,7 +1777,6 @@ export component ThemedSpinBox inherits Rectangle {
             color: Theme.text;
             font-size: Design.font-meta;
             input-type: number;
-            single-line: true;
             // The control is the spin box a screen reader sees, and
             // carries the value.
             accessible-role: none;
@@ -1858,7 +1849,6 @@ export component ThemedSpinBox inherits Rectangle {
         // native Fluent SpinBox arrangement (chevron-up then chevron-down),
         // grouped with no gap between the two arrows.
         HorizontalLayout {
-            spacing: 0;
             SpinStepper {
                 up: true;
                 width: 22px;
@@ -1867,7 +1857,6 @@ export component ThemedSpinBox inherits Rectangle {
                 clicked => { root.commit(root.display + root.step); }
             }
             SpinStepper {
-                up: false;
                 width: 22px;
                 enabled: root.enabled && root.display > root.minimum;
                 accessible-label: @tr("Decrease");
@@ -1961,8 +1950,6 @@ export component SpinnerArc inherits Rectangle {
 
     // Track ring — neutral, still.
     Rectangle {
-        width: 100%;
-        height: 100%;
         border-radius: self.width / 2;
         border-width: 2.5px;
         border-color: Theme.border;
@@ -1970,13 +1957,10 @@ export component SpinnerArc inherits Rectangle {
 
     // Rotating top-quarter arc — accent, ~0.9s/rev linear.
     Path {
-        width: 100%;
-        height: 100%;
         viewbox-width: 100;
         viewbox-height: 100;
         stroke: Theme.accent;
         stroke-width: 2.5px;
-        fill: transparent;
         transform-rotation: (360deg * animation-tick() / 900ms).mod(360deg);
 
         // 90° arc spanning from 12 o'clock to 3 o'clock. Radius 47
@@ -2053,9 +2037,8 @@ export component PulseDot inherits Rectangle {
 
 export component ScanLine inherits Rectangle {
     height: 2px;
-    // Translucent track — only the accent pulse reads, so the line can
+    // No track of its own: only the accent pulse reads, so the line can
     // overlay content without occluding it.
-    background: transparent;
     border-radius: 1px;
     clip: true;
 
@@ -2347,8 +2330,6 @@ export component ConfirmDialog inherits Rectangle {
     // that walks the tree for an item that accepts must not land in a
     // hidden dialog.
     FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
@@ -2511,8 +2492,6 @@ export component NameInputDialog inherits Rectangle {
     // stop itself. Disabled while closed, as the field and the buttons
     // are, so a programmatic focus walking the tree can't land here.
     FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;

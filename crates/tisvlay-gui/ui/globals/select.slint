@@ -182,8 +182,6 @@ export component SelectOverlay inherits Rectangle {
     // Scrim: dismiss on click outside, and swallow wheel scroll so the
     // list stays anchored (the background can't scroll out from under it).
     if Select.open: TouchArea {
-        width: 100%;
-        height: 100%;
         clicked => {
             Select.close();
         }
@@ -331,8 +329,6 @@ export component ThemedSelect inherits Rectangle {
     // is never disturbed. When open, this handles list navigation; when
     // closed, it opens the list.
     fs := FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.enabled;
         key-pressed(event) => {
             if (root.is-open) {

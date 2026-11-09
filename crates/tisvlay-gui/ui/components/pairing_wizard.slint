@@ -90,7 +90,6 @@ component Stepper inherits Rectangle {
         padding-left: 20px;
         padding-right: 20px;
         spacing: 12px;
-        alignment: stretch;
 
         StepperItem { step: 1; label: @tr("Discover"); current: root.current; }
         Rectangle {
@@ -151,10 +150,6 @@ component DiscoveryRow inherits ListRow {
         padding-left: 12px;
         padding-right: 12px;
         spacing: 10px;
-        // `stretch` (not `start`) so the center column's `horizontal-stretch`
-        // actually expands and the trailing status column sits flush-right —
-        // same discipline as the About pane's ComponentRow.
-        alignment: stretch;
 
         // Vendor swatch — shared widget so the brand colors + match
         // arms stay in sync with the TVs pane.
@@ -499,7 +494,6 @@ component StepDiscover {
 
                 HorizontalLayout {
                     spacing: 12px;
-                    alignment: stretch;
 
                     // Vendor — combobox when ≥ 2 backends are
                     // registered, static chip when only one. Built from
@@ -690,7 +684,6 @@ component StepConfigure {
                     alignment: center;
                     Chip {
                         label: root.selected-vendor-name == "" ? "—" : root.selected-vendor-name;
-                        tone: "neutral";
                     }
                 }
                 VerticalLayout {
@@ -1234,7 +1227,6 @@ export component PairingWizardPane inherits Rectangle {
                 height: 100%;
                 padding: 12px;
                 spacing: Design.gap-stack;
-                alignment: stretch;
 
                 if PairingWizard.cancel-enabled: ThemedButton {
                     nav-row: root.footer-row;

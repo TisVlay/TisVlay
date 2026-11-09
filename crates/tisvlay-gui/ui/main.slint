@@ -437,8 +437,6 @@ export component AppWindow inherits Window {
     // `Palette.color-scheme` directly — no app-level setting.
 
     nav-scope := FocusScope {
-        width: 100%;
-        height: 100%;
         // Whether this scope is the focus item, kept across the window's
         // own activation changes (which take and give back focus with
         // `window-activation`), for `focus-on-reactivation`.
@@ -716,7 +714,6 @@ export component AppWindow inherits Window {
                         title: Errors.access.title;
                         message: Errors.access.message;
                         action-label: Errors.access.action-label;
-                        dismissable: true;
                         action-clicked => {
                             Errors.access-action();
                         }
@@ -733,7 +730,6 @@ export component AppWindow inherits Window {
                     padding: Design.gap-stack;
                     padding-bottom: 0;
                     InlineError {
-                        tone: "error";
                         title: Errors.version.title;
                         message: Errors.version.message;
                         dismissable: false;
@@ -747,7 +743,6 @@ export component AppWindow inherits Window {
                     padding: Design.gap-stack;
                     padding-bottom: 0;
                     InlineError {
-                        tone: "error";
                         title: Errors.reload.title;
                         message: Errors.reload.message;
                         message-font-family: Theme.mono-font;
