@@ -1144,61 +1144,42 @@ component ProfileDetailHeader inherits Rectangle {
             // word so screen readers announce "{name}, automated"
             // alongside the visual tint — WCAG 1.4.1 mitigation
             // for the color-only state encoding.
-            // Always renders so the header height is stable across
-            // assigned + unassigned states (matches TVs-pane row 2
-            // which falls back to `—` when the descriptor values
-            // are empty); wrapped in a Flickable so a wide list
-            // scrolls sideways (drag) instead of clipping into the
-            // status-badges column. The Flickable clips, so it
-            // overhangs a box of the row's own height by a focus
-            // ring's room: a link's ring isn't cut, and the header
-            // keeps the height the TVs pane's has.
-            usedby-box := Rectangle {
-                height: usedby-row.preferred-height;
-                property <length> ring-room: Design.ring-offset + Design.ring-width;
-                Flickable {
-                    x: -usedby-box.ring-room;
-                    y: -usedby-box.ring-room;
-                    width: usedby-box.width + 2 * usedby-box.ring-room;
-                    height: usedby-box.height + 2 * usedby-box.ring-room;
-                    content-width: usedby-row.preferred-width + 2 * usedby-box.ring-room;
-                    content-height: self.height;
-                    usedby-row := HorizontalLayout {
-                        x: usedby-box.ring-room;
-                        y: usedby-box.ring-room;
-                        spacing: Design.gap-meta;
-                        alignment: start;
-                        Text {
-                            text: @tr("Used by:");
-                            color: Theme.text-dim;
-                            font-size: Design.font-helper;
-                        }
-                        if root.referenced-by.length == 0: Text {
-                            text: "—";
-                            color: Theme.text-dim;
-                            font-size: Design.font-helper;
-                        }
-                        for tv[i] in root.referenced-by: HorizontalLayout {
-                            spacing: Design.gap-meta;
-                            alignment: start;
-                            if i > 0: Text {
-                                text: "·";
-                                color: Theme.text-dim;
-                                font-size: Design.font-helper;
-                            }
-                            LinkText {
-                                nav-row: root.usedby-row;
-                                text: tv.name;
-                                tip: @tr("Edit {} config", tv.name);
-                                text-color: tv.automated
-                                    ? Theme.success-text
-                                    : Theme.info-text;
-                                accessible-label-override: tv.automated
-                                    ? @tr("{}, automated", tv.name)
-                                    : "";
-                                clicked => { Profiles.open-tv(tv.uuid); }
-                            }
-                        }
+            // Always renders, with `—` when no TV uses the profile
+            // (matches TVs-pane row 2, which falls back to `—` when
+            // the descriptor values are empty). The names wrap onto
+            // further lines when they don't fit beside the status
+            // badges, so a profile used by many TVs lists them all
+            // and the header grows with them.
+            FlexboxLayout {
+                spacing: Design.gap-meta;
+                Text {
+                    text: @tr("Used by:");
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                if root.referenced-by.length == 0: Text {
+                    text: "—";
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                for tv[i] in root.referenced-by: HorizontalLayout {
+                    spacing: Design.gap-meta;
+                    if i > 0: Text {
+                        text: "·";
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                    }
+                    LinkText {
+                        nav-row: root.usedby-row;
+                        text: tv.name;
+                        tip: @tr("Edit {} config", tv.name);
+                        text-color: tv.automated
+                            ? Theme.success-text
+                            : Theme.info-text;
+                        accessible-label-override: tv.automated
+                            ? @tr("{}, automated", tv.name)
+                            : "";
+                        clicked => { Profiles.open-tv(tv.uuid); }
                     }
                 }
             }

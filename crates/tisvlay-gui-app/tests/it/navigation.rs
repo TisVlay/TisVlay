@@ -12,7 +12,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
     AppWindow, Couch, Daemon, EditPane, Help, Nav, PairingWizard, Pane, ProfileFieldEntry,
-    ProfileKind, ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
+    ProfileKind, ProfileRow, ProfileTvRef, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
 };
 
 use crate::support::{
@@ -2472,6 +2472,41 @@ fn a_detail_reused_for_another_tv_opens_at_its_top() {
         top,
         "the body is back at its top"
     );
+}
+
+/// A profile used by more TVs than fit beside the badges lists them
+/// all, wrapped, within the window.
+#[test]
+fn a_profile_used_by_four_tvs_names_them_all() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_selected();
+    let profiles = app.global::<Profiles>();
+    let names = ["Living Room TV", "Bedroom TV", "Office TV", "Den TV"];
+    let refs: Vec<ProfileTvRef> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| ProfileTvRef {
+            uuid: SharedString::from(format!("tv-{i}")),
+            name: SharedString::from(*name),
+            automated: false,
+        })
+        .collect();
+    let mut row = profiles.get_selected_row();
+    row.referenced_by = ModelRc::new(VecModel::from(refs));
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row.clone()])));
+    profiles.set_selected_row(row);
+    settle();
+    let width = app.window().size().width as f32 / app.window().scale_factor();
+    for name in names {
+        let link = ElementHandle::find_by_accessible_label(&app, name)
+            .next()
+            .unwrap_or_else(|| panic!("{name} is listed and in view"));
+        let right = link.absolute_position().x + link.size().width;
+        assert!(
+            right <= width,
+            "{name} ends inside the window: {right} of {width}"
+        );
+    }
 }
 
 #[test]
