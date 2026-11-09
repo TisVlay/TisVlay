@@ -142,11 +142,11 @@ skip = [
     { crate = "crypto-common@0.1.7", reason = "digest 0.10 / cipher 0.4 counterpart (zenoh-crypto)" },
     { crate = "cpufeatures@0.2.17", reason = "aes 0.8 (zenoh-crypto) pins cpufeatures 0.2" },
 
-    # winit 0.30's SCTK 0.19 next to Slint's clipboard on SCTK 0.20.
-    # Re-audit on the winit upgrade.
+    # winit 0.30's SCTK 0.19 (the wildcard group above) next to Slint's
+    # clipboard on SCTK 0.20. Re-audit with that group.
     { crate = "smithay-client-toolkit@0.19.2", reason = "winit 0.30's sctk-adwaita pins SCTK 0.19; Slint's smithay-clipboard is on 0.20" },
-    { crate = "calloop@0.13.0", reason = "SCTK 0.19 counterpart" },
-    { crate = "calloop-wayland-source@0.3.0", reason = "SCTK 0.19 counterpart" },
+    { crate = "calloop@0.13.0", reason = "SCTK 0.19 counterpart (winit)" },
+    { crate = "calloop-wayland-source@0.3.0", reason = "SCTK 0.19 counterpart (winit)" },
 
     # Everything else.
     { crate = "nix@0.30.1", reason = "rtnetlink 0.23 pins nix 0.30; linux-cec and os_info are on 0.31" },
@@ -171,7 +171,7 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; no safe upgrade; transitive proc-macro" },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; no safe upgrade; unconditional via zenoh-config 1.10/serde_yaml; TisVlay builds Zenoh config programmatically, not from YAML; revisit on Zenoh bump" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
-    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained; no safe upgrade; build-time only, via spin_on under slint-build; revisit on the Slint bump" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained; no safe upgrade; build-time only, via spin_on under slint-build and slint-macros; revisit when spin_on drops pin-utils" },
     # zbus 6 absorbed its helper crates, which zbus 5 still depends on.
     # ashpd, slint's winit backend, ksni and notify-rust are all on zbus 5,
     # as are our consumed-D-Bus adapters (through zbus's re-exports, never

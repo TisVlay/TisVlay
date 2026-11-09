@@ -360,8 +360,10 @@ opt-level = "s"
 # packaging/nix/package.nix's `outputHashes` entry moved with it.
 [patch.crates-io]
 linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "03b1b0efdb870f08909a1aa9f1627dfc4589e201" }
-# Slint 1.19 ahead of its crates.io release: the pre-release branch. The
-# three entries move back to the registry when 1.19.0 is published.
-slint = { git = "https://github.com/slint-ui/slint", branch = "pre-release/1.19" }
-slint-build = { git = "https://github.com/slint-ui/slint", branch = "pre-release/1.19" }
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", branch = "pre-release/1.19" }
+# Slint 1.19 ahead of its crates.io release: a revision of its
+# `pre-release/1.19` branch. flake.nix's `slintSrc` names the same `rev`
+# (the dev shell's slint-viewer and slint-lsp build from it) and moves
+# with it. The three entries go when 1.19.0 is published.
+slint = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }
+slint-build = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }
+i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }

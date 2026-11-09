@@ -28,7 +28,7 @@ A caret `slint = "1.17"` constraint would let `cargo update` pick any future 1.1
 
 ### Re-evaluation triggers
 
-- A new Slint minor (1.18+) released → audit the `winit_030` API surface; either bump the pin or re-migrate to the new path.
+- A new Slint minor released → audit the `winit_030` API surface; either bump the pin or re-migrate to the new path.
 - `slint-ui/slint#4382` lands a public raise/focus API → drop `unstable-winit-030`, switch the re-activation path to the new API.
 - `cargo update` produces a compile error despite the pin → check if a transitive Slint dep got promoted.
 
@@ -51,7 +51,7 @@ token) are manual KDE QA.
 
 **1.17.0 → 1.18.1 audit (done).** The `winit_030` module still wraps winit 0.30 and the three call sites compile unchanged (`just check` green). 1.18 deprecates the `ScrollView` / `Flickable` `viewport-*` properties as aliases of `content-*`; the UI now uses `content-width` / `content-y`. Behavioral changes worth a manual pass: `Slider` no longer emits `changed` when already at min/max (the volume/backlight `OptimisticSlider` at 0 and 100), focus clears when the focused item turns invisible, and the winit/Wayland first-frame-size and fractional-scaling fixes.
 
-**1.18.1 → 1.19.0 audit (done, on the pre-release branch).** The `winit_030` module still wraps winit 0.30 and every call site in the checklist compiles unchanged; the GUI's test suite passes. The module gains `WinitWindowAccessor::dispatch_winit_window_event()`, which the key remaps don't need (they dispatch Slint keys). Behavioral changes worth a manual pass: the winit backend now applies a launcher's startup token from the environment itself (slint-ui/slint#14360) and clears the variables, next to our D-Bus `activation-token` hook, so a GUI started by both paths should still land focused once; the Wayland first-frame fix for a window shown later (#13948); and double-click detection on the system's interval.
+**1.18.1 → 1.19.0 audit (done, on the pre-release branch).** The `winit_030` module still wraps winit 0.30 and every call site in the checklist compiles unchanged; the GUI's test suite passes. The module gains `WinitWindowAccessor::dispatch_winit_window_event()`, which the key remaps don't need (they dispatch Slint keys). `deny.toml`'s `hashbrown` skip is still needed (the compiler's `rowan` against `prost-build`'s `petgraph`), and winit's SCTK 0.19 now sits next to Slint's clipboard on SCTK 0.20, skipped by exact version. Behavioral changes worth a manual pass: the winit backend now applies a launcher's startup token from the environment itself ([slint-ui/slint#14360](https://github.com/slint-ui/slint/pull/14360)) and clears the variables, after our D-Bus `activation-token` hook has run, so an environment token replaces the hook's when both exist (a D-Bus-activated process has none), and a GUI started by either path should land focused once; the Wayland first-frame fix for a window shown later ([slint-ui/slint#13948](https://github.com/slint-ui/slint/issues/13948)); and double-click detection on the system's interval.
 
 ### Audit checklist on upgrade
 

@@ -11,8 +11,10 @@ fn main() {
     let debug_info = std::env::var("PROFILE").as_deref() != Ok("release");
     let config = slint_build::CompilerConfiguration::new().with_debug_info(debug_info);
     // The project file names the main file and the language edition, for
-    // this build and for the editor tooling (the LSP and the viewer find
-    // it from any `.slint` file under the crate).
+    // this build and for the editor tooling: the LSP finds it from any
+    // `.slint` file under the crate (walking up within the editor's
+    // workspace), and the viewer is given the crate directory. A `.slint`
+    // path alone compiles without the edition.
     slint_build::compile_with_config("slint-project.json", config)
         .expect("the Slint UI failed to compile; slint-build printed the errors above");
 }

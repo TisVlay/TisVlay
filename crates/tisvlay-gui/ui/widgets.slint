@@ -1756,7 +1756,9 @@ export component ThemedSpinBox inherits Rectangle {
     forward-focus: field;
 
     accessible-role: spinbox;
-    accessible-value: root.display;
+    // What the field shows, typed text included; the input inside has no
+    // role of its own.
+    accessible-value: field.text;
     accessible-enabled: root.enabled;
     accessible-action-increment => { root.commit(root.display + root.step); }
     accessible-action-decrement => { root.commit(root.display - root.step); }
@@ -1797,8 +1799,8 @@ export component ThemedSpinBox inherits Rectangle {
             font-size: Design.font-meta;
             input-type: number;
             single-line: true;
-            // The control is the spin box a screen reader sees; the
-            // input's text is its value.
+            // The control is the spin box a screen reader sees, and
+            // carries the value.
             accessible-role: none;
             // TextInput has no `enabled`; `read-only` blocks typing. In
             // couch mode the field is read-only until Return, so the
