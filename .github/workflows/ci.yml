@@ -72,7 +72,7 @@ jobs:
 
       # Pinned to the flake's versions, like the ci job's tools.
       - name: Setup
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: |
             just
@@ -139,7 +139,7 @@ jobs:
       # dictionaries) are pinned to the flake's versions so local and CI
       # agree; bump them together after a `nix flake update`.
       - name: Setup
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: |
             cargo-about@0.9.1
@@ -277,7 +277,7 @@ jobs:
             libfontconfig1-dev
 
       - name: Setup
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: |
             cargo-hack
@@ -312,7 +312,7 @@ jobs:
         run: rustup show
 
       - name: Setup
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2.89.1
         with:
           tool: |
             lychee@0.24.2
