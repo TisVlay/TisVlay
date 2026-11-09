@@ -1797,6 +1797,9 @@ export component ThemedSpinBox inherits Rectangle {
             font-size: Design.font-meta;
             input-type: number;
             single-line: true;
+            // The control is the spin box a screen reader sees; the
+            // input's text is its value.
+            accessible-role: none;
             // TextInput has no `enabled`; `read-only` blocks typing. In
             // couch mode the field is read-only until Return, so the
             // on-screen keyboard (which follows an editable input's

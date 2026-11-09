@@ -2350,14 +2350,12 @@ fn a_number_field_shows_a_value_that_arrived_while_it_had_focus_once_left() {
     press(&app, Key::UpArrow);
     echo(30);
     press(&app, Key::DownArrow);
-    let input = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds")
-        .expect("the spin box renders")
-        .query_descendants()
-        .match_accessible_role(AccessibleRole::TextInput)
-        .find_first()
-        .expect("the spin box's text input");
+    // The spin box's accessible value is what its field shows; the
+    // input inside it has no role of its own.
+    let spin_box = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds")
+        .expect("the spin box renders");
     assert_eq!(
-        input.accessible_value().as_deref(),
+        spin_box.accessible_value().as_deref(),
         Some("30"),
         "the field shows the value that arrived, not what was typed before"
     );
