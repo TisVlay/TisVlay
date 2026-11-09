@@ -15,7 +15,9 @@ use tisvlay_gui::{
     ProfileKind, ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
 };
 
-use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
+use crate::support::{
+    elapse, find_by_accessible_id, press, press_shift_tab, press_text, scroll_at, settle,
+};
 
 /// The shell's first Tab stop: the active pane's sidebar item (the
 /// others are stepped with Up and Down, not Tab). Reload follows it
@@ -651,6 +653,116 @@ fn an_open_select_keeps_up_and_down() {
     press(&app, Key::DownArrow);
     press(&app, Key::Return);
     assert_eq!(modes.borrow().as_slice(), ["on"]);
+}
+
+/// The enum picks a test saw: field name and value.
+type Picks = Rc<RefCell<Vec<(String, String)>>>;
+
+/// The profile editor showing one enum field, `mode`, with `count`
+/// options named `o1` on, its value the `current`-th, and the picks it
+/// commits.
+fn boot_long_select(count: usize, current: usize) -> (AppWindow, Picks) {
+    let app = boot_profile_selected();
+    let options: Vec<SharedString> = (1..=count)
+        .map(|i| SharedString::from(format!("o{i}")))
+        .collect();
+    let entry = ProfileFieldEntry {
+        field_name: SharedString::from("mode"),
+        label: SharedString::from("mode"),
+        kind: SharedString::from("enum"),
+        options: ModelRc::new(VecModel::from(options)),
+        current_value: SharedString::from(format!("o{current}")),
+        is_locally_set: true,
+        ..ProfileFieldEntry::default()
+    };
+    app.global::<Profiles>()
+        .set_editor_fields(ModelRc::new(VecModel::from(vec![entry])));
+    make_tall(&app);
+    bind_key_router(&app);
+    let picks = Rc::new(RefCell::new(Vec::new()));
+    let sink = picks.clone();
+    app.global::<Profiles>()
+        .on_value_edited(move |name, v| sink.borrow_mut().push((name.to_string(), v.to_string())));
+    (app, picks)
+}
+
+/// The open flyout's rectangle: top, bottom, and the center.
+fn flyout_rect(app: &AppWindow) -> (f32, f32, (f32, f32)) {
+    let flyout = ElementHandle::find_by_element_id(app, "SelectOverlay::flyout")
+        .next()
+        .expect("the open flyout");
+    let (pos, size) = (flyout.absolute_position(), flyout.size());
+    (
+        pos.y,
+        pos.y + size.height,
+        (pos.x + size.width / 2.0, pos.y + size.height / 2.0),
+    )
+}
+
+/// Whether an option row labeled `label` lies inside the open flyout.
+/// The select's own button shows the current value with the same label,
+/// outside the flyout, so any match inside counts.
+fn option_in_flyout(app: &AppWindow, label: &str) -> bool {
+    let (top, bottom, _) = flyout_rect(app);
+    ElementHandle::find_by_accessible_label(app, label).any(|text| {
+        let (pos, size) = (text.absolute_position(), text.size());
+        pos.y >= top && pos.y + size.height <= bottom
+    })
+}
+
+#[test]
+fn a_select_opens_on_its_value_and_keeps_the_cursor_in_view() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, picks) = boot_long_select(12, 8);
+    assert!(tab_to(&app, "profiles-field-mode"));
+    press(&app, Key::Return);
+    assert!(
+        option_in_flyout(&app, "o8"),
+        "the list opens scrolled to its value, past the visible rows"
+    );
+    assert!(
+        !option_in_flyout(&app, "o1"),
+        "the first option is above the fold"
+    );
+    for _ in 0..4 {
+        press(&app, Key::DownArrow);
+    }
+    assert!(option_in_flyout(&app, "o12"), "the cursor stays in view");
+    press(&app, Key::Return);
+    assert_eq!(
+        picks.borrow().as_slice(),
+        [("mode".to_string(), "o12".to_string())]
+    );
+}
+
+#[test]
+fn a_wheel_scroll_in_the_flyout_doesnt_lose_the_cursor() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, _picks) = boot_long_select(12, 1);
+    assert!(tab_to(&app, "profiles-field-mode"));
+    press(&app, Key::Return);
+    let (_, _, (x, y)) = flyout_rect(&app);
+    scroll_at(&app, x, y, -200.0);
+    // The wheel scroll animates; let it land.
+    elapse(300);
+    assert!(
+        !option_in_flyout(&app, "o1"),
+        "the wheel scrolled the first option away"
+    );
+    // The pointer rests on a row now, which made it the cursor; Up past
+    // the top puts the cursor on the first row, above the scrolled view,
+    // and the row brings itself back in.
+    for _ in 0..12 {
+        press(&app, Key::UpArrow);
+    }
+    let visible: Vec<String> = (1..=12)
+        .map(|i| format!("o{i}"))
+        .filter(|label| option_in_flyout(&app, label))
+        .collect();
+    assert!(
+        option_in_flyout(&app, "o1"),
+        "the cursor row came back into view; visible: {visible:?}"
+    );
 }
 
 #[test]

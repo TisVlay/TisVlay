@@ -94,6 +94,14 @@ component SelectRow inherits Rectangle {
             Select.highlight = root.index;
         }
     }
+    // A keyboard step keeps the cursor in view, including after a wheel
+    // scroll in the flyout, which replaces the list's `content-y`
+    // binding (the position on open) with the scrolled value.
+    changed is-cursor => {
+        if (self.is-cursor) {
+            self.ensure-visible(ScrollBehavior.instant);
+        }
+    }
 
     callback clicked();
 
@@ -187,7 +195,7 @@ export component SelectOverlay inherits Rectangle {
     // The list surface. An elevated `surface2` background + `border-strong`
     // edge + deeper offset-8 shadow read as distinct from the control
     // surface the flyout floats over, like a native ComboBox menu.
-    if Select.open: Rectangle {
+    if Select.open: flyout := Rectangle {
         x: root.place-x;
         y: root.place-y;
         width: root.list-w;
@@ -205,7 +213,10 @@ export component SelectOverlay inherits Rectangle {
         // button (see its `fs`), which handles the open-state keys. Keeping
         // focus put means Tab traversal survives the popup and needs no
         // focus hand-back. The ScrollView keeps a list longer than
-        // `max-visible` inside the flyout and follows the keyboard cursor.
+        // `max-visible` inside the flyout; this binding shows the current
+        // value when the list opens (the rows are created and the cursor
+        // set in that same pass), and the cursor row keeps itself in
+        // view as it moves.
         ScrollView {
             content-width: self.visible-width;
             content-y: -max(0px, (Select.highlight - root.vis + 1) * root.row-h);
