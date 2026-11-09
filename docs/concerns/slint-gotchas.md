@@ -7,11 +7,11 @@ Running list of Slint footguns this project has hit and worked around. Each is a
 
 ### `Timer.restart()` ICEs the compiler inside an inlined component
 
-When a `Timer` lives in a reusable component that gets inlined, `lower_restart_timer` can't find it post-inline and the compiler panics. Drive `running` directly (`running: true` / `false` in the handler) instead of calling `.restart()`.
+When a `Timer` lives in a reusable component that gets inlined, `lower_restart_timer` can't find it post-inline and the compiler panics. Drive `running` directly (`running: true` / `false` in the handler) instead of calling `.restart()`. A minimal component with a timer compiles on 1.18.1 and 1.19 alike, so the shape that crashed isn't pinned down; the workaround costs nothing and stays.
 
 ### `changed <geometry>` reading `absolute-position` panics the layout cache
 
-A `changed anchor` handler — or any handler that reads `absolute-position` *during* layout — trips a reentrant layout-cache panic. Defer the read to a post-layout event: bump a cheap non-geometry tick property from `changed viewport-y` / `changed width` and read `absolute-position` only in that tick's handler. The contextual-help overlay's anchor tracking uses this pattern ([gui/contextual-help.md](../gui/contextual-help.md)).
+A `changed anchor` handler — or any handler that reads `absolute-position` *during* layout — trips a reentrant layout-cache panic. Defer the read to a post-layout event: bump a cheap non-geometry tick property from `changed viewport-y` / `changed width` and read `absolute-position` only in that tick's handler. The contextual-help overlay's anchor tracking uses this pattern ([gui/contextual-help.md](../gui/contextual-help.md)). A probe reading `absolute-position` from a `changed width` handler didn't panic on 1.19; the deferred read is the robust form regardless.
 
 ### Built-in `Tooltip` / `PopupWindow` are unfit for anchored persistent bubbles
 
