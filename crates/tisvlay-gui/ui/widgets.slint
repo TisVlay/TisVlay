@@ -334,9 +334,14 @@ export component ListRow inherits Focusable {
     accessible-role: list-item;
     column: 1;
     ring-inside: true;
-    background: root.selected ? Theme.row-selected
-              : (root.hovered ? Theme.row-hover : root.resting-background);
-    animate background { duration: 150ms; }
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.row-selected : root.resting-background;
+    Rectangle {
+        z: -1;
+        background: root.hovered && !root.selected ? Theme.row-hover : transparent;
+        animate background { duration: 150ms; }
+    }
 
     // The accent stripe at the selected row's left edge.
     Rectangle {

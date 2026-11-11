@@ -82,10 +82,16 @@ component SidebarItem inherits Focusable {
     }
 
     height: Design.size-sidebar-item;
-    background: selected ? Theme.sidebar-selected
-              : (root.hovered ? Theme.sidebar-hover : transparent);
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.sidebar-selected : transparent;
     border-radius: 5px;
-    animate background { duration: 150ms; }
+    Rectangle {
+        z: -1;
+        border-radius: root.border-radius;
+        background: root.hovered && !root.selected ? Theme.sidebar-hover : transparent;
+        animate background { duration: 150ms; }
+    }
 
     HorizontalLayout {
         width: 100%;
