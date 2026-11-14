@@ -15,7 +15,7 @@ Slint marks the `winit_030` module as "may be removed or changed in future minor
 
 ### Pin
 
-`slint = "=1.19.0"` — exact-version pin in the root `Cargo.toml`'s `[workspace.dependencies]`, shared by `tisvlay-gui` and `tisvlay-gui-app`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.19.0` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`). Until 1.19.0 is on crates.io, a `[patch.crates-io]` section points the three at Slint's `pre-release/1.19` branch, and the dev shell's `slint-viewer` and `slint-lsp` build from the same revision (`flake.nix`'s `slintSrc`).
+`slint = "=1.19.0"` — exact-version pin in the root `Cargo.toml`'s `[workspace.dependencies]`, shared by `tisvlay-gui` and `tisvlay-gui-app`. The matching test dependency `i-slint-backend-testing` and `slint-build` are similarly exact-pinned to `=1.19.0` (the latter so the `.slint` compiler can't desync from the runtime under `cargo update`). Until a 1.19 release with the fix for slint-ui/slint#14894 is on crates.io, a `[patch.crates-io]` section points the three at a fork holding Slint's `pre-release/1.19` branch plus that fix, and the dev shell's `slint-viewer` and `slint-lsp` build from the same revision (`flake.nix`'s `slintSrc`).
 
 ### Risk
 

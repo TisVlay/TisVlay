@@ -360,10 +360,12 @@ opt-level = "s"
 # packaging/nix/package.nix's `outputHashes` entry moved with it.
 [patch.crates-io]
 linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "03b1b0efdb870f08909a1aa9f1627dfc4589e201" }
-# Slint 1.19 ahead of its crates.io release: a revision of its
-# `pre-release/1.19` branch. flake.nix's `slintSrc` names the same `rev`
-# (the dev shell's slint-viewer and slint-lsp build from it) and moves
-# with it. The three entries go when 1.19.0 is published.
-slint = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }
-slint-build = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }
-i-slint-backend-testing = { git = "https://github.com/slint-ui/slint", rev = "b4448d86acb4329486e1515d8e35544cd081b9c4" }
+# Slint 1.19 ahead of its crates.io release: its `pre-release/1.19`
+# branch plus the fix for slint-ui/slint#14894 (slint-ui/slint#14927,
+# not merged yet), as one revision of a fork. flake.nix's `slintSrc`
+# names the same `rev` (the dev shell's slint-viewer and slint-lsp build
+# from it) and moves with it. The three entries go when a 1.19 release
+# with that fix is published.
+slint = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }
+slint-build = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }
+i-slint-backend-testing = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }

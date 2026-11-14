@@ -54,16 +54,17 @@
         # once here to the major matching this toolchain's rustc; keep in step
         # on a channel bump.
         llvmPkgs = pkgs.llvmPackages_23;
-        # Slint 1.19 ahead of its crates.io release: the dev shell's viewer
+        # Slint 1.19 ahead of its crates.io release, from a fork that adds
+        # one unmerged upstream fix: the dev shell's viewer
         # and LSP build from the revision the workspace's `slint` is patched
         # to (root Cargo.toml, `[patch.crates-io]`), so the tools compile the
         # UI with the app's compiler. Both go back to the registry releases
-        # when 1.19.0 is published.
+        # with the patch.
         slintSrc = pkgs.fetchFromGitHub {
-          owner = "slint-ui";
+          owner = "ruffsl";
           repo = "slint";
-          rev = "b4448d86acb4329486e1515d8e35544cd081b9c4";
-          hash = "sha256-UYh/E77v7Gx3/4WhOG5QuP4DZ5mduiV24odgVPD3TSc=";
+          rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48";
+          hash = "sha256-wjsK+6x9OK55RIlYRtwMrzq6A3V5s1vhfIgor/MRcFE=";
         };
         slintCargoDeps = pkgs.rustPlatform.fetchCargoVendor {
           src = slintSrc;
