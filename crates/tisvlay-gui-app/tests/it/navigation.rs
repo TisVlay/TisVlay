@@ -12,10 +12,12 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay_gui::keys::{bind_key_router, key_seen, recover_if_unhandled};
 use tisvlay_gui::{
     AppWindow, Couch, Daemon, EditPane, Help, Nav, PairingWizard, Pane, ProfileFieldEntry,
-    ProfileKind, ProfileRow, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
+    ProfileKind, ProfileRow, ProfileTvRef, Profiles, Tray, TvViewModel, WizardDiscoveredTv,
 };
 
-use crate::support::{find_by_accessible_id, press, press_shift_tab, press_text, settle};
+use crate::support::{
+    elapse, find_by_accessible_id, press, press_shift_tab, press_text, scroll_at, settle,
+};
 
 /// The shell's first Tab stop: the active pane's sidebar item (the
 /// others are stepped with Up and Down, not Tab). Reload follows it
@@ -144,9 +146,8 @@ fn tab_reaches_a_text_field_below_the_fold() {
     i_slint_backend_testing::init_no_event_loop();
     let app = boot_tv_in_edit_mode();
 
-    // The field is under the LineEdit's clip and scrolled out of view,
-    // which Slint's Tab traversal skips on its own; the field's reach
-    // scope takes the Tab and forwards focus in.
+    // The field's input is under a clip and scrolled out of view; the
+    // traversal reaches it anyway, and selects its text on the way in.
     let stop = tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
     assert!(
         stop > 1,
@@ -161,9 +162,9 @@ fn shift_tab_leaves_a_text_field_without_bouncing_back() {
     let edit = app.global::<EditPane>();
     tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
 
-    // Backwards out of the field: the reach scope is disabled while the
-    // field has focus, so focus moves to the previous stop and typing
-    // no longer reaches the field.
+    // Backwards out of the field: couch mode's scope is off on a
+    // desktop, so focus moves to the previous stop and typing no longer
+    // reaches the field.
     press_shift_tab(&app);
     press_text(&app, SharedString::from("y"));
     assert_eq!(edit.get_name(), "x", "Shift+Tab left the field");
@@ -176,6 +177,20 @@ fn shift_tab_leaves_a_text_field_without_bouncing_back() {
         "z",
         "Tab re-entered the field (its text was selected on tab-in)"
     );
+}
+
+/// The input is the field's desktop stop and reports the field's row
+/// and id to `Nav` itself, from its deferred focus handler.
+#[test]
+fn tab_into_a_text_field_reports_its_row_and_id() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tv_in_edit_mode();
+    tab_to_name_field(&app).expect("40 Tabs reach the CONFIG edit form's name field");
+    settle();
+    let nav = app.global::<Nav>();
+    assert_eq!(nav.get_column(), 2, "the field is a detail stop");
+    assert_eq!(nav.get_focus_id(), "tv-edit-name", "the field's id");
+    assert!(nav.get_focus_row() > 0, "the field's row");
 }
 
 /// Focus rings drawn at full opacity: the focused control's, and only
@@ -640,6 +655,116 @@ fn an_open_select_keeps_up_and_down() {
     assert_eq!(modes.borrow().as_slice(), ["on"]);
 }
 
+/// The enum picks a test saw: field name and value.
+type Picks = Rc<RefCell<Vec<(String, String)>>>;
+
+/// The profile editor showing one enum field, `mode`, with `count`
+/// options named `o1` on, its value the `current`-th, and the picks it
+/// commits.
+fn boot_long_select(count: usize, current: usize) -> (AppWindow, Picks) {
+    let app = boot_profile_selected();
+    let options: Vec<SharedString> = (1..=count)
+        .map(|i| SharedString::from(format!("o{i}")))
+        .collect();
+    let entry = ProfileFieldEntry {
+        field_name: SharedString::from("mode"),
+        label: SharedString::from("mode"),
+        kind: SharedString::from("enum"),
+        options: ModelRc::new(VecModel::from(options)),
+        current_value: SharedString::from(format!("o{current}")),
+        is_locally_set: true,
+        ..ProfileFieldEntry::default()
+    };
+    app.global::<Profiles>()
+        .set_editor_fields(ModelRc::new(VecModel::from(vec![entry])));
+    make_tall(&app);
+    bind_key_router(&app);
+    let picks = Rc::new(RefCell::new(Vec::new()));
+    let sink = picks.clone();
+    app.global::<Profiles>()
+        .on_value_edited(move |name, v| sink.borrow_mut().push((name.to_string(), v.to_string())));
+    (app, picks)
+}
+
+/// The open flyout's rectangle: top, bottom, and the center.
+fn flyout_rect(app: &AppWindow) -> (f32, f32, (f32, f32)) {
+    let flyout = ElementHandle::find_by_element_id(app, "SelectOverlay::flyout")
+        .next()
+        .expect("the open flyout");
+    let (pos, size) = (flyout.absolute_position(), flyout.size());
+    (
+        pos.y,
+        pos.y + size.height,
+        (pos.x + size.width / 2.0, pos.y + size.height / 2.0),
+    )
+}
+
+/// Whether an option row labeled `label` lies inside the open flyout.
+/// The select's own button shows the current value with the same label,
+/// outside the flyout, so any match inside counts.
+fn option_in_flyout(app: &AppWindow, label: &str) -> bool {
+    let (top, bottom, _) = flyout_rect(app);
+    ElementHandle::find_by_accessible_label(app, label).any(|text| {
+        let (pos, size) = (text.absolute_position(), text.size());
+        pos.y >= top && pos.y + size.height <= bottom
+    })
+}
+
+#[test]
+fn a_select_opens_on_its_value_and_keeps_the_cursor_in_view() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, picks) = boot_long_select(12, 8);
+    assert!(tab_to(&app, "profiles-field-mode"));
+    press(&app, Key::Return);
+    assert!(
+        option_in_flyout(&app, "o8"),
+        "the list opens scrolled to its value, past the visible rows"
+    );
+    assert!(
+        !option_in_flyout(&app, "o1"),
+        "the first option is above the fold"
+    );
+    for _ in 0..4 {
+        press(&app, Key::DownArrow);
+    }
+    assert!(option_in_flyout(&app, "o12"), "the cursor stays in view");
+    press(&app, Key::Return);
+    assert_eq!(
+        picks.borrow().as_slice(),
+        [("mode".to_string(), "o12".to_string())]
+    );
+}
+
+#[test]
+fn a_wheel_scroll_in_the_flyout_doesnt_lose_the_cursor() {
+    i_slint_backend_testing::init_no_event_loop();
+    let (app, _picks) = boot_long_select(12, 1);
+    assert!(tab_to(&app, "profiles-field-mode"));
+    press(&app, Key::Return);
+    let (_, _, (x, y)) = flyout_rect(&app);
+    scroll_at(&app, x, y, -200.0);
+    // The wheel scroll animates; let it land.
+    elapse(300);
+    assert!(
+        !option_in_flyout(&app, "o1"),
+        "the wheel scrolled the first option away"
+    );
+    // The pointer rests on a row now, which made it the cursor; Up past
+    // the top puts the cursor on the first row, above the scrolled view,
+    // and the row brings itself back in.
+    for _ in 0..12 {
+        press(&app, Key::UpArrow);
+    }
+    let visible: Vec<String> = (1..=12)
+        .map(|i| format!("o{i}"))
+        .filter(|label| option_in_flyout(&app, label))
+        .collect();
+    assert!(
+        option_in_flyout(&app, "o1"),
+        "the cursor row came back into view; visible: {visible:?}"
+    );
+}
+
 #[test]
 fn left_and_right_jump_between_the_columns() {
     i_slint_backend_testing::init_no_event_loop();
@@ -1064,7 +1189,8 @@ fn a_detail_created_by_the_pick_reports_its_column_and_anchors_its_opener() {
     );
     // Left from the fresh detail walks its toolbar row first (the "i"
     // before Duplicate), then goes to the list row: the detail's column
-    // and row were reported although no focus-in handler ran for it.
+    // and row were reported as focus arrived, ahead of the deferred
+    // focus-in handler.
     press(&app, Key::LeftArrow);
     assert!(
         !ring_on(&app, "profiles-duplicate-button"),
@@ -2305,6 +2431,85 @@ fn removing_the_last_tv_with_others_left_lands_on_the_list() {
     );
 }
 
+/// The list is updated in place, so removing a TV before the selected
+/// one hands the selected detail instance the next TV: it opens at its
+/// top, not where the removed TV's detail was scrolled to.
+#[test]
+fn a_detail_reused_for_another_tv_opens_at_its_top() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_tvs(&["tv-a", "tv-b", "tv-c"]);
+    app.set_selected_tv_index(1);
+    settle();
+    let top = find_by_accessible_id(&app, "tv-detail-tv-b-power")
+        .expect("tv-b's detail shows its Power button")
+        .absolute_position()
+        .y;
+    // Wheel down over the detail's body: the Power button scrolls out.
+    scroll_at(&app, 500.0, 300.0, -600.0);
+    elapse(300);
+    assert!(
+        find_by_accessible_id(&app, "tv-detail-tv-b-power")
+            .is_none_or(|power| power.absolute_position().y < top),
+        "the detail scrolled"
+    );
+    // The daemon removes tv-a: the surviving rows shift down in place
+    // and the last row goes, as sync_vec_model_merging leaves it.
+    let tvs = app.get_tvs();
+    let model = tvs
+        .as_any()
+        .downcast_ref::<VecModel<TvViewModel>>()
+        .expect("the test's own VecModel");
+    let b = model.row_data(1).expect("tv-b");
+    let c = model.row_data(2).expect("tv-c");
+    model.set_row_data(0, b);
+    model.set_row_data(1, c);
+    model.remove(2);
+    settle();
+    settle();
+    let power = find_by_accessible_id(&app, "tv-detail-tv-c-power")
+        .expect("tv-c's detail shows, with its Power button in view");
+    assert_eq!(
+        power.absolute_position().y,
+        top,
+        "the body is back at its top"
+    );
+}
+
+/// A profile used by more TVs than fit beside the badges lists them
+/// all, wrapped, within the window.
+#[test]
+fn a_profile_used_by_four_tvs_names_them_all() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = boot_profile_selected();
+    let profiles = app.global::<Profiles>();
+    let names = ["Living Room TV", "Bedroom TV", "Office TV", "Den TV"];
+    let refs: Vec<ProfileTvRef> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| ProfileTvRef {
+            uuid: SharedString::from(format!("tv-{i}")),
+            name: SharedString::from(*name),
+            automated: false,
+        })
+        .collect();
+    let mut row = profiles.get_selected_row();
+    row.referenced_by = ModelRc::new(VecModel::from(refs));
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row.clone()])));
+    profiles.set_selected_row(row);
+    settle();
+    let width = app.window().size().width as f32 / app.window().scale_factor();
+    for name in names {
+        let link = ElementHandle::find_by_accessible_label(&app, name)
+            .next()
+            .unwrap_or_else(|| panic!("{name} is listed and in view"));
+        let right = link.absolute_position().x + link.size().width;
+        assert!(
+            right <= width,
+            "{name} ends inside the window: {right} of {width}"
+        );
+    }
+}
+
 #[test]
 fn a_column_request_for_the_sidebar_isnt_answered_by_a_single_column_pane() {
     i_slint_backend_testing::init_no_event_loop();
@@ -2350,14 +2555,12 @@ fn a_number_field_shows_a_value_that_arrived_while_it_had_focus_once_left() {
     press(&app, Key::UpArrow);
     echo(30);
     press(&app, Key::DownArrow);
-    let input = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds")
-        .expect("the spin box renders")
-        .query_descendants()
-        .match_accessible_role(AccessibleRole::TextInput)
-        .find_first()
-        .expect("the spin box's text input");
+    // The spin box's accessible value is what its field shows; the
+    // input inside it has no role of its own.
+    let spin_box = find_by_accessible_id(&app, "profiles-field-locked_idle_timeout_seconds")
+        .expect("the spin box renders");
     assert_eq!(
-        input.accessible_value().as_deref(),
+        spin_box.accessible_value().as_deref(),
         Some("30"),
         "the field shows the value that arrived, not what was typed before"
     );

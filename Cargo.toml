@@ -78,7 +78,7 @@ toml_edit = "0.25"
 
 # The system's monospace family for the GUI (the font library Slint uses;
 # kept on the version Slint pins so the graph holds one copy).
-fontique = "0.11"
+fontique = "0.12"
 
 # Error handling
 thiserror = "2"
@@ -202,7 +202,7 @@ ksni = "0.3"
 # off the cold-build path. `unstable-winit-030` is a preliminary API, so
 # slint is pinned exactly — bump it together with slint-build and
 # i-slint-backend-testing, re-checking the winit-030 call sites.
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+slint = { version = "=1.19.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 
 # Freedesktop icon-theme lookup (name → file path), shared by the GUI
 # and tray via tisvlay-icons.
@@ -360,3 +360,12 @@ opt-level = "s"
 # packaging/nix/package.nix's `outputHashes` entry moved with it.
 [patch.crates-io]
 linux-cec = { git = "https://github.com/TisVlay/linux-cec", rev = "03b1b0efdb870f08909a1aa9f1627dfc4589e201" }
+# Slint 1.19 ahead of its crates.io release: its `pre-release/1.19`
+# branch plus the fix for slint-ui/slint#14894 (slint-ui/slint#14927,
+# not merged yet), as one revision of a fork. flake.nix's `slintSrc`
+# names the same `rev` (the dev shell's slint-viewer and slint-lsp build
+# from it) and moves with it. The three entries go when a 1.19 release
+# with that fix is published.
+slint = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }
+slint-build = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }
+i-slint-backend-testing = { git = "https://github.com/ruffsl/slint", rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48" }

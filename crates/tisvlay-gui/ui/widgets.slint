@@ -122,8 +122,6 @@ export component Focusable inherits Rectangle {
     }
 
     fs := FocusScope {
-        width: 100%;
-        height: 100%;
         enabled: root.enabled && root.focusable;
         focus-on-tab-navigation: root.tab-stop;
         focus-on-click: false;
@@ -153,9 +151,7 @@ export component Focusable inherits Rectangle {
     // again (`Nav`). Taken as focus arrives, and at once on activation,
     // which may open the dialog with no focus change at all. `focus-in`
     // runs from the deferred change handler instead, since its
-    // listeners switch panes and selections; it never runs for a
-    // control created and focused in one pass (a detail focusing its
-    // first stop from `init`), which `init` covers.
+    // listeners switch panes and selections.
     /// Whether a pane scrolls to keep the control and a margin around
     /// it in view on focus; off for a dialog's buttons, which float over
     /// the pane.
@@ -169,15 +165,10 @@ export component Focusable inherits Rectangle {
         }
         root.anchor = Nav.focus-seq;
     }
-    init => {
-        if (fs.has-focus) {
-            root.focus-in();
-        }
-    }
     // By the count for an instance that still exists, by the id for
     // one re-created with its pane (history back). Only while it can
     // take focus: a programmatic focus on an item that refuses walks on
-    // to the next item that accepts, hidden ones included.
+    // to the next item that accepts.
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
         if (root.enabled && root.focusable && Nav.anchor-matches(root.anchor, root.accessible-id)) {
@@ -336,9 +327,14 @@ export component ListRow inherits Focusable {
     accessible-role: list-item;
     column: 1;
     ring-inside: true;
-    background: root.selected ? Theme.row-selected
-              : (root.hovered ? Theme.row-hover : root.resting-background);
-    animate background { duration: 150ms; }
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.row-selected : root.resting-background;
+    Rectangle {
+        z: -1;
+        background: root.hovered && !root.selected ? Theme.row-hover : transparent;
+        animate background { duration: 150ms; }
+    }
 
     // The accent stripe at the selected row's left edge.
     Rectangle {
@@ -1013,21 +1009,15 @@ export component ThemedCheckBox inherits Focusable {
 // a Tab stop and keeps Left and Right, and couch mode needs an idle
 // field that is neither (below).
 //
-// The field's own stop is `reach`, a FocusScope outside the clip
-// around the input, for two reasons:
-//
-// - Tab's way into a field that's scrolled out of view. Slint skips a
-//   stop under a clipping element while a scroll view hides it, so Tab
-//   alone never reaches the clipped input below the fold. The scope
-//   takes the Tab instead and, on a desktop, forwards focus
-//   programmatically, which ignores visibility and scrolls the field
-//   into view.
-// - Couch mode's edit-on-Return. The on-screen keyboard follows an
-//   editable input's focus, so a remote stepping past fields would
-//   raise it at every one. There the scope is the ringed stop and the
-//   input is disabled, out of the Tab order and refusing focus, until
-//   Return or a click starts editing; Return or Escape ends it, with
-//   focus back on the stop.
+// On a desktop the input is the field's Tab stop. Couch mode has its
+// own, `reach`, a FocusScope outside the clip around the input, for
+// edit-on-Return: the on-screen keyboard follows an editable input's
+// focus, so a remote stepping past fields would raise it at every one.
+// There the scope is the ringed stop and the input is disabled, out of
+// the Tab order and refusing focus, until Return or a click starts
+// editing; Return or Escape ends it, with focus back on the stop. The
+// component has no `forward-focus`: `take-focus` and `focus-input` are
+// the ways in, and a `focus()` on it doesn't compile.
 
 export component LineEditField inherits Rectangle {
     in property <string> placeholder-text;
@@ -1076,7 +1066,6 @@ export component LineEditField inherits Rectangle {
     border-width: Design.border-thin;
     border-radius: Design.radius-control;
     opacity: root.enabled ? 1.0 : Design.opacity-disabled;
-    forward-focus: reach;
 
     accessible-role: text-input;
     accessible-value: root.text;
@@ -1094,20 +1083,19 @@ export component LineEditField inherits Rectangle {
         host-radius: root.border-radius;
     }
 
-    // The stop. It must not catch a Shift+Tab leaving the input: Slint
-    // takes focus away before it walks backwards, so `!field.has-focus`
-    // alone would re-enable the scope in time to bounce focus back. The
-    // input raises `leaving-backwards` from its own key handler, which
-    // runs before the walk, and clears it once it has lost focus.
+    // Couch mode's stop. It must not catch a Shift+Tab leaving the
+    // editing input: Slint takes focus away before it walks backwards,
+    // so `!field.has-focus` alone would re-enable the scope in time to
+    // bounce focus back. The input raises `leaving-backwards` from its
+    // own key handler, which runs before the walk, and clears it once it
+    // has lost focus.
     property <bool> leaving-backwards;
 
     reach := FocusScope {
-        width: 100%;
-        height: 100%;
-        enabled: root.enabled && !field.has-focus && !root.leaving-backwards;
+        enabled: root.enabled && root.couch && !field.has-focus && !root.leaving-backwards;
         focus-on-click: false;
         key-pressed(event) => {
-            if (root.couch && root.enabled && event.text == Key.Return) {
+            if (root.enabled && event.text == Key.Return) {
                 root.focus-input();
                 return accept;
             }
@@ -1116,13 +1104,6 @@ export component LineEditField inherits Rectangle {
         focus-gained(reason) => {
             Nav.stop-focused-at(2, root.nav-row, root.accessible-id, root.absolute-position.x, root.absolute-position.y, root.height);
             root.anchor = Nav.focus-seq;
-        }
-        changed has-focus => {
-            if (self.has-focus && !root.couch) {
-                field.focus();
-                // What a direct tab-in does; programmatic focus doesn't.
-                field.select-all();
-            }
         }
     }
 
@@ -1200,7 +1181,6 @@ export component LineEditField inherits Rectangle {
                     width: max(parent.width - self.text-cursor-width, self.preferred-width);
                     height: 100%;
                     vertical-alignment: center;
-                    single-line: true;
                     color: Theme.text;
                     font-size: Design.font-body;
                     selection-background-color: Theme.accent-soft;
@@ -1346,7 +1326,6 @@ export component InlineError inherits Rectangle {
         width: 100%;
         padding: 12px;
         spacing: Design.gap-row;
-        alignment: stretch;
 
         // Leading icon — uses a glyph instead of a freedesktop
         // image so the inline message renders identically without
@@ -1540,8 +1519,6 @@ export component OptimisticSlider {
             background: root.entered ? Theme.accent-soft : transparent;
             // The keys the slider leaves (Return, Escape) bubble here.
             FocusScope {
-                width: 100%;
-                height: 100%;
                 focus-on-tab-navigation: false;
                 focus-on-click: false;
                 key-pressed(event) => {
@@ -1756,7 +1733,9 @@ export component ThemedSpinBox inherits Rectangle {
     forward-focus: field;
 
     accessible-role: spinbox;
-    accessible-value: root.display;
+    // What the field shows, typed text included; the input inside has no
+    // role of its own.
+    accessible-value: field.text;
     accessible-enabled: root.enabled;
     accessible-action-increment => { root.commit(root.display + root.step); }
     accessible-action-decrement => { root.commit(root.display - root.step); }
@@ -1796,7 +1775,9 @@ export component ThemedSpinBox inherits Rectangle {
             color: Theme.text;
             font-size: Design.font-meta;
             input-type: number;
-            single-line: true;
+            // The control is the spin box a screen reader sees, and
+            // carries the value.
+            accessible-role: none;
             // TextInput has no `enabled`; `read-only` blocks typing. In
             // couch mode the field is read-only until Return, so the
             // on-screen keyboard (which follows an editable input's
@@ -1866,7 +1847,6 @@ export component ThemedSpinBox inherits Rectangle {
         // native Fluent SpinBox arrangement (chevron-up then chevron-down),
         // grouped with no gap between the two arrows.
         HorizontalLayout {
-            spacing: 0;
             SpinStepper {
                 up: true;
                 width: 22px;
@@ -1875,7 +1855,6 @@ export component ThemedSpinBox inherits Rectangle {
                 clicked => { root.commit(root.display + root.step); }
             }
             SpinStepper {
-                up: false;
                 width: 22px;
                 enabled: root.enabled && root.display > root.minimum;
                 accessible-label: @tr("Decrease");
@@ -1969,8 +1948,6 @@ export component SpinnerArc inherits Rectangle {
 
     // Track ring — neutral, still.
     Rectangle {
-        width: 100%;
-        height: 100%;
         border-radius: self.width / 2;
         border-width: 2.5px;
         border-color: Theme.border;
@@ -1978,13 +1955,10 @@ export component SpinnerArc inherits Rectangle {
 
     // Rotating top-quarter arc — accent, ~0.9s/rev linear.
     Path {
-        width: 100%;
-        height: 100%;
         viewbox-width: 100;
         viewbox-height: 100;
         stroke: Theme.accent;
         stroke-width: 2.5px;
-        fill: transparent;
         transform-rotation: (360deg * animation-tick() / 900ms).mod(360deg);
 
         // 90° arc spanning from 12 o'clock to 3 o'clock. Radius 47
@@ -2061,9 +2035,8 @@ export component PulseDot inherits Rectangle {
 
 export component ScanLine inherits Rectangle {
     height: 2px;
-    // Translucent track — only the accent pulse reads, so the line can
+    // No track of its own: only the accent pulse reads, so the line can
     // overlay content without occluding it.
-    background: transparent;
     border-radius: 1px;
     clip: true;
 
@@ -2351,13 +2324,7 @@ export component ConfirmDialog inherits Rectangle {
     height: 100%;
 
     // The keys the buttons don't take bubble up here; no stop itself.
-    // Disabled while closed, as the buttons are: a programmatic focus
-    // that walks the tree for an item that accepts must not land in a
-    // hidden dialog.
     FocusScope {
-        width: 100%;
-        height: 100%;
-        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2425,14 +2392,13 @@ export component ConfirmDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
-                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
                     }
                     confirm-button := DangerBtn {
                         text: root.confirm-label;
-                        enabled: root.open && root.confirm-enabled;
+                        enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }
@@ -2516,12 +2482,8 @@ export component NameInputDialog inherits Rectangle {
     height: 100%;
 
     // The keys the field and the buttons don't take bubble up here; no
-    // stop itself. Disabled while closed, as the field and the buttons
-    // are, so a programmatic focus walking the tree can't land here.
+    // stop itself.
     FocusScope {
-        width: 100%;
-        height: 100%;
-        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2583,7 +2545,6 @@ export component NameInputDialog inherits Rectangle {
                 name-field := LineEditField {
                     placeholder-text: root.placeholder;
                     text <=> root.name;
-                    enabled: root.open;
                     accessible-id: "dialog-name";
                     edited(v) => { root.name-changed(v); }
                     accepted(v) => {
@@ -2603,7 +2564,6 @@ export component NameInputDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
-                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
@@ -2611,7 +2571,7 @@ export component NameInputDialog inherits Rectangle {
                     confirm-button := ThemedButton {
                         text: root.confirm-label;
                         primary: true;
-                        enabled: root.open && root.confirm-enabled;
+                        enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }

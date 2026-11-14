@@ -10,6 +10,11 @@ fn main() {
     // extra code. This overrides the SLINT_EMIT_DEBUG_INFO variable.
     let debug_info = std::env::var("PROFILE").as_deref() != Ok("release");
     let config = slint_build::CompilerConfiguration::new().with_debug_info(debug_info);
-    slint_build::compile_with_config("ui/main.slint", config)
+    // The project file names the main file and the language edition, for
+    // this build and for the editor tooling: the LSP finds it from any
+    // `.slint` file under the crate (walking up within the editor's
+    // workspace), and the viewer is given the crate directory. A `.slint`
+    // path alone compiles without the edition.
+    slint_build::compile_with_config("slint-project.json", config)
         .expect("the Slint UI failed to compile; slint-build printed the errors above");
 }

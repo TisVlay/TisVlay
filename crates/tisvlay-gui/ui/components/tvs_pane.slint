@@ -166,6 +166,9 @@ component FormRow {
                 color: Theme.text;
                 font-size: Design.font-body;
                 vertical-alignment: root.helper != "" ? top : center;
+                // A label longer than the column (a translation, "Remote
+                // power key") takes a second line instead of clipping.
+                wrap: word-wrap;
             }
         }
 
@@ -415,7 +418,6 @@ component TvList inherits Rectangle {
                 padding-left: 12px;
                 padding-right: Design.gap-stack;
                 spacing: Design.gap-stack;
-                alignment: stretch;
 
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -550,7 +552,6 @@ component TvList inherits Rectangle {
         ScrollView {
             content-width: self.visible-width;
             VerticalLayout {
-                spacing: 0;
                 alignment: start;
                 for tv[i] in root.tvs: TvListRow {
                     tv: tv;
@@ -659,7 +660,6 @@ component TvDetailHeader inherits Rectangle {
         padding-top: Design.pad-header-top;
         padding-bottom: Design.gap-row;
         spacing: Design.gap-row;
-        alignment: stretch;
 
         VerticalLayout {
             width: Design.size-tile-md;
@@ -860,7 +860,6 @@ component TvDetail inherits Rectangle {
     VerticalLayout {
         width: 100%;
         height: 100%;
-        spacing: 0;
 
         // Sticky-ish header.
         TvDetailHeader {
@@ -872,6 +871,15 @@ component TvDetail inherits Rectangle {
         // the card, not the window) and confines help bubbles to this
         // viewport on scroll/resize. See globals/help.slint.
         HelpScrollView {
+            // The list is updated in place, so when a TV before this
+            // one is removed this instance shows the next TV: the body
+            // goes back to the top, as a fresh detail opens, rather
+            // than staying where the removed TV's was (its danger zone,
+            // under the pointer that just confirmed the removal).
+            property <string> shown-uuid: root.tv.uuid;
+            changed shown-uuid => {
+                self.content-y = 0;
+            }
             VerticalLayout {
                 width: 100%;
                 padding-left: Design.pad-pane;
@@ -886,7 +894,6 @@ component TvDetail inherits Rectangle {
 
                     power-row := HorizontalLayout {
                         spacing: Design.gap-row;
-                        alignment: stretch;
 
                         // Power-on has two viable paths: direct-connect
                         // (TV reachable already) or Wake-on-LAN (TV in
@@ -1361,7 +1368,6 @@ component TvDetail inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: Design.gap-row;
-                        alignment: stretch;
                         VerticalLayout {
                             horizontal-stretch: 1;
                             alignment: center;
@@ -1384,7 +1390,6 @@ component TvDetail inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: Design.gap-row;
-                        alignment: stretch;
                         VerticalLayout {
                             horizontal-stretch: 1;
                             alignment: center;
@@ -1523,7 +1528,6 @@ export component TvsPane {
     if !PairingWizard.active: VerticalLayout {
         width: 100%;
         height: 100%;
-        spacing: 0;
 
         // Pane-level inline error surface (Kirigami inline-message
         // pattern). Rust pushes failed user-initiated daemon
@@ -1552,7 +1556,6 @@ export component TvsPane {
 
         HorizontalLayout {
             width: 100%;
-            spacing: 0;
             vertical-stretch: 1;
 
             TvList {

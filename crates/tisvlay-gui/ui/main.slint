@@ -82,10 +82,16 @@ component SidebarItem inherits Focusable {
     }
 
     height: Design.size-sidebar-item;
-    background: selected ? Theme.sidebar-selected
-              : (root.hovered ? Theme.sidebar-hover : transparent);
+    // The selected fill snaps with the focus ring, which follows the
+    // same key; only the hover fades, on a layer under the ring.
+    background: root.selected ? Theme.sidebar-selected : transparent;
     border-radius: 5px;
-    animate background { duration: 150ms; }
+    Rectangle {
+        z: -1;
+        border-radius: root.border-radius;
+        background: root.hovered && !root.selected ? Theme.sidebar-hover : transparent;
+        animate background { duration: 150ms; }
+    }
 
     HorizontalLayout {
         width: 100%;
@@ -437,8 +443,6 @@ export component AppWindow inherits Window {
     // `Palette.color-scheme` directly — no app-level setting.
 
     nav-scope := FocusScope {
-        width: 100%;
-        height: 100%;
         // Whether this scope is the focus item, kept across the window's
         // own activation changes (which take and give back focus with
         // `window-activation`), for `focus-on-reactivation`.
@@ -496,14 +500,6 @@ export component AppWindow inherits Window {
             // menu never sees it.
             if (event.text == Key.Menu) {
                 Help.menu-toggle(Nav.focus-row);
-                return accept;
-            }
-            reject
-        }
-        // The context menu opens on the Menu key's release as well as
-        // its press; take both.
-        capture-key-released(event) => {
-            if (event.text == Key.Menu) {
                 return accept;
             }
             reject
@@ -716,7 +712,6 @@ export component AppWindow inherits Window {
                         title: Errors.access.title;
                         message: Errors.access.message;
                         action-label: Errors.access.action-label;
-                        dismissable: true;
                         action-clicked => {
                             Errors.access-action();
                         }
@@ -733,7 +728,6 @@ export component AppWindow inherits Window {
                     padding: Design.gap-stack;
                     padding-bottom: 0;
                     InlineError {
-                        tone: "error";
                         title: Errors.version.title;
                         message: Errors.version.message;
                         dismissable: false;
@@ -747,7 +741,6 @@ export component AppWindow inherits Window {
                     padding: Design.gap-stack;
                     padding-bottom: 0;
                     InlineError {
-                        tone: "error";
                         title: Errors.reload.title;
                         message: Errors.reload.message;
                         message-font-family: Theme.mono-font;

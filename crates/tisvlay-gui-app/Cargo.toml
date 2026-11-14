@@ -63,7 +63,7 @@ tisvlay-tray = { workspace = true }
 zenoh = { workspace = true }
 # Headless Slint backend for element-tree tests; preliminary API, so
 # pinned exactly with slint.
-i-slint-backend-testing = "=1.18.1"
+i-slint-backend-testing = "=1.19.0"
 
 [lints]
 workspace = true

@@ -164,7 +164,6 @@ component ProfileSectionHeader inherits Rectangle {
         padding-left: 12px;
         padding-right: Design.gap-stack;
         spacing: Design.gap-stack;
-        alignment: stretch;
 
         VerticalLayout {
             horizontal-stretch: 1;
@@ -347,7 +346,6 @@ component ProfileList inherits Rectangle {
     VerticalLayout {
         width: 100%;
         height: 100%;
-        spacing: 0;
 
         // System profiles section — top half. Section header is
         // pinned at the top of the half; rows scroll below it once
@@ -358,10 +356,8 @@ component ProfileList inherits Rectangle {
         // to work with, with its own scroll surface for overflow.
         VerticalLayout {
             vertical-stretch: 1;
-            spacing: 0;
             system-header := ProfileSectionHeader {
                 title: @tr("SYSTEM PROFILES");
-                add-enabled: true;
                 add-id: "profiles-add-system";
                 add-clicked => { root.request-create(ProfileKind.system); }
                 step(forward) => {
@@ -394,7 +390,6 @@ component ProfileList inherits Rectangle {
             ScrollView {
                 content-width: self.visible-width;
                 VerticalLayout {
-                    spacing: 0;
                     alignment: start;
                     for r[i] in Profiles.system: ProfileListRow {
                         entry: r;
@@ -429,7 +424,6 @@ component ProfileList inherits Rectangle {
         // message instead.
         VerticalLayout {
             vertical-stretch: 1;
-            spacing: 0;
             user-header := ProfileSectionHeader {
                 title: @tr("USER PROFILES");
                 add-enabled: Profiles.session-available;
@@ -480,7 +474,6 @@ component ProfileList inherits Rectangle {
             ScrollView {
                 content-width: self.visible-width;
                 VerticalLayout {
-                    spacing: 0;
                     alignment: start;
                     for r[i] in Profiles.user: ProfileListRow {
                         entry: r;
@@ -683,8 +676,6 @@ component ProfileFieldRowEnum inherits ProfileFieldRow {
 
     HorizontalLayout {
         width: 100%;
-        spacing: 0;
-        alignment: stretch;
 
         // 2 px gutter — accent when the field is locally set,
         // transparent otherwise. Visual cue distinct from the
@@ -702,7 +693,6 @@ component ProfileFieldRowEnum inherits ProfileFieldRow {
             padding-top: Design.gap-stack;
             padding-bottom: Design.gap-stack;
             spacing: Design.gap-row;
-            alignment: stretch;
 
             VerticalLayout {
                 width: Design.width-label-col-profile;
@@ -750,8 +740,6 @@ component ProfileFieldRowNumber inherits ProfileFieldRow {
 
     HorizontalLayout {
         width: 100%;
-        spacing: 0;
-        alignment: stretch;
 
         Rectangle {
             width: 2px;
@@ -765,7 +753,6 @@ component ProfileFieldRowNumber inherits ProfileFieldRow {
             padding-top: Design.gap-stack;
             padding-bottom: Design.gap-stack;
             spacing: Design.gap-row;
-            alignment: stretch;
 
             VerticalLayout {
                 width: Design.width-label-col-profile;
@@ -830,8 +817,6 @@ component ProfileFieldRowBool inherits ProfileFieldRow {
 
     HorizontalLayout {
         width: 100%;
-        spacing: 0;
-        alignment: stretch;
 
         Rectangle {
             width: 2px;
@@ -845,7 +830,6 @@ component ProfileFieldRowBool inherits ProfileFieldRow {
             padding-top: Design.gap-stack;
             padding-bottom: Design.gap-stack;
             spacing: Design.gap-row;
-            alignment: stretch;
 
             VerticalLayout {
                 width: Design.width-label-col-profile;
@@ -1008,7 +992,6 @@ component ProfileDetailHeader inherits Rectangle {
         padding-top: Design.pad-header-top;
         padding-bottom: Design.gap-row;
         spacing: Design.gap-row;
-        alignment: stretch;
 
         // Col 1: identity tile.
         VerticalLayout {
@@ -1032,7 +1015,6 @@ component ProfileDetailHeader inherits Rectangle {
             //   - Edit mode: LineEditField + ✓ + ✗.
             HorizontalLayout {
                 spacing: Design.gap-row;
-                alignment: stretch;
 
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -1162,61 +1144,42 @@ component ProfileDetailHeader inherits Rectangle {
             // word so screen readers announce "{name}, automated"
             // alongside the visual tint — WCAG 1.4.1 mitigation
             // for the color-only state encoding.
-            // Always renders so the header height is stable across
-            // assigned + unassigned states (matches TVs-pane row 2
-            // which falls back to `—` when the descriptor values
-            // are empty); wrapped in a Flickable so a wide list
-            // scrolls sideways (drag) instead of clipping into the
-            // status-badges column. The Flickable clips, so it
-            // overhangs a box of the row's own height by a focus
-            // ring's room: a link's ring isn't cut, and the header
-            // keeps the height the TVs pane's has.
-            usedby-box := Rectangle {
-                height: usedby-row.preferred-height;
-                property <length> ring-room: Design.ring-offset + Design.ring-width;
-                Flickable {
-                    x: -usedby-box.ring-room;
-                    y: -usedby-box.ring-room;
-                    width: usedby-box.width + 2 * usedby-box.ring-room;
-                    height: usedby-box.height + 2 * usedby-box.ring-room;
-                    content-width: usedby-row.preferred-width + 2 * usedby-box.ring-room;
-                    content-height: self.height;
-                    usedby-row := HorizontalLayout {
-                        x: usedby-box.ring-room;
-                        y: usedby-box.ring-room;
-                        spacing: Design.gap-meta;
-                        alignment: start;
-                        Text {
-                            text: @tr("Used by:");
-                            color: Theme.text-dim;
-                            font-size: Design.font-helper;
-                        }
-                        if root.referenced-by.length == 0: Text {
-                            text: "—";
-                            color: Theme.text-dim;
-                            font-size: Design.font-helper;
-                        }
-                        for tv[i] in root.referenced-by: HorizontalLayout {
-                            spacing: Design.gap-meta;
-                            alignment: start;
-                            if i > 0: Text {
-                                text: "·";
-                                color: Theme.text-dim;
-                                font-size: Design.font-helper;
-                            }
-                            LinkText {
-                                nav-row: root.usedby-row;
-                                text: tv.name;
-                                tip: @tr("Edit {} config", tv.name);
-                                text-color: tv.automated
-                                    ? Theme.success-text
-                                    : Theme.info-text;
-                                accessible-label-override: tv.automated
-                                    ? @tr("{}, automated", tv.name)
-                                    : "";
-                                clicked => { Profiles.open-tv(tv.uuid); }
-                            }
-                        }
+            // Always renders, with `—` when no TV uses the profile
+            // (matches TVs-pane row 2, which falls back to `—` when
+            // the descriptor values are empty). The names wrap onto
+            // further lines when they don't fit beside the status
+            // badges, so a profile used by many TVs lists them all
+            // and the header grows with them.
+            FlexboxLayout {
+                spacing: Design.gap-meta;
+                Text {
+                    text: @tr("Used by:");
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                if root.referenced-by.length == 0: Text {
+                    text: "—";
+                    color: Theme.text-dim;
+                    font-size: Design.font-helper;
+                }
+                for tv[i] in root.referenced-by: HorizontalLayout {
+                    spacing: Design.gap-meta;
+                    if i > 0: Text {
+                        text: "·";
+                        color: Theme.text-dim;
+                        font-size: Design.font-helper;
+                    }
+                    LinkText {
+                        nav-row: root.usedby-row;
+                        text: tv.name;
+                        tip: @tr("Edit {} config", tv.name);
+                        text-color: tv.automated
+                            ? Theme.success-text
+                            : Theme.info-text;
+                        accessible-label-override: tv.automated
+                            ? @tr("{}, automated", tv.name)
+                            : "";
+                        clicked => { Profiles.open-tv(tv.uuid); }
                     }
                 }
             }
@@ -1301,7 +1264,6 @@ component ProfileDetail inherits Rectangle {
     VerticalLayout {
         width: 100%;
         height: 100%;
-        spacing: 0;
 
         ProfileDetailHeader {
             name: root.name;
@@ -1343,7 +1305,6 @@ component ProfileDetail inherits Rectangle {
                 // `spacing: 0` so the title's `padding-bottom` (gap-stack)
                 // is the only title-to-card gap, exactly as `Group` does.
                 VerticalLayout {
-                    spacing: 0;
 
                     // Title row — section label on the left, catalog-
                     // body action toolbar (Duplicate + Reset all) on
@@ -1427,7 +1388,6 @@ component ProfileDetail inherits Rectangle {
                             // card uses in the TVs pane.
                             padding-top: Design.pad-card - Design.gap-stack;
                             padding-bottom: Design.pad-card - Design.gap-stack;
-                            spacing: 0;
                             alignment: start;
                             for entry[i] in Profiles.editor-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
@@ -1452,7 +1412,6 @@ component ProfileDetail inherits Rectangle {
                 // aimed at the PC. A sibling of the FIELDS section, with
                 // the same surface + full-bleed row treatment.
                 if Profiles.editor-from-tv-fields.length > 0: VerticalLayout {
-                    spacing: 0;
                     HorizontalLayout {
                         padding-left: 2px;
                         padding-bottom: Design.gap-stack;
@@ -1487,7 +1446,6 @@ component ProfileDetail inherits Rectangle {
                             width: 100%;
                             padding-top: Design.pad-card - Design.gap-stack;
                             padding-bottom: Design.pad-card - Design.gap-stack;
-                            spacing: 0;
                             alignment: start;
                             for entry[i] in Profiles.editor-from-tv-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
@@ -1511,7 +1469,6 @@ component ProfileDetail inherits Rectangle {
                 // the body's `gap-pane` sets the gap between them. Same
                 // surface + full-bleed row treatment as the FIELDS card.
                 if Profiles.editor-stream-fields.length > 0: VerticalLayout {
-                    spacing: 0;
                     HorizontalLayout {
                         padding-left: 2px;
                         padding-bottom: Design.gap-stack;
@@ -1546,7 +1503,6 @@ component ProfileDetail inherits Rectangle {
                             width: 100%;
                             padding-top: Design.pad-card - Design.gap-stack;
                             padding-bottom: Design.pad-card - Design.gap-stack;
-                            spacing: 0;
                             alignment: start;
                             for entry[i] in Profiles.editor-stream-fields: VerticalLayout {
                                 if entry.kind == "enum": ProfileFieldRowEnum {
@@ -1751,11 +1707,9 @@ export component ProfilesPane {
     VerticalLayout {
         width: 100%;
         height: 100%;
-        spacing: 0;
 
         HorizontalLayout {
             width: 100%;
-            spacing: 0;
             vertical-stretch: 1;
 
             ProfileList {

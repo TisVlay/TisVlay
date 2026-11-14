@@ -54,6 +54,22 @@
         # once here to the major matching this toolchain's rustc; keep in step
         # on a channel bump.
         llvmPkgs = pkgs.llvmPackages_23;
+        # Slint 1.19 ahead of its crates.io release, from a fork that adds
+        # one unmerged upstream fix: the dev shell's viewer
+        # and LSP build from the revision the workspace's `slint` is patched
+        # to (root Cargo.toml, `[patch.crates-io]`), so the tools compile the
+        # UI with the app's compiler. Both go back to the registry releases
+        # with the patch.
+        slintSrc = pkgs.fetchFromGitHub {
+          owner = "ruffsl";
+          repo = "slint";
+          rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48";
+          hash = "sha256-wjsK+6x9OK55RIlYRtwMrzq6A3V5s1vhfIgor/MRcFE=";
+        };
+        slintCargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+          src = slintSrc;
+          hash = "sha256-5SAXsaKRxITsGHjE3iZkF10cdAonr6h36BOJDVInW38=";
+        };
       in
       {
         packages = {
@@ -72,10 +88,15 @@
           # services.tisvlay.cec.pulse8.enable.
           pulse8-cec = pkgs.linuxPackages.callPackage ./packaging/nix/pulse8-cec.nix { };
 
-          # slint-viewer pinned to the workspace's slint version (1.18.1);
-          # nixpkgs' is 1.16.1, which predates `--check` / `--screenshot`.
-          # Exposed so the devShell and CI can share one definition.
-          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
+          # slint-viewer and slint-lsp at the workspace's slint version;
+          # nixpkgs' lag behind it. Exposed so the devShell and CI can share
+          # one definition.
+          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix {
+            inherit slintSrc slintCargoDeps;
+          };
+          slint-lsp = pkgs.callPackage ./packaging/nix/slint-lsp.nix {
+            inherit slintSrc slintCargoDeps;
+          };
 
           # The workspace's MSRV toolchain, for `just msrv`. The version is
           # read from Cargo.toml's `rust-version` (padded to x.y.z), so the
@@ -108,6 +129,7 @@
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
             slintViewer = self.packages.${system}.slint-viewer;
+            slintLsp = self.packages.${system}.slint-lsp;
             # The same pinned cargo-about the package builds with, so the
             # dev shell's license bundle matches the shipped one.
             cargoAbout = pkgs.callPackage ./packaging/nix/cargo-about.nix { };
@@ -218,11 +240,13 @@
                 prek
                 # slint-lsp on $PATH so editor integrations (VSCode Slint
                 # extension, Helix, Neovim) pick up the system-provided LSP
-                # instead of failing to find a bundled binary.
+                # instead of failing to find a bundled binary, at the
+                # workspace's slint version (packaging/nix/slint-lsp.nix).
                 # Tracks slint-ui/slint#2577 (NixOS LSP discovery).
-                slint-lsp
-                # slint-viewer pinned to 1.18.1 (packaging/nix/slint-viewer.nix)
-                # for headless `--check` / `--screenshot` during GUI work.
+                slintLsp
+                # slint-viewer at the workspace's slint version
+                # (packaging/nix/slint-viewer.nix) for headless `--check` /
+                # `--screenshot` during GUI work.
                 slintViewer
                 socat
                 tcpdump

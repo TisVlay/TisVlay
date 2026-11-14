@@ -22,6 +22,8 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 ## Active plans
 
+- [`slint-1.19.md`](slint-1.19.md) — Slint 1.19 for the GUI, from its pre-release branch until the release: edition 1.19, the workarounds the release retires, the APIs that replace our plumbing, and the new compiler diagnostics.
+
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.
