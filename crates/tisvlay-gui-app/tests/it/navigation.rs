@@ -1189,7 +1189,8 @@ fn a_detail_created_by_the_pick_reports_its_column_and_anchors_its_opener() {
     );
     // Left from the fresh detail walks its toolbar row first (the "i"
     // before Duplicate), then goes to the list row: the detail's column
-    // and row were reported although no focus-in handler ran for it.
+    // and row were reported as focus arrived, ahead of the deferred
+    // focus-in handler.
     press(&app, Key::LeftArrow);
     assert!(
         !ring_on(&app, "profiles-duplicate-button"),

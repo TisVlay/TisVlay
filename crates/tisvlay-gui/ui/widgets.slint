@@ -151,9 +151,7 @@ export component Focusable inherits Rectangle {
     // again (`Nav`). Taken as focus arrives, and at once on activation,
     // which may open the dialog with no focus change at all. `focus-in`
     // runs from the deferred change handler instead, since its
-    // listeners switch panes and selections; it never runs for a
-    // control created and focused in one pass (a detail focusing its
-    // first stop from `init`), which `init` covers.
+    // listeners switch panes and selections.
     /// Whether a pane scrolls to keep the control and a margin around
     /// it in view on focus; off for a dialog's buttons, which float over
     /// the pane.
@@ -167,15 +165,10 @@ export component Focusable inherits Rectangle {
         }
         root.anchor = Nav.focus-seq;
     }
-    init => {
-        if (fs.has-focus) {
-            root.focus-in();
-        }
-    }
     // By the count for an instance that still exists, by the id for
     // one re-created with its pane (history back). Only while it can
     // take focus: a programmatic focus on an item that refuses walks on
-    // to the next item that accepts, hidden ones included.
+    // to the next item that accepts.
     property <int> anchor-mirror: Nav.anchor-tick;
     changed anchor-mirror => {
         if (root.enabled && root.focusable && Nav.anchor-matches(root.anchor, root.accessible-id)) {
@@ -2331,11 +2324,7 @@ export component ConfirmDialog inherits Rectangle {
     height: 100%;
 
     // The keys the buttons don't take bubble up here; no stop itself.
-    // Disabled while closed, as the buttons are: a programmatic focus
-    // that walks the tree for an item that accepts must not land in a
-    // hidden dialog.
     FocusScope {
-        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2403,14 +2392,13 @@ export component ConfirmDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
-                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
                     }
                     confirm-button := DangerBtn {
                         text: root.confirm-label;
-                        enabled: root.open && root.confirm-enabled;
+                        enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }
@@ -2494,10 +2482,8 @@ export component NameInputDialog inherits Rectangle {
     height: 100%;
 
     // The keys the field and the buttons don't take bubble up here; no
-    // stop itself. Disabled while closed, as the field and the buttons
-    // are, so a programmatic focus walking the tree can't land here.
+    // stop itself.
     FocusScope {
-        enabled: root.open;
         focus-on-tab-navigation: false;
         focus-on-click: false;
         key-pressed(event) => {
@@ -2559,7 +2545,6 @@ export component NameInputDialog inherits Rectangle {
                 name-field := LineEditField {
                     placeholder-text: root.placeholder;
                     text <=> root.name;
-                    enabled: root.open;
                     accessible-id: "dialog-name";
                     edited(v) => { root.name-changed(v); }
                     accepted(v) => {
@@ -2579,7 +2564,6 @@ export component NameInputDialog inherits Rectangle {
                     alignment: end;
                     cancel-button := ThemedButton {
                         text: @tr("Cancel");
-                        enabled: root.open;
                         accessible-id: "dialog-cancel";
                         reveal: false;
                         clicked => { root.cancelled(); }
@@ -2587,7 +2571,7 @@ export component NameInputDialog inherits Rectangle {
                     confirm-button := ThemedButton {
                         text: root.confirm-label;
                         primary: true;
-                        enabled: root.open && root.confirm-enabled;
+                        enabled: root.confirm-enabled;
                         accessible-id: "dialog-confirm";
                         reveal: false;
                         clicked => { root.confirmed(); }

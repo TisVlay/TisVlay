@@ -504,14 +504,6 @@ export component AppWindow inherits Window {
             }
             reject
         }
-        // The context menu opens on the Menu key's release as well as
-        // its press; take both.
-        capture-key-released(event) => {
-            if (event.text == Key.Menu) {
-                return accept;
-            }
-            reject
-        }
         // Keys no child took. Alt+Left/Right is the browser-style history
         // nav; a text input that consumes Alt+arrow (word-jump) wins
         // first, so we don't steal keys mid-edit, and `nav-enabled`

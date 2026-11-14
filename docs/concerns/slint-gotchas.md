@@ -36,7 +36,7 @@ When the focused item is hidden or destroyed, Slint clears focus, and with nothi
 
 ### `changed has-focus` is deferred; `focus-gained` is synchronous
 
-A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all. `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
+A `changed` handler runs after the pass that changed the property; `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`. A component created and focused in the same pass (a detail focusing its first stop from `init`) gets its `changed has-focus` after `init` like any other change; up to Slint 1.18 it never saw one (slint-ui/slint#14894).
 
 ### Change handlers in one pass run newest first
 
@@ -44,11 +44,7 @@ The pending `changed` handlers are pushed at the front of a list and drained fro
 
 ### A programmatic `focus()` on an item that refuses walks on
 
-`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, and with the `Programmatic` reason it ignores visibility. So `focus()` on a disabled control isn't a no-op: focus lands on whatever accepts next in tree order, a hidden dialog's `FocusScope` included, with no ring anywhere. The next key then doesn't reach that scope either: `process_key_input` drops a focus item its clip-aware `is_visible()` rejects, so the key is lost, and a shell that restores focus on a lost key sends it straight back in. Disable what's closed (`enabled: open` on a dialog's scope and buttons) and guard a programmatic `focus()` on a target that may be disabled. Reproduced on 1.18.1 and on master (2026-11-07).
-
-### The Menu key's release opens a `ContextMenu` too
-
-Slint's `ContextMenu` item opens on any Menu key event, the release included. A capture handler that takes the press for its own purpose has to take the release as well, or the context menu opens anyway.
+`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, the way Tab would from there. So `focus()` on a disabled control isn't a no-op: the current item loses focus, and it lands on the next stop in tree order or nowhere. Guard a programmatic `focus()` on a target that may be disabled. Up to Slint 1.18 the walk ignored visibility as well and could land in a hidden dialog's `FocusScope`, where every key was dropped (slint-ui/slint#14893); hidden items are skipped since 1.19, so what's closed needs no `enabled: open`.
 
 ### `row` is a reserved property name
 
