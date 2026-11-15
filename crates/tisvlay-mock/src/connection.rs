@@ -147,10 +147,10 @@ impl MockConnection {
 }
 
 impl Drop for MockConnection {
-    /// Remove our shared-state registrations so the subscription
-    /// channel's senders all drop together.
+    /// Remove this connection's shared-state registrations, so its
+    /// subscription stream ends with it.
     ///
-    /// Without this, the cloned sender registered in
+    /// Without this, the sender registered in
     /// `shared.subscription_txs` during `subscribe_state` would
     /// outlive the connection and keep the channel alive forever —
     /// the subscription receiver would never return `None`, so the
@@ -158,10 +158,27 @@ impl Drop for MockConnection {
     /// `Disconnected` event. Tests that assert the `state/link`
     /// payload reads `connected == false` after `power_off` would
     /// hang or see the wrong value.
+    ///
+    /// Only its own: a redial may already have registered the next
+    /// connection to the same address, whose stream must stay open.
     fn drop(&mut self) {
         let mut shared = self.shared.lock();
-        shared.live_states.remove(&self.address);
-        shared.subscription_txs.remove(&self.address);
+        if shared
+            .live_states
+            .get(&self.address)
+            .is_some_and(|live| Arc::ptr_eq(live, &self.state))
+        {
+            shared.live_states.remove(&self.address);
+        }
+        let own = self
+            .subscription_tx
+            .as_ref()
+            .and_then(mpsc::WeakUnboundedSender::upgrade);
+        if let Some(own) = own
+            && let Some(txs) = shared.subscription_txs.get_mut(&self.address)
+        {
+            txs.retain(|tx| !tx.same_channel(&own));
+        }
         shared.event_txs.remove(&self.address);
     }
 }
@@ -333,6 +350,12 @@ impl TvConnection for MockConnection {
             (state.screen_off_noop.contains(&self.address), counter)
         };
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The link turns out dead under the command, as a network TV's
+        // does when an outage is first noticed by a send.
+        if self.shared.lock().screen_off_closes.contains(&self.address) {
+            self.connected = false;
+            return Err(Error::ConnectionClosed);
+        }
         // Parallel knob for `screen_off`: tests opt in via
         // `set_screen_off_noop` to model firmware that returns Ok
         // but doesn't blank the panel. Mirrors `screen_on_noop`.

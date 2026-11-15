@@ -321,6 +321,20 @@ impl MockHandle {
         }
     }
 
+    /// Make `screen_off` meet a dead link: the connection closes and the
+    /// call fails with `ConnectionClosed`, as a network TV's does when
+    /// a send is the first thing to notice an outage. Pass
+    /// `enabled = false` to restore the default blank.
+    #[instrument(skip(self))]
+    pub fn set_screen_off_closes(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_off_closes.insert(address.to_string());
+        } else {
+            state.screen_off_closes.remove(address);
+        }
+    }
+
     /// Make an in-band `power_on` go unheeded: it returns `Ok` and the TV
     /// stays off, as a TV that ignores the wake frame does. Pass
     /// `enabled = false` to restore the default wake in place.
@@ -349,7 +363,8 @@ impl MockHandle {
 
     /// Make dials to `address` fail with `NetworkUnreachable` while
     /// `enabled`, as during a router reboot. Pass `enabled = false` to
-    /// let them through again.
+    /// let them through again. Unlike the `refuse_connect` config key
+    /// it toggles while the TV exists, and fails with a typed I/O error.
     #[instrument(skip(self))]
     pub fn set_unreachable(&self, address: &str, enabled: bool) {
         let mut state = self.state.lock();

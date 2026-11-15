@@ -22,7 +22,8 @@ Working space for in-progress plan docs. Which changes need one, and the steps f
 
 ## Active plans
 
-- [`network-link-recovery.md`](network-link-recovery.md) — A network TV whose link drops while it stays on (a router reboot) is redialed until the network is back, and the screen state last asked of it is restored; screen requests sent while it is down land on the reconnect.
+- [`network-link-recovery.md`](network-link-recovery.md) — A network TV whose link drops while it stays on (a router reboot) is redialed until the network is back; the daemon holds no request for it meanwhile, and the session decides again about its panel when the link returns.
+
 When a plan is in flight, list it here with a one-line summary of the work it covers:
 
 > - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.

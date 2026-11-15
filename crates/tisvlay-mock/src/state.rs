@@ -78,10 +78,10 @@ pub(crate) struct MockState {
     pub(crate) live_states: HashMap<String, Arc<Mutex<TvState>>>,
 
     /// Live subscription senders per mock TV address. Inserted when
-    /// `MockConnection::subscribe_state` is called. Multiple entries
-    /// may exist after reconnects; closed senders harmlessly fail their
-    /// `send` and are left in place (the maps are bounded by test
-    /// lifetime).
+    /// `MockConnection::subscribe_state` is called, and the only strong
+    /// sender of each stream: a connection removes its own when it
+    /// drops, and [`MockHandle::cut_link`](crate::handle::MockHandle::cut_link)
+    /// removes them to end the stream from outside.
     pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
 
     /// Live event senders per mock TV address, registered by
@@ -117,6 +117,11 @@ pub(crate) struct MockState {
     /// `ConnectionClosed`. Set via
     /// [`MockHandle::set_power_on_closes`](crate::handle::MockHandle::set_power_on_closes).
     pub(crate) power_on_closes: std::collections::HashSet<String>,
+
+    /// Per-address flag: `screen_off` finds the link dead under it, so
+    /// it closes the connection and fails with `ConnectionClosed`. Set via
+    /// [`MockHandle::set_screen_off_closes`](crate::handle::MockHandle::set_screen_off_closes).
+    pub(crate) screen_off_closes: std::collections::HashSet<String>,
 
     /// Per-address flag: an in-band `power_on` returns `Ok` but the TV
     /// stays off, as one that ignores the wake does. Set via

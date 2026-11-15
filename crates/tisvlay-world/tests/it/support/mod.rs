@@ -322,3 +322,8 @@ pub(crate) async fn wait_for_dials(handle: &MockHandle, address: &str, n: usize)
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
+
+/// A `state/power` sample in `state`.
+pub(crate) fn power_state_is(effect: &WireEffect, state: &str) -> bool {
+    is_publish_on(effect, "/state/power").is_some_and(|p| p["state"] == state)
+}
