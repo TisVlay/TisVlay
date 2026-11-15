@@ -307,11 +307,18 @@ pub(crate) fn power_off(
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
     held: Query<&PendingConnect, Without<Reconnecting>>,
+    unreachable: Query<(), With<Unreachable>>,
     mut outbox: ResMut<Outbox>,
 ) -> Result<(), WireError> {
     let entity = tv_entity(&index, id)?;
     match q.get(entity).ok().and_then(|(handle, ..)| handle) {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOff(reply)).is_ok() => Ok(()),
+        // A TV behind an outage isn't off for having its wake cancelled:
+        // the off couldn't reach it, and the caller is told so.
+        None if unreachable.get(entity).is_ok() => {
+            cancel_held_wake(&mut commands, entity);
+            Err(WireError::not_connected(id))
+        }
         None if held.get(entity).is_ok_and(|p| p.wake) => {
             cancel_held_wake(&mut commands, entity);
             reply_ok(&mut outbox, reply);
@@ -351,6 +358,7 @@ pub(crate) fn set_screen(
     clock: Res<Clock>,
     q: Query<LinkQuery>,
     metas: Query<&State<payload::Meta>>,
+    unreachable: Query<(), With<Unreachable>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let row = q
@@ -361,6 +369,7 @@ pub(crate) fn set_screen(
     } else {
         None
     };
+    refuse_off_while_unreachable(id, on, unreachable.get(entity).is_ok())?;
     dispatch_screen(&mut commands, &clock, entity, id, on, row, restore_to)?;
     Ok(Ack {})
 }

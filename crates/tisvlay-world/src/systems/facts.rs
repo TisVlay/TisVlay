@@ -399,7 +399,12 @@ pub(super) fn apply_backend_events(
                     && !was_unreachable;
                 if spent {
                     tracing::info!(%tv, attempts, "no answer within the dial budget; redialing until the TV is back");
-                    commands.entity(entity).insert(Unreachable);
+                    // Nothing is held through an outage: a screen request
+                    // latched behind the budgeted dials goes with them.
+                    commands
+                        .entity(entity)
+                        .insert(Unreachable)
+                        .remove::<(DispatchVerify, DesiredInput)>();
                 } else if was_unreachable && !reason.unanswered {
                     tracing::warn!(%tv, error = %reason.message, "the TV answered the redial and turned it down; no longer redialing");
                     commands.entity(entity).remove::<Unreachable>();
@@ -431,6 +436,11 @@ pub(super) fn apply_backend_events(
                             wake: false,
                         });
                         drop_screen_on_intent(&mut e);
+                        if !local {
+                            // The wake's input restore would otherwise
+                            // switch the TV whenever the outage ends.
+                            e.remove::<DesiredInput>();
+                        }
                     }
                     e.insert(RetryAt(clock.0 + retry_delay(attempts)));
                 } else {

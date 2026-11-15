@@ -115,6 +115,22 @@ pub(super) fn arm_screen_verify(
     });
 }
 
+/// Refuse a screen-off to a TV being redialed through an outage, ahead of
+/// [`dispatch_screen`]. Nothing is held for such a TV: when it is back,
+/// whoever wanted it dark decides again from what is true then. This
+/// reads the marker, not the pending dial, so a screen-off behind a boot
+/// dial or a wake still latches.
+pub(super) fn refuse_off_while_unreachable(
+    id: Uuid,
+    on: bool,
+    unreachable: bool,
+) -> Result<(), WireError> {
+    if !on && unreachable {
+        return Err(WireError::not_connected(id));
+    }
+    Ok(())
+}
+
 /// A borrowed `LinkQuery` row — what `dispatch_screen` needs to route.
 pub(super) type ScreenRow<'a> = (
     Option<&'a ConnectionHandle>,
@@ -456,6 +472,7 @@ pub(super) fn dispatch_system_events(
             Option<&State<payload::Power>>,
             Option<&MirrorsConnector>,
             Option<&State<payload::Meta>>,
+            Has<Unreachable>,
         ),
         With<Managed>,
     >,
@@ -467,7 +484,9 @@ pub(super) fn dispatch_system_events(
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta) in &q {
+        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta, unreachable) in
+            &q
+        {
             if let Some(scope) = connector
                 && mirrors.is_none_or(|MirrorsConnector(mapped)| mapped != scope)
             {
@@ -505,19 +524,29 @@ pub(super) fn dispatch_system_events(
             };
             let row = (handle, pending, traits, link, retry, power);
             let dispatched = match action {
-                ProfileAction::ScreenOff => {
-                    dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
-                }
+                ProfileAction::ScreenOff => refuse_off_while_unreachable(id.0, false, unreachable)
+                    .and_then(|()| {
+                        dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
+                    }),
                 ProfileAction::ScreenOn => {
                     dispatch_screen(&mut commands, &clock, entity, id.0, true, row, restore_to)
                 }
                 ProfileAction::PowerOff => {
                     if let Some(handle) = handle {
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
-                    } else if pending {
-                        cancel_held_wake(&mut commands, entity);
+                        Ok(())
+                    } else {
+                        if pending {
+                            cancel_held_wake(&mut commands, entity);
+                        }
+                        // An off TV is off; one behind an outage isn't,
+                        // and this couldn't reach it.
+                        if unreachable {
+                            Err(WireError::not_connected(id.0))
+                        } else {
+                            Ok(())
+                        }
                     }
-                    Ok(())
                 }
                 ProfileAction::PowerOn => power_on_tv(
                     &mut commands,
@@ -528,8 +557,14 @@ pub(super) fn dispatch_system_events(
                     restore_to,
                 ),
             };
-            if let Err(error) = dispatched {
-                tracing::debug!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action not dispatched");
+            match dispatched {
+                Err(error) if unreachable => {
+                    tracing::info!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action refused: the TV can't be reached");
+                }
+                Err(error) => {
+                    tracing::debug!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action not dispatched");
+                }
+                Ok(()) => {}
             }
         }
     }

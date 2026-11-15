@@ -23,7 +23,8 @@ Screen commands are **verify-and-retry**, not fire-and-forget:
 
 - After sending `screen_on`/`screen_off`, tisvlay confirms the panel actually changed and retries if it didn't.
 - A `screen_on` that finds the TV in standby **escalates to a full power-on** (Wake-on-LAN for network TVs, a bus wake for CEC) — capped at one wake, so a TV that reports itself dark can't trigger an endless wake loop.
-- The **desired screen state is latched**, so it survives a TV reconnect or the login-screen→session handoff: if the connection drops mid-command, the reconnect re-asserts what you asked for rather than losing it.
+- The **desired screen state is latched** across a wake or the login-screen→session handoff: the reconnect that follows re-asserts what you asked for rather than losing it.
+- Nothing is held through an **outage**. While a TV that was on can't be reached, a screen-off or power-off is refused instead of being saved for later, so a request from hours ago can't blank a TV you have since started watching. When the TV is back, the session decides again from what is true then.
 
 Together these mean automation reaches the state you asked for from any starting point — TV off, TV on the wrong input, network still coming up — without per-case scripting.
 

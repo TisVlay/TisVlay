@@ -147,7 +147,6 @@ async fn a_power_off_while_unreachable_is_refused_and_the_redial_goes_on() {
 /// A screen-off to a TV last seen awake and now unreachable isn't
 /// "already dark": it is refused, and nothing is kept to send later.
 #[tokio::test]
-#[ignore = "a screen-off to an unreachable TV last seen awake is acked as done"]
 async fn a_screen_off_while_unreachable_is_refused_not_held() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://refused").await;
@@ -183,7 +182,6 @@ async fn a_screen_off_while_unreachable_is_refused_not_held() {
 /// wake's dial doesn't turn the TV into one requests are held for: a
 /// screen-off behind it is refused, and the return sends neither.
 #[tokio::test]
-#[ignore = "a screen-off to a TV being redialed is held, not refused"]
 async fn a_wake_during_the_outage_keeps_the_redial_and_holds_nothing() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://woken").await;
@@ -330,7 +328,6 @@ async fn a_power_off_without_a_standby_report_stays_down() {
 /// meanwhile it is unreachable like any other: a screen-off is refused,
 /// not acked as already dark.
 #[tokio::test]
-#[ignore = "a screen-off to a TV being redialed is acked as done"]
 async fn a_tv_unreachable_since_the_start_keeps_being_dialed() {
     let (mut effects, client, handle) = spawn_reactor();
     let t0 = Instant::now();
@@ -462,4 +459,56 @@ async fn the_carrier_returning_during_a_redial_dials_at_once() {
         up: true,
     });
     collect_until(&mut effects, |e| link_connected(e, true)).await;
+}
+
+/// The daemon's own profile actions get the same answer as a client's:
+/// the sleep action's power-off can't reach the TV, and the journal says
+/// so rather than counting an unseen TV as off.
+#[tracing_test::traced_test]
+#[tokio::test]
+async fn a_profile_power_off_during_the_outage_is_refused_and_logged() {
+    let (mut effects, client, handle) = spawn_reactor_in_span();
+    add_connected_tv(&mut effects, &client, "mock://asleep").await;
+    client.tick(Instant::now());
+
+    outage(&mut effects, &handle, "mock://asleep").await;
+    wait_for_dials(&handle, "mock://asleep", 2).await;
+    client.send(InEvent::System {
+        event: tisvlay_world::SystemEvent::Sleep,
+        connector: None,
+    });
+    settle(&mut effects, &client, 20).await;
+    assert!(logs_contain(
+        "profile action refused: the TV can't be reached"
+    ));
+}
+
+/// A TV parked while it was on isn't dark for being parked: a screen-off
+/// to it is refused like one to any TV behind an outage.
+#[tokio::test]
+async fn a_screen_off_to_a_tv_parked_while_on_is_refused() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://parked-on").await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    settle(&mut effects, &client, 80).await;
+    client.send(InEvent::Carrier {
+        interface: "eth0".into(),
+        up: false,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+
+    client.command(Command::SetScreen {
+        id,
+        on: false,
+        restore_input: false,
+        reply: Some(Reply::new(41)),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 41)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 41)),
+        Some(ErrorCode::NotConnected)
+    );
 }
