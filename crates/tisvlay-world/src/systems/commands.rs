@@ -174,9 +174,13 @@ pub(crate) fn reconnect(
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let (handle, pending, _, _, _) = q.get(entity).unwrap_or((None, false, None, None, None));
-    if handle.is_none() && !pending {
+    if handle.is_none() {
+        // A streak already under way keeps its attempt count; either way
+        // the next dial doesn't wait out a backoff.
         let mut e = commands.entity(entity);
-        redial(&mut e, false);
+        if !pending {
+            redial(&mut e, false);
+        }
         e.remove::<RetryAt>();
     }
     Ok(Ack {})

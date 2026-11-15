@@ -8,7 +8,8 @@ tisvlay tracks network state per TV, straight from the kernel (netlink) — no N
 
 - **Cable pulls and software disconnects** are noticed in milliseconds, not on a timeout.
 - **Each TV is scoped to the interface that actually routes to it.** A Wi-Fi drop won't disconnect a TV reachable over Ethernet, and vice-versa; failover between Wi-Fi and wired reconnects on its own. This holds through VLANs, VPNs, and bridges.
-- A TV that goes down **stays down until asked** or until its network route returns — tisvlay doesn't hammer a TV that's genuinely gone, but it does resume the moment the path is back.
+- A TV that **turns off stays down until asked** or until its network route returns — tisvlay doesn't hammer a TV that's genuinely gone, but it does resume the moment the path is back.
+- A TV whose connection drops **while it is still on** — a router reboot, a Wi-Fi outage — is redialed until it answers, at most once a minute, however long the outage lasts. Reconnecting never turns a TV on.
 
 ## Wake-on-LAN only when the network is up
 

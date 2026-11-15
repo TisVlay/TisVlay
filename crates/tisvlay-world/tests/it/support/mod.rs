@@ -38,6 +38,15 @@ pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, Mo
     (effects, client, handle)
 }
 
+/// [`spawn_reactor`] with the reactor's task inside the caller's span, so a
+/// `#[traced_test]` captures the world's log lines.
+pub(crate) fn spawn_reactor_in_span() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
+    use tracing::Instrument;
+    let (reactor, effects, client, handle) = new_reactor();
+    tokio::spawn(reactor.run().in_current_span());
+    (effects, client, handle)
+}
+
 /// [`spawn_reactor`] with the sleeper attached: the system profile's sleep
 /// requests arrive on the returned receiver.
 pub(crate) fn spawn_reactor_with_sleeper() -> (

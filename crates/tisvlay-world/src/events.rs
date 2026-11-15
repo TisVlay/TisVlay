@@ -547,9 +547,10 @@ pub enum BackendEvent {
     ConnectFailed { reason: DialFailure },
     /// A state snapshot pushed by the device (subscription update).
     State(Box<TvState>),
-    /// The connection ended (device closed it, or `power_off` on a
-    /// network-style transport).
-    Disconnected,
+    /// The connection ended: the device or the network closed it, or it
+    /// closed behind the daemon's own `power_off` on a network-style
+    /// transport, which `after_power_off` tells apart.
+    Disconnected { after_power_off: bool },
     /// An in-place power-on met a closing link after its rpc had acked,
     /// whether or not the backend noticed. Sent ahead of the task's
     /// `Disconnected`, so the world re-arms it as a wake dial before the

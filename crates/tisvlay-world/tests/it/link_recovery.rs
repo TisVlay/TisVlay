@@ -57,7 +57,6 @@ async fn ticks_dial_once_each(
 /// The first redial follows the drop at once; the rest keep coming past
 /// the three-attempt budget, a backoff period apart, until one lands.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn a_drop_while_awake_redials_until_the_network_is_back() {
     let (mut effects, client, handle) = spawn_reactor();
     add_connected_tv(&mut effects, &client, "mock://outage").await;
@@ -77,7 +76,6 @@ async fn a_drop_while_awake_redials_until_the_network_is_back() {
 /// the link dead. That the daemon was sending a screen-off doesn't make
 /// the drop an announced one.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn a_drop_noticed_by_a_screen_off_redials() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://send").await;
@@ -125,7 +123,6 @@ async fn a_drop_after_a_standby_report_stays_down() {
 /// A power-off can't reach the TV, so it is refused, and the TV, still
 /// on as far as anyone knows, keeps being redialed.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn a_power_off_while_unreachable_is_refused_and_the_redial_goes_on() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://off").await;
@@ -186,7 +183,7 @@ async fn a_screen_off_while_unreachable_is_refused_not_held() {
 /// wake's dial doesn't turn the TV into one requests are held for: a
 /// screen-off behind it is refused, and the return sends neither.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
+#[ignore = "a screen-off to a TV being redialed is held, not refused"]
 async fn a_wake_during_the_outage_keeps_the_redial_and_holds_nothing() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://woken").await;
@@ -232,7 +229,6 @@ async fn a_wake_during_the_outage_keeps_the_redial_and_holds_nothing() {
 
 /// `reconnect` during the redial doesn't wait out the backoff.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn a_reconnect_during_the_redial_dials_at_once() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://asked").await;
@@ -254,7 +250,6 @@ async fn a_reconnect_during_the_redial_dials_at_once() {
 /// parked, and the link is back before the path to the TV is. The redial
 /// that follows doesn't give up after three dials.
 #[tokio::test]
-#[ignore = "an awake TV parked by a carrier loss gets three dials when the carrier returns"]
 async fn an_awake_tv_parked_by_a_carrier_loss_redials_past_the_budget() {
     let (mut effects, client, handle) = spawn_reactor();
     let id = add_connected_tv(&mut effects, &client, "mock://parked").await;
@@ -283,7 +278,6 @@ async fn an_awake_tv_parked_by_a_carrier_loss_redials_past_the_budget() {
 /// The streak's pace: the first three failures wait the 3 s backoff, as
 /// a budgeted streak does, and from the fourth the wait doubles.
 #[tokio::test]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn the_redial_backs_off_past_the_budget() {
     let (mut effects, client, handle) = spawn_reactor();
     add_connected_tv(&mut effects, &client, "mock://pace").await;
@@ -336,7 +330,7 @@ async fn a_power_off_without_a_standby_report_stays_down() {
 /// meanwhile it is unreachable like any other: a screen-off is refused,
 /// not acked as already dark.
 #[tokio::test]
-#[ignore = "a TV unreachable since the daemon started gets three dials"]
+#[ignore = "a screen-off to a TV being redialed is acked as done"]
 async fn a_tv_unreachable_since_the_start_keeps_being_dialed() {
     let (mut effects, client, handle) = spawn_reactor();
     let t0 = Instant::now();
@@ -365,4 +359,30 @@ async fn a_tv_unreachable_since_the_start_keeps_being_dialed() {
     handle.set_unreachable("mock://boot", false);
     client.tick(t0 + PAST_THE_CAP * 6);
     collect_until(&mut effects, |e| link_connected(e, true)).await;
+}
+
+/// The journal tells the two kinds of drop apart, and says when an
+/// outage ended.
+#[tracing_test::traced_test]
+#[tokio::test]
+async fn the_log_says_which_drop_it_was_and_when_the_link_is_back() {
+    let (mut effects, client, handle) = spawn_reactor_in_span();
+    add_connected_tv(&mut effects, &client, "mock://logged").await;
+    let t0 = Instant::now();
+    client.tick(t0);
+
+    outage(&mut effects, &handle, "mock://logged").await;
+    wait_for_dials(&handle, "mock://logged", 2).await;
+    assert!(logs_contain("dropped with no standby announced, redialing"));
+    handle.set_unreachable("mock://logged", false);
+    settle(&mut effects, &client, 10).await;
+    client.tick(t0 + PAST_THE_CAP);
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    assert!(logs_contain("link back after an outage"));
+
+    handle.inject_power_state("mock://logged", PowerState::ActiveStandby);
+    collect_until(&mut effects, |e| power_state_is(e, "activestandby")).await;
+    handle.cut_link("mock://logged");
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+    assert!(logs_contain("closed with the TV going off; staying down"));
 }

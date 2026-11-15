@@ -2057,7 +2057,6 @@ async fn locked_rig_with_tv(address: &str) -> (Rig, Uuid, Sub) {
 /// idle action holds is drift like any other: one grace period later the
 /// idle action goes out again.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "a network TV that drops while awake is never redialed"]
 async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
     let (rig, tv, sub) = locked_rig_with_tv("mock://back-lit").await;
     drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;

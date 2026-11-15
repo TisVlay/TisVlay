@@ -179,7 +179,9 @@ async fn a_dropped_connection_redials_after_one_backoff() {
     client.send(InEvent::Backend {
         tv: id,
         dial: 1,
-        event: BackendEvent::Disconnected,
+        event: BackendEvent::Disconnected {
+            after_power_off: false,
+        },
     });
     collect_until(&mut effects, |e| link_connected(e, false)).await;
     assert_quiet(&mut effects, Duration::from_millis(200), |e| {
