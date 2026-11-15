@@ -35,8 +35,10 @@ pub struct MockConnection {
     connected: bool,
     /// Sender for pushing state updates to subscribers. Cloned into
     /// each state-mutating method so subscribers see cumulative state
-    /// after every operation — matching LG's push model.
-    subscription_tx: Option<mpsc::UnboundedSender<TvState>>,
+    /// after every operation — matching LG's push model. Weak: the
+    /// strong sender lives in `shared.subscription_txs`, so
+    /// `MockHandle::cut_link` can end the stream from outside.
+    subscription_tx: Option<mpsc::WeakUnboundedSender<TvState>>,
     /// Pre-seeded hardware identity applied at connect time. Returned
     /// from [`TvConnection::hardware_id`]; `None` when no test has
     /// seeded one via `MockHandle::set_hardware_id`.
@@ -169,7 +171,7 @@ impl Drop for MockConnection {
 /// `&MockConnection` directly).
 fn push_state(
     state: &Arc<Mutex<TvState>>,
-    subscription_tx: &Option<mpsc::UnboundedSender<TvState>>,
+    subscription_tx: &Option<mpsc::WeakUnboundedSender<TvState>>,
     f: impl FnOnce(&mut TvState),
 ) {
     let snapshot = {
@@ -177,7 +179,10 @@ fn push_state(
         f(&mut state);
         state.clone()
     };
-    if let Some(tx) = subscription_tx {
+    if let Some(tx) = subscription_tx
+        .as_ref()
+        .and_then(mpsc::WeakUnboundedSender::upgrade)
+    {
         let _ = tx.send(snapshot);
     }
 }
@@ -458,14 +463,15 @@ impl TvConnection for MockConnection {
         let snapshot = self.state.lock().clone();
         let _ = tx.send(snapshot);
         // Register the sender in shared state so `MockHandle::inject_*`
-        // can push state changes to this connection's subscriber.
+        // can push state changes to this connection's subscriber. It is
+        // the only strong one: dropping it there ends the stream.
+        self.subscription_tx = Some(tx.downgrade());
         self.shared
             .lock()
             .subscription_txs
             .entry(self.address.clone())
             .or_default()
-            .push(tx.clone());
-        self.subscription_tx = Some(tx);
+            .push(tx);
         Ok(rx)
     }
 

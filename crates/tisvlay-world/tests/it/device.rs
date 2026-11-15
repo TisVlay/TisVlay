@@ -286,19 +286,6 @@ async fn removal_forgets_the_device() {
     assert!(forgot, "the watcher is told to forget a removed TV");
 }
 
-/// Wait until the mock has seen `n` connect calls for `address`.
-async fn wait_for_dials(handle: &tisvlay_mock::MockHandle, address: &str, n: usize) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while handle.connect_call_count(address) < n {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for dial {n} (saw {})",
-            handle.connect_call_count(address)
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-}
-
 /// A device that can't be opened keeps the TV retrying past its budget,
 /// on a growing backoff, with the failure event only for the budgeted
 /// attempts.

@@ -334,6 +334,32 @@ impl MockHandle {
         }
     }
 
+    /// Cut the live link to `address` without a power change, as a
+    /// network outage does to a TV that stays on: the subscription
+    /// stream ends, so the daemon's connection task reports the drop.
+    /// The TV's last pushed state stays whatever it was.
+    ///
+    /// No-op if no subscription is open for that address (a poll-only
+    /// connection has none).
+    #[instrument(skip(self))]
+    pub fn cut_link(&self, address: &str) {
+        let dropped = self.state.lock().subscription_txs.remove(address);
+        tracing::debug!(address, cut = dropped.is_some(), "cutting the mock link");
+    }
+
+    /// Make dials to `address` fail with `NetworkUnreachable` while
+    /// `enabled`, as during a router reboot. Pass `enabled = false` to
+    /// let them through again.
+    #[instrument(skip(self))]
+    pub fn set_unreachable(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.unreachable.insert(address.to_string());
+        } else {
+            state.unreachable.remove(address);
+        }
+    }
+
     /// Make `get_state` time out, as a CEC power query can while the TV is
     /// busy coming on. Pass `enabled = false` to answer again.
     #[instrument(skip(self))]

@@ -309,3 +309,16 @@ pub(crate) async fn set_managed(
     });
     collect_until(effects, |e| reply_to(e, 92)).await;
 }
+
+/// Wait until the mock has seen `n` dials to `address`. Panics after 5 s.
+pub(crate) async fn wait_for_dials(handle: &MockHandle, address: &str, n: usize) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while handle.connect_call_count(address) < n {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for dial {n} (saw {})",
+            handle.connect_call_count(address)
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}

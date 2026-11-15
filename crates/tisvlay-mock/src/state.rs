@@ -128,6 +128,12 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_state_query_fails`](crate::handle::MockHandle::set_state_query_fails).
     pub(crate) state_query_fails: std::collections::HashSet<String>,
 
+    /// Per-address flag: the network between the PC and the TV is down,
+    /// so `MockConnector::connect` fails with `NetworkUnreachable` (the
+    /// ENETUNREACH a router mid-reboot answers with). Set via
+    /// [`MockHandle::set_unreachable`](crate::handle::MockHandle::set_unreachable).
+    pub(crate) unreachable: std::collections::HashSet<String>,
+
     /// Per-address override for the `PowerState` a new
     /// `MockConnection` initializes with at construct-time. When
     /// present, takes precedence over `MockVendorConfig::initial_power_state`
