@@ -496,13 +496,7 @@ impl DialFailure {
                 path: None,
                 message: error.to_string(),
                 device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
-                unanswered: matches!(
-                    error,
-                    tisvlay_core::Error::Io(_)
-                        | tisvlay_core::Error::Connection(_)
-                        | tisvlay_core::Error::RequestTimeout
-                        | tisvlay_core::Error::ConnectionClosed
-                ),
+                unanswered: nothing_answered(error),
             },
         }
     }
@@ -517,6 +511,18 @@ impl DialFailure {
             unanswered: false,
         }
     }
+}
+
+/// Whether a dial failed with nothing answering it. Everything not named
+/// here counts as an answer, a new error variant included: a wrong "no
+/// answer" redials a TV forever, a wrong "answered" stops after the
+/// usual three dials.
+fn nothing_answered(error: &tisvlay_core::Error) -> bool {
+    use tisvlay_core::Error;
+    matches!(
+        error,
+        Error::Io(_) | Error::Connection(_) | Error::RequestTimeout | Error::ConnectionClosed
+    )
 }
 
 /// Transport characteristics derived from the vendor config — the

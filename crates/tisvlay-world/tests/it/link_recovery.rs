@@ -324,7 +324,7 @@ async fn a_power_off_without_a_standby_report_stays_down() {
 }
 
 /// A daemon started during the outage has no last report to judge by. A
-/// managed network TV that spends its budget keeps being dialed, and
+/// network TV that spends its budget unanswered keeps being dialed, and
 /// meanwhile it is unreachable like any other: a screen-off is refused,
 /// not acked as already dark.
 #[tokio::test]
@@ -360,28 +360,27 @@ async fn a_tv_unreachable_since_the_start_keeps_being_dialed() {
 
 /// The journal tells the two kinds of drop apart, and says when an
 /// outage ended.
-#[tracing_test::traced_test]
 #[tokio::test]
 async fn the_log_says_which_drop_it_was_and_when_the_link_is_back() {
-    let (mut effects, client, handle) = spawn_reactor_in_span();
+    let (mut effects, client, handle, logs) = spawn_reactor_capturing_logs();
     add_connected_tv(&mut effects, &client, "mock://logged").await;
     let t0 = Instant::now();
     client.tick(t0);
 
     outage(&mut effects, &handle, "mock://logged").await;
     wait_for_dials(&handle, "mock://logged", 2).await;
-    assert!(logs_contain("dropped with no standby announced, redialing"));
+    assert!(logs.contain("dropped with no standby announced, redialing"));
     handle.set_unreachable("mock://logged", false);
     settle(&mut effects, &client, 10).await;
     client.tick(t0 + PAST_THE_CAP);
     collect_until(&mut effects, |e| link_connected(e, true)).await;
-    assert!(logs_contain("link back after an outage"));
+    assert!(logs.contain("link back after an outage"));
 
     handle.inject_power_state("mock://logged", PowerState::ActiveStandby);
     collect_until(&mut effects, |e| power_state_is(e, "activestandby")).await;
     handle.cut_link("mock://logged");
     collect_until(&mut effects, |e| link_connected(e, false)).await;
-    assert!(logs_contain("closed with the TV going off; staying down"));
+    assert!(logs.contain("closed with the TV going off; staying down"));
 }
 
 /// A TV that answers and turns the dial down isn't behind an outage:
@@ -464,10 +463,9 @@ async fn the_carrier_returning_during_a_redial_dials_at_once() {
 /// The daemon's own profile actions get the same answer as a client's:
 /// the sleep action's power-off can't reach the TV, and the journal says
 /// so rather than counting an unseen TV as off.
-#[tracing_test::traced_test]
 #[tokio::test]
 async fn a_profile_power_off_during_the_outage_is_refused_and_logged() {
-    let (mut effects, client, handle) = spawn_reactor_in_span();
+    let (mut effects, client, handle, logs) = spawn_reactor_capturing_logs();
     add_connected_tv(&mut effects, &client, "mock://asleep").await;
     client.tick(Instant::now());
 
@@ -478,9 +476,7 @@ async fn a_profile_power_off_during_the_outage_is_refused_and_logged() {
         connector: None,
     });
     settle(&mut effects, &client, 20).await;
-    assert!(logs_contain(
-        "profile action refused: the TV can't be reached"
-    ));
+    assert!(logs.contain("profile action refused: the TV can't be reached"));
 }
 
 /// A TV parked while it was on isn't dark for being parked: a screen-off
@@ -511,4 +507,100 @@ async fn a_screen_off_to_a_tv_parked_while_on_is_refused() {
         seen.iter().find_map(|e| reply_err_code(e, 41)),
         Some(ErrorCode::NotConnected)
     );
+}
+
+/// The route's return is the same moment as the carrier's, for a PC whose
+/// link stayed up while its route went.
+#[tokio::test]
+async fn the_route_returning_during_a_redial_dials_at_once() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://route-back").await;
+    client.tick(Instant::now());
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    settle(&mut effects, &client, 80).await;
+
+    outage(&mut effects, &handle, "mock://route-back").await;
+    wait_for_dials(&handle, "mock://route-back", 2).await;
+    settle(&mut effects, &client, 81).await;
+
+    handle.set_unreachable("mock://route-back", false);
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("wlan0".into()),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+}
+
+/// A route loss parks an awake TV the way a carrier loss does, and its
+/// screen-off is refused the same way.
+#[tokio::test]
+async fn a_screen_off_to_a_tv_parked_by_a_route_loss_is_refused() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://route-gone").await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    settle(&mut effects, &client, 80).await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, false)).await;
+
+    client.command(Command::SetScreen {
+        id,
+        on: false,
+        restore_input: false,
+        reply: Some(Reply::new(41)),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 41)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 41)),
+        Some(ErrorCode::NotConnected)
+    );
+}
+
+/// The refused off is still the last word. A screen-on during the outage
+/// arms a wake; a screen-off after it is refused, and takes that wake's
+/// intent with it, so the network returning within the wake's own dials
+/// doesn't light a TV last asked to go dark.
+#[tokio::test]
+async fn a_refused_screen_off_cancels_the_wake_before_it() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://last-word").await;
+    let t0 = Instant::now();
+    client.tick(t0);
+
+    outage(&mut effects, &handle, "mock://last-word").await;
+    wait_for_dials(&handle, "mock://last-word", 2).await;
+    client.command(Command::SetScreen {
+        id,
+        on: true,
+        restore_input: false,
+        reply: Some(Reply::new(61)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 61)).await;
+    wait_for_dials(&handle, "mock://last-word", 3).await;
+    client.command(Command::SetScreen {
+        id,
+        on: false,
+        restore_input: false,
+        reply: Some(Reply::new(62)),
+    });
+    let seen = collect_until(&mut effects, |e| reply_to(e, 62)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 62)),
+        Some(ErrorCode::NotConnected)
+    );
+
+    handle.set_unreachable("mock://last-word", false);
+    settle(&mut effects, &client, 63).await;
+    client.tick(t0 + Duration::from_secs(4));
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    settle(&mut effects, &client, 64).await;
+    assert_eq!(handle.screen_on_call_count("mock://last-word"), 0);
 }

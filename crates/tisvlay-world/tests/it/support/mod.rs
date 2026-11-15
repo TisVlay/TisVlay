@@ -38,13 +38,49 @@ pub(crate) fn spawn_reactor() -> (UnboundedReceiver<WireEffect>, WorldClient, Mo
     (effects, client, handle)
 }
 
-/// [`spawn_reactor`] with the reactor's task inside the caller's span, so a
-/// `#[traced_test]` captures the world's log lines.
-pub(crate) fn spawn_reactor_in_span() -> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle) {
-    use tracing::Instrument;
+/// The world's log lines, captured from the reactor's task.
+#[derive(Clone, Default)]
+pub(crate) struct Logs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Logs {
+    pub(crate) fn contain(&self, needle: &str) -> bool {
+        let bytes = self
+            .0
+            .lock()
+            .expect("no test panics while holding the log buffer");
+        String::from_utf8_lossy(&bytes).contains(needle)
+    }
+}
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("no test panics while holding the log buffer")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// [`spawn_reactor`] with the reactor's task under a subscriber of its
+/// own that keeps what the world logs. Scoped to that task, so it doesn't
+/// depend on which test set the process's global subscriber first.
+pub(crate) fn spawn_reactor_capturing_logs()
+-> (UnboundedReceiver<WireEffect>, WorldClient, MockHandle, Logs) {
+    use tracing::instrument::WithSubscriber;
     let (reactor, effects, client, handle) = new_reactor();
-    tokio::spawn(reactor.run().in_current_span());
-    (effects, client, handle)
+    let logs = Logs::default();
+    let writer = logs.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tokio::spawn(reactor.run().with_subscriber(subscriber));
+    (effects, client, handle, logs)
 }
 
 /// [`spawn_reactor`] with the sleeper attached: the system profile's sleep

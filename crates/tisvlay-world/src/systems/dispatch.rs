@@ -120,15 +120,35 @@ pub(super) fn arm_screen_verify(
 /// whoever wanted it dark decides again from what is true then. This
 /// reads the marker, not the pending dial, so a screen-off behind a boot
 /// dial or a wake still latches.
+///
+/// The refused off is still the last word: a wake an earlier screen-on
+/// left armed is cancelled, with its screen intent and input restore, so
+/// the network returning in time doesn't light a TV last asked to go dark.
 pub(super) fn refuse_off_while_unreachable(
+    commands: &mut Commands,
+    entity: Entity,
     id: Uuid,
     on: bool,
     unreachable: bool,
 ) -> Result<(), WireError> {
     if !on && unreachable {
+        drop_on_intent(commands, entity);
         return Err(WireError::not_connected(id));
     }
     Ok(())
+}
+
+/// An off that can't reach the TV still supersedes a pending on: cancel a
+/// held wake, and drop a screen-on intent and input restore riding one
+/// already dialing.
+pub(super) fn drop_on_intent(commands: &mut Commands, entity: Entity) {
+    cancel_held_wake(commands, entity);
+    commands.entity(entity).queue(|mut e: EntityWorldMut| {
+        if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
+            e.remove::<DispatchVerify>();
+        }
+        e.remove::<DesiredInput>();
+    });
 }
 
 /// A borrowed `LinkQuery` row — what `dispatch_screen` needs to route.
@@ -524,10 +544,20 @@ pub(super) fn dispatch_system_events(
             };
             let row = (handle, pending, traits, link, retry, power);
             let dispatched = match action {
-                ProfileAction::ScreenOff => refuse_off_while_unreachable(id.0, false, unreachable)
-                    .and_then(|()| {
-                        dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
-                    }),
+                ProfileAction::ScreenOff => {
+                    match refuse_off_while_unreachable(
+                        &mut commands,
+                        entity,
+                        id.0,
+                        false,
+                        unreachable,
+                    ) {
+                        Ok(()) => {
+                            dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
+                        }
+                        refused => refused,
+                    }
+                }
                 ProfileAction::ScreenOn => {
                     dispatch_screen(&mut commands, &clock, entity, id.0, true, row, restore_to)
                 }
@@ -542,6 +572,7 @@ pub(super) fn dispatch_system_events(
                         // An off TV is off; one behind an outage isn't,
                         // and this couldn't reach it.
                         if unreachable {
+                            drop_on_intent(&mut commands, entity);
                             Err(WireError::not_connected(id.0))
                         } else {
                             Ok(())
@@ -558,7 +589,10 @@ pub(super) fn dispatch_system_events(
                 ),
             };
             match dispatched {
-                Err(error) if unreachable => {
+                Err(error)
+                    if unreachable
+                        && error.code == tisvlay_protocol::error::ErrorCode::NotConnected =>
+                {
                     tracing::info!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action refused: the TV can't be reached");
                 }
                 Err(error) => {

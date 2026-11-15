@@ -126,6 +126,7 @@ pub(super) fn apply_backend_events(
                         RetryAt,
                         RetryPromptly,
                         Unreachable,
+                        Parked,
                     )>();
                 apply_state(&mut commands, entity, state, &mut writes);
                 edges.0.entry(*tv).or_default().connected(state.power_state);
@@ -258,6 +259,12 @@ pub(super) fn apply_backend_events(
                 if !pending {
                     e.remove::<DispatchVerify>();
                 }
+                // The daemon turned this TV off: whatever marked it as
+                // behind an outage (a park that raced the power-off) no
+                // longer holds.
+                if *after_power_off {
+                    e.remove::<Unreachable>();
+                }
                 // A local-device connection doesn't go down because the TV
                 // slept (the bus survives standby), so a drop means the
                 // device went or blinked: redial after one backoff, and
@@ -278,7 +285,9 @@ pub(super) fn apply_backend_events(
                         tracing::info!(%tv, ?last, after_power_off, "network connection closed with the TV going off; staying down");
                     } else {
                         tracing::info!(%tv, ?last, "network connection dropped with no standby announced, redialing until it is back");
-                        e.insert(Unreachable);
+                        // Nothing rides the outage: an input restore still
+                        // pending would switch the TV whenever it ends.
+                        e.insert(Unreachable).remove::<DesiredInput>();
                         redial(&mut e, false);
                     }
                 }
@@ -393,11 +402,9 @@ pub(super) fn apply_backend_events(
                 // forgotten prompts for pairing each time).
                 let local = writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
                 let was_unreachable = writes.unreachable.get(entity).is_ok();
-                let spent = reason.unanswered
-                    && attempts >= CONNECT_MAX_ATTEMPTS
-                    && !local
-                    && !was_unreachable;
-                if spent {
+                let (enters_outage, ends_outage) =
+                    outage_change(reason.unanswered, attempts, local, was_unreachable);
+                if enters_outage {
                     tracing::info!(%tv, attempts, "no answer within the dial budget; redialing until the TV is back");
                     // Nothing is held through an outage: a screen request
                     // latched behind the budgeted dials goes with them.
@@ -405,12 +412,12 @@ pub(super) fn apply_backend_events(
                         .entity(entity)
                         .insert(Unreachable)
                         .remove::<(DispatchVerify, DesiredInput)>();
-                } else if was_unreachable && !reason.unanswered {
+                } else if ends_outage {
                     tracing::warn!(%tv, error = %reason.message, "the TV answered the redial and turned it down; no longer redialing");
                     commands.entity(entity).remove::<Unreachable>();
                 }
                 let persistent = (reason.device_level && local)
-                    || (reason.unanswered && (spent || was_unreachable));
+                    || (reason.unanswered && (enters_outage || was_unreachable));
                 if attempts == 1 {
                     tracing::warn!(%tv, error = %reason.message, "dial failed");
                 } else {
@@ -738,7 +745,7 @@ pub(super) fn handle_carrier_events(
                 if parked {
                     tracing::info!(tv = %id.0, interface, "carrier restored, redialing");
                     let mut e = commands.entity(entity);
-                    e.remove::<Parked>();
+                    e.remove::<(Parked, RetryAt)>();
                     if !pending {
                         redial(&mut e, false);
                     }
@@ -824,7 +831,7 @@ pub(super) fn apply_route_resolutions(
             }
             (_, Some(_)) if parked => {
                 tracing::info!(tv = %id.0, "route restored, redialing");
-                e.remove::<Parked>();
+                e.remove::<(Parked, RetryAt)>();
                 if !pending {
                     redial(&mut e, false);
                 }
@@ -843,7 +850,7 @@ pub(super) fn apply_route_resolutions(
 /// standby is just off.
 fn mark_parked_awake(e: &mut EntityCommands, power: Option<&State<payload::Power>>) {
     if !power.is_some_and(|p| announces_standby(p.0.state)) {
-        e.insert(Unreachable);
+        e.insert(Unreachable).remove::<DesiredInput>();
     }
 }
 
@@ -1012,6 +1019,16 @@ pub(super) fn apply_stream(mut reader: MessageReader<InEvent>, mut armed: ResMut
         let next: HashSet<Uuid> = set.iter().copied().collect();
         armed.set_if_neq(StreamArmed(next));
     }
+}
+
+/// What a failed dial changes about a TV's outage, as `(enters, ends)`: a
+/// network TV that has spent a whole budget with nothing answering enters
+/// one, and an answer that turns the dial down ends one, since that isn't
+/// the network's doing.
+fn outage_change(unanswered: bool, attempts: u8, local: bool, in_outage: bool) -> (bool, bool) {
+    let enters = unanswered && attempts >= CONNECT_MAX_ATTEMPTS && !local && !in_outage;
+    let ends = in_outage && !unanswered;
+    (enters, ends)
 }
 
 /// Whether a power report says the TV is off or on its way there, so the

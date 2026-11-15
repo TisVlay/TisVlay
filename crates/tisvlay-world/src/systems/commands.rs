@@ -299,8 +299,10 @@ pub(crate) fn backend_command(
 
 /// A power-off: in-band on a live connection, acked once the TV completes
 /// it. A disconnected TV holding a wake has that wake cancelled, which is
-/// the whole of the job (it stays off), so the rpc is answered here.
-/// Otherwise the TV isn't connected.
+/// the whole of the job (it stays off), so the rpc is answered here. One
+/// behind an outage has its pending wake cancelled too, but isn't off for
+/// that: the caller is told it couldn't be reached. Otherwise the TV isn't
+/// connected.
 pub(crate) fn power_off(
     In((id, reply)): In<(Uuid, Option<AckReply>)>,
     mut commands: Commands,
@@ -316,7 +318,7 @@ pub(crate) fn power_off(
         // A TV behind an outage isn't off for having its wake cancelled:
         // the off couldn't reach it, and the caller is told so.
         None if unreachable.get(entity).is_ok() => {
-            cancel_held_wake(&mut commands, entity);
+            drop_on_intent(&mut commands, entity);
             Err(WireError::not_connected(id))
         }
         None if held.get(entity).is_ok_and(|p| p.wake) => {
@@ -369,7 +371,13 @@ pub(crate) fn set_screen(
     } else {
         None
     };
-    refuse_off_while_unreachable(id, on, unreachable.get(entity).is_ok())?;
+    refuse_off_while_unreachable(
+        &mut commands,
+        entity,
+        id,
+        on,
+        unreachable.get(entity).is_ok(),
+    )?;
     dispatch_screen(&mut commands, &clock, entity, id, on, row, restore_to)?;
     Ok(Ack {})
 }
