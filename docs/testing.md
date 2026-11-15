@@ -224,7 +224,10 @@ mock.simulate_user_accept("mock://lr");
 - `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the world publishes the new state on the wire the same way it would for a real backend-initiated change.
 - `inject_power_state_silent(address, PowerState)` — same mutation, no subscription push — simulates a TV whose state drifted without telling us
 - `set_screen_on_noop(address, bool)` / `set_screen_off_noop(address, bool)` — make screen commands accept-but-do-nothing, for the retry/escalation dispatch tests
-- `cut_link(address)` — end a live connection's stream without a power change, as a network outage does to a TV that stays on; `set_unreachable(address, bool)` — fail dials with `NetworkUnreachable` meanwhile; `set_screen_off_closes(address, bool)` — make a `screen_off` find the link dead, the way a send is often the first to notice
+- `cut_link(address)` — end a live connection's stream without a power change, as a network outage does to a TV that stays on
+- `set_unreachable(address, bool)` — fail dials with `NetworkUnreachable`, as during that outage
+- `set_screen_off_closes(address, bool)` — make a `screen_off` find the link dead, the way a send is often the first to notice an outage
+- `set_power_off_unreported(address, bool)` — make `power_off` close the link without a standby report first
 - `set_initial_power_state_override(address, PowerState)` — power state the next connect reports (e.g., connect straight into standby, CEC-style)
 - `screen_on_call_count(address)` / `screen_off_call_count(address)` / `connect_call_count(address)` — assert how many times the backend was actually driven
 

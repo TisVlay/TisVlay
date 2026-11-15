@@ -118,6 +118,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_power_on_closes`](crate::handle::MockHandle::set_power_on_closes).
     pub(crate) power_on_closes: std::collections::HashSet<String>,
 
+    /// Per-address flag: `power_off` closes the link without pushing a
+    /// standby report first. Set via
+    /// [`MockHandle::set_power_off_unreported`](crate::handle::MockHandle::set_power_off_unreported).
+    pub(crate) power_off_unreported: std::collections::HashSet<String>,
+
     /// Per-address flag: `screen_off` finds the link dead under it, so
     /// it closes the connection and fails with `ConnectionClosed`. Set via
     /// [`MockHandle::set_screen_off_closes`](crate::handle::MockHandle::set_screen_off_closes).
@@ -134,8 +139,7 @@ pub(crate) struct MockState {
     pub(crate) state_query_fails: std::collections::HashSet<String>,
 
     /// Per-address flag: the network between the PC and the TV is down,
-    /// so `MockConnector::connect` fails with `NetworkUnreachable` (the
-    /// ENETUNREACH a router mid-reboot answers with). Set via
+    /// so `MockConnector::connect` fails with `NetworkUnreachable`. Set via
     /// [`MockHandle::set_unreachable`](crate::handle::MockHandle::set_unreachable).
     pub(crate) unreachable: std::collections::HashSet<String>,
 

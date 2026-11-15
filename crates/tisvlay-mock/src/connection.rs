@@ -39,6 +39,9 @@ pub struct MockConnection {
     /// strong sender lives in `shared.subscription_txs`, so
     /// `MockHandle::cut_link` can end the stream from outside.
     subscription_tx: Option<mpsc::WeakUnboundedSender<TvState>>,
+    /// This connection's event sender, weak for the same reason: the
+    /// strong one lives in `shared.event_txs`.
+    event_tx: Option<mpsc::WeakUnboundedSender<TvEvent>>,
     /// Pre-seeded hardware identity applied at connect time. Returned
     /// from [`TvConnection::hardware_id`]; `None` when no test has
     /// seeded one via `MockHandle::set_hardware_id`.
@@ -125,6 +128,7 @@ impl MockConnection {
             address: config.address.clone(),
             connected: true,
             subscription_tx: None,
+            event_tx: None,
             hardware_id,
             backlight_ramp_intermediates: config.backlight_ramp_intermediates.clone(),
             backlight_ramp_step_delay: std::time::Duration::from_millis(
@@ -179,7 +183,15 @@ impl Drop for MockConnection {
         {
             txs.retain(|tx| !tx.same_channel(&own));
         }
-        shared.event_txs.remove(&self.address);
+        let own = self
+            .event_tx
+            .as_ref()
+            .and_then(mpsc::WeakUnboundedSender::upgrade);
+        if let Some(own) = own
+            && let Some(txs) = shared.event_txs.get_mut(&self.address)
+        {
+            txs.retain(|tx| !tx.same_channel(&own));
+        }
     }
 }
 
@@ -258,9 +270,18 @@ impl TvConnection for MockConnection {
         if !self.power_off_delay.is_zero() {
             tokio::time::sleep(self.power_off_delay).await;
         }
-        self.mutate_and_push(|s| {
-            s.update_power(PowerState::Standby);
-        });
+        // A TV that goes off without saying so leaves the last report
+        // as it was; the link still closes below.
+        if !self
+            .shared
+            .lock()
+            .power_off_unreported
+            .contains(&self.address)
+        {
+            self.mutate_and_push(|s| {
+                s.update_power(PowerState::Standby);
+            });
+        }
         // Network backends close the transport after power_off; a
         // reachable-in-standby (CEC-style) bus stays live — mirror the
         // backend the config asks us to model, matching CecConnection.
@@ -508,6 +529,7 @@ impl TvConnection for MockConnection {
 
     async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {
         let (tx, rx) = mpsc::unbounded_channel();
+        self.event_tx = Some(tx.downgrade());
         self.shared
             .lock()
             .event_txs

@@ -2020,28 +2020,22 @@ async fn a_stream_holds_the_remote_power_lock_back() {
     );
 }
 
-/// A network outage on a TV that stays on: cut its link with the network
-/// down behind it, wait for the daemon to see the drop, then let the
-/// network back. The daemon's redial is what brings the link up again.
-async fn outage_and_back(rig: &Rig, sub: &Sub, tv: Uuid, address: &str) {
+/// Cut the link of a TV that stays on, with the network down behind it,
+/// and wait for the daemon to see the drop.
+async fn outage(rig: &Rig, sub: &Sub, tv: Uuid, address: &str) {
     rig.mock.set_unreachable(address, true);
     rig.mock.cut_link(address);
     wait_tv_state(sub, &rig.site, tv, "state/link", |v| {
         v["connected"] == false
     })
     .await;
-    rig.mock.set_unreachable(address, false);
 }
 
-/// The night this suite exists for: the idle action blanked the TV, the
-/// link dropped, and the TV left screen-off on its own while nobody could
-/// see it. Back on the link it reads lit, which is drift like any other:
-/// one grace period later the idle action goes out again.
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "a network TV that drops while awake is never redialed"]
-async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
+/// A connected, locked desk with a one-second locked idle timeout, which
+/// is also the grace a drifted panel gets before the idle action repeats.
+async fn locked_rig_with_tv(address: &str) -> (Rig, Uuid, Sub) {
     let rig = rig().await;
-    let tv = add_tv(&rig, "Den", "mock://back-lit").await;
+    let tv = add_tv(&rig, "Den", address).await;
     let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
     wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
         v["connected"] == true
@@ -2056,11 +2050,22 @@ async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
     rig.stack
         .is_locked
         .store(true, std::sync::atomic::Ordering::SeqCst);
+    (rig, tv, sub)
+}
+
+/// A TV that comes back from an outage reporting a lit panel while the
+/// idle action holds is drift like any other: one grace period later the
+/// idle action goes out again.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "a network TV that drops while awake is never redialed"]
+async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
+    let (rig, tv, sub) = locked_rig_with_tv("mock://back-lit").await;
     drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
 
     rig.mock
         .set_initial_power_state_override("mock://back-lit", tisvlay_core::PowerState::ScreenSaver);
-    outage_and_back(&rig, &sub, tv, "mock://back-lit").await;
+    outage(&rig, &sub, tv, "mock://back-lit").await;
+    rig.mock.set_unreachable("mock://back-lit", false);
 
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "screensaver"
@@ -2072,37 +2077,29 @@ async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
     .await;
 }
 
-/// The idle timeout fires while the TV can't be reached, so its action is
-/// refused. The session decides again when the link returns: still idle,
-/// so the action goes out then.
+/// The idle timeout fires while the TV can't be reached. The daemon
+/// holds nothing for it (a screen-off is refused), and the TV's last
+/// report, lit, never changes. Its return is still a panel found lit
+/// while idle: one grace period later the idle action goes out.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "an idle action refused during an outage is never sent again"]
-async fn an_idle_action_refused_during_an_outage_lands_when_the_link_returns() {
-    let rig = rig().await;
-    let tv = add_tv(&rig, "Den", "mock://idle-late").await;
-    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
-    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
-        v["connected"] == true
-    })
-    .await;
-    rig.stack
-        .is_locked
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+#[ignore = "a TV that was lit before an outage and is lit after it shows the session no change"]
+async fn an_idle_timeout_during_an_outage_blanks_the_tv_after_it_returns() {
+    use tisvlay_protocol::endpoint::tv as tv_rpc;
+
+    let (rig, tv, sub) = locked_rig_with_tv("mock://idle-late").await;
     // One idle cycle first, so the session's fleet mirror has the TV.
     drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
     drive_until(&rig, &sub, SessionEvent::IdleResume, tv, "active").await;
 
-    rig.mock.set_unreachable("mock://idle-late", true);
-    rig.mock.cut_link("mock://idle-late");
-    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
-        v["connected"] == false
-    })
-    .await;
+    outage(&rig, &sub, tv, "mock://idle-late").await;
+    let refused = call::<tv_rpc::SetScreen>(&rig.caller, &tv, &body(json!({ "on": false })))
+        .await
+        .expect_err("the daemon holds nothing for an unreachable TV");
+    assert_eq!(refusal(&refused).code, ErrorCode::NotConnected);
     assert!(
         rig.stack.client.send(SessionEvent::IdleTimeout),
         "session core gone"
     );
-    tokio::time::sleep(Duration::from_millis(300)).await;
     rig.mock.set_unreachable("mock://idle-late", false);
 
     wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
@@ -2115,34 +2112,31 @@ async fn an_idle_action_refused_during_an_outage_lands_when_the_link_returns() {
     .await;
 }
 
-/// A TV blanked for a stream, not by idle, that comes back lit from an
-/// outage while the stream still runs: the stream's action goes out again.
+/// The idle action's screen-off is what finds the link dead: the daemon
+/// acked it, and it never landed. The TV comes back lit, and that is a
+/// panel found lit while idle.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "a TV blanked for a stream isn't watched for drift"]
-async fn a_stream_blanked_tv_back_lit_from_an_outage_is_reblanked() {
-    let rig = rig().await;
-    let tv = add_tv(&rig, "Den", "mock://stream-lit").await;
-    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+#[ignore = "a TV that was lit before an outage and is lit after it shows the session no change"]
+async fn an_idle_action_lost_with_the_link_goes_out_again_after_the_return() {
+    let (rig, tv, sub) = locked_rig_with_tv("mock://lost").await;
+    drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
+    drive_until(&rig, &sub, SessionEvent::IdleResume, tv, "active").await;
+
+    rig.mock.set_unreachable("mock://lost", true);
+    rig.mock.set_screen_off_closes("mock://lost", true);
+    assert!(
+        rig.stack.client.send(SessionEvent::IdleTimeout),
+        "session core gone"
+    );
     wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
-        v["connected"] == true
+        v["connected"] == false
     })
     .await;
-    create_and_assign(
-        &rig,
-        tv,
-        json!({ "name": "Streaming", "on_stream_start": "screen_off" }),
-    )
-    .await;
-    arm_until(&rig, &sub, "manual", tv, "screenoff").await;
+    rig.mock.set_screen_off_closes("mock://lost", false);
+    rig.mock.set_unreachable("mock://lost", false);
 
-    rig.mock.set_initial_power_state_override(
-        "mock://stream-lit",
-        tisvlay_core::PowerState::ScreenSaver,
-    );
-    outage_and_back(&rig, &sub, tv, "mock://stream-lit").await;
-
-    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
-        v["state"] == "screensaver"
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
     })
     .await;
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {

@@ -321,6 +321,19 @@ impl MockHandle {
         }
     }
 
+    /// Make `power_off` close the link without a standby report first,
+    /// as a TV that goes off without saying so does. Pass
+    /// `enabled = false` to restore the report.
+    #[instrument(skip(self))]
+    pub fn set_power_off_unreported(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.power_off_unreported.insert(address.to_string());
+        } else {
+            state.power_off_unreported.remove(address);
+        }
+    }
+
     /// Make `screen_off` meet a dead link: the connection closes and the
     /// call fails with `ConnectionClosed`, as a network TV's does when
     /// a send is the first thing to notice an outage. Pass
@@ -496,6 +509,36 @@ mod tests {
         let mut conn = connector.connect(&cfg).await.expect("connect");
         let power = conn.get_power_state().await.expect("get_power_state");
         assert_eq!(power, PowerState::ActiveStandby);
+    }
+
+    /// A connection dropped after its successor opened (a redial
+    /// overtaking the old task) takes only its own registrations: the
+    /// new connection's state and event streams stay open and driven.
+    #[tokio::test]
+    async fn a_dropped_connection_leaves_its_successors_streams_open() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://successor");
+
+        let mut old = connector.connect(&cfg).await.expect("first connect");
+        let _old_states = old.subscribe_state().await.expect("subscribe");
+        let _old_events = old.subscribe_events().await.expect("subscribe");
+        let mut new = connector.connect(&cfg).await.expect("second connect");
+        let mut states = new.subscribe_state().await.expect("subscribe");
+        let mut events = new.subscribe_events().await.expect("subscribe");
+        states.recv().await.expect("the initial snapshot");
+        drop(old);
+
+        handle.inject_power_state("mock://successor", PowerState::ScreenOff);
+        let pushed = states.recv().await.expect("the state stream is open");
+        assert_eq!(pushed.power_state, PowerState::ScreenOff);
+        handle.press_remote_power("mock://successor");
+        assert_eq!(
+            events.recv().await.expect("the event stream is open"),
+            TvEvent::RemotePower
+        );
+
+        handle.cut_link("mock://successor");
+        assert!(states.recv().await.is_none(), "a cut ends the stream");
     }
 
     /// The override survives reconnects — drops the first connection,
