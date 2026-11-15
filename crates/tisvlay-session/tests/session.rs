@@ -2081,7 +2081,6 @@ async fn a_tv_back_lit_from_an_outage_is_reblanked_while_idle() {
 /// report, lit, never changes. Its return is still a panel found lit
 /// while idle: one grace period later the idle action goes out.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "a TV that was lit before an outage and is lit after it shows the session no change"]
 async fn an_idle_timeout_during_an_outage_blanks_the_tv_after_it_returns() {
     use tisvlay_protocol::endpoint::tv as tv_rpc;
 
@@ -2115,7 +2114,6 @@ async fn an_idle_timeout_during_an_outage_blanks_the_tv_after_it_returns() {
 /// acked it, and it never landed. The TV comes back lit, and that is a
 /// panel found lit while idle.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "a TV that was lit before an outage and is lit after it shows the session no change"]
 async fn an_idle_action_lost_with_the_link_goes_out_again_after_the_return() {
     let (rig, tv, sub) = locked_rig_with_tv("mock://lost").await;
     drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;

@@ -587,15 +587,20 @@ impl Core {
     }
 
     /// A daemon event: re-read the fleet when it may have changed what the
-    /// core uses (a TV's profile state or screen bit, the TVs themselves,
-    /// or the daemon's lifetime and release).
+    /// core uses (a TV's profile state, its screen bit or its link, the
+    /// TVs themselves, or the daemon's lifetime and release).
     async fn apply_daemon_event(&mut self, event: tisvlay::StateEvent) {
         match &event {
             tisvlay::StateEvent::DaemonStateChanged(change) => {
                 let path = keys::parse_tv_path(&self.site, &change.key).map(|(_, path)| path);
                 if !matches!(
                     path,
-                    Some(payload::Meta::PATH | payload::Identity::PATH | payload::Power::PATH)
+                    Some(
+                        payload::Meta::PATH
+                            | payload::Identity::PATH
+                            | payload::Power::PATH
+                            | payload::Link::PATH
+                    )
                 ) {
                     return;
                 }
@@ -624,10 +629,16 @@ impl Core {
             .map(|tv| (tv.uuid, tv))
             .collect();
         for (tv, info) in &fleet {
-            let was = self.screen_on.insert(*tv, info.is_screen_on);
-            if info.is_screen_on && was != Some(true) {
+            // A panel is lit only while its TV is connected and says so: the
+            // last report of a TV nobody can see is not a fact about its
+            // panel. So a TV that comes back lit is a panel lighting up,
+            // whatever it last said, and drifts like any other; nothing
+            // about the outage is remembered.
+            let lit = info.connected && info.is_screen_on;
+            let was = self.screen_on.insert(*tv, lit);
+            if lit && was != Some(true) {
                 self.arm_drift(*tv);
-            } else if !info.is_screen_on {
+            } else if !lit {
                 // Back in compliance — cancel any pending re-assert.
                 self.drift_at.remove(tv);
             }
@@ -1008,8 +1019,10 @@ impl Core {
         // Spawned so the release check, the matching gate and the rpc
         // timeout never block the core select.
         tokio::spawn(async move {
-            if let Err(error) = daemon.apply_action(tv, spec).await {
-                warn!(%tv, %error, "tv rpc failed");
+            let action = spec.action();
+            match daemon.apply_action(tv, spec).await {
+                Ok(()) => info!(%tv, ?action, "profile action acked"),
+                Err(error) => warn!(%tv, ?action, %error, "profile action refused"),
             }
         });
     }

@@ -50,7 +50,7 @@ Next to each dropdown are two small icon toggles:
 - **Land on primary input** (the remote icon): after this action, switch the TV to your PC's input. This needs the TV's *Primary* input set on its page, and a TV that can switch inputs (not HDMI-CEC).
 - **Suppressed / fires while streaming** (the network icon): whether this event still happens while a stream has the TV armed. See [Streaming](./streaming.md).
 
-The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (unlocked)**, each in seconds, where `0` turns the timer off. The first applies at the lock screen, the second while you're logged in and active. The **On idle timeout** and **On idle resume** actions say what happens when either timer fires and when activity returns.
+The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (unlocked)**, each in seconds, where `0` turns the timer off. The same timer is how long a TV that lights itself while idle (a stray remote press, or a TV back from a network outage with its panel on) is left before the idle action goes out again, so with the timer off for the desk's state such a TV stays lit. The first applies at the lock screen, the second while you're logged in and active. The **On idle timeout** and **On idle resume** actions say what happens when either timer fires and when activity returns.
 
 ### Creating, duplicating, and assigning profiles
 
