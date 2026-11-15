@@ -37,7 +37,6 @@ pub(super) struct StateWrites<'w, 's> {
     link: Query<'w, 's, &'static State<payload::Link>>,
     promptly: Query<'w, 's, (), With<RetryPromptly>>,
     unreachable: Query<'w, 's, (), With<Unreachable>>,
-    managed: Query<'w, 's, (), With<Managed>>,
     parked: Query<'w, 's, (), With<Parked>>,
     live: Query<'w, 's, (), With<ConnectionHandle>>,
 }
@@ -385,22 +384,28 @@ pub(super) fn apply_backend_events(
                 // retrying past its budget: a busy adapter frees up, and
                 // udev's permissions land. A TV that doesn't answer through
                 // a working device keeps the budget, as a network TV does.
-                // So does a network TV that can't be reached: one whose
-                // link dropped with no standby announced, and a managed one
-                // that has now spent a whole budget unanswered, which may
-                // be just as on behind the same outage.
+                // So does a network TV nothing answers for: one whose link
+                // dropped with no standby announced, and one that has now
+                // spent a whole budget unanswered, which may be just as on
+                // behind the same outage. A dial the TV answered and turned
+                // down isn't an outage: it ends such a streak, since asking
+                // again changes nothing (and an LG asked with a key it has
+                // forgotten prompts for pairing each time).
                 let local = writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
-                let spent = attempts >= CONNECT_MAX_ATTEMPTS
+                let was_unreachable = writes.unreachable.get(entity).is_ok();
+                let spent = reason.unanswered
+                    && attempts >= CONNECT_MAX_ATTEMPTS
                     && !local
-                    && writes.managed.get(entity).is_ok()
-                    && writes.unreachable.get(entity).is_err();
+                    && !was_unreachable;
                 if spent {
                     tracing::info!(%tv, attempts, "no answer within the dial budget; redialing until the TV is back");
                     commands.entity(entity).insert(Unreachable);
+                } else if was_unreachable && !reason.unanswered {
+                    tracing::warn!(%tv, error = %reason.message, "the TV answered the redial and turned it down; no longer redialing");
+                    commands.entity(entity).remove::<Unreachable>();
                 }
                 let persistent = (reason.device_level && local)
-                    || spent
-                    || writes.unreachable.get(entity).is_ok();
+                    || (reason.unanswered && (spent || was_unreachable));
                 if attempts == 1 {
                     tracing::warn!(%tv, error = %reason.message, "dial failed");
                 } else {

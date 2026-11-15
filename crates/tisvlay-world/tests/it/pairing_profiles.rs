@@ -321,8 +321,7 @@ async fn system_events_dispatch_profile_actions() {
 /// follows: adding wake capability to a TV whose retry budget is spent
 /// (off and unreachable — exactly the state you add a MAC in) must
 /// light `supports_wake` up immediately, not at the next successful
-/// dial. Unmanaged, since a managed TV that spends its budget is
-/// dialed on, and its patch rides the next dial.
+/// dial.
 #[tokio::test]
 async fn config_patch_refreshes_wake_support_without_a_dial() {
     let (mut effects, client, handle) = spawn_reactor();
@@ -332,10 +331,7 @@ async fn config_patch_refreshes_wake_support_without_a_dial() {
     config.insert("refuse_connect", true);
     config.insert("wake", false);
     client.command(Command::AddTv {
-        record: Box::new(tisvlay_world::TvRecord {
-            managed: false,
-            ..tv_record(id, "Wakeless", config)
-        }),
+        record: Box::new(tv_record(id, "Wakeless", config)),
         reply: None,
     });
     collect_until(&mut effects, |e| {

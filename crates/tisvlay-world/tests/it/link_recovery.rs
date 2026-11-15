@@ -386,3 +386,54 @@ async fn the_log_says_which_drop_it_was_and_when_the_link_is_back() {
     collect_until(&mut effects, |e| link_connected(e, false)).await;
     assert!(logs_contain("closed with the TV going off; staying down"));
 }
+
+/// A TV that answers and turns the dial down isn't behind an outage:
+/// three dials, as ever, and no more.
+#[tokio::test]
+async fn a_tv_that_answers_and_refuses_keeps_the_budget() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let t0 = Instant::now();
+    client.tick(t0);
+    handle.set_key_rejected("mock://forgot", true);
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(
+            uuid::Uuid::new_v4(),
+            "Forgot",
+            mock_config("mock://forgot"),
+        )),
+        reply: Some(Reply::new(1)),
+    });
+    wait_for_dials(&handle, "mock://forgot", 1).await;
+    for k in 1..=6 {
+        settle(&mut effects, &client, 200 + u64::from(k)).await;
+        client.tick(t0 + PAST_THE_CAP * k);
+    }
+    settle(&mut effects, &client, 210).await;
+    assert_eq!(handle.connect_call_count("mock://forgot"), 3);
+}
+
+/// The network comes back and the TV turns the redial down (it forgot
+/// the key while it was away): that answer ends the redial, rather than
+/// asking a TV that prompts for pairing each time.
+#[tokio::test]
+async fn an_answer_that_refuses_ends_the_redial() {
+    let (mut effects, client, handle) = spawn_reactor();
+    add_connected_tv(&mut effects, &client, "mock://reset").await;
+    let t0 = Instant::now();
+    client.tick(t0);
+
+    outage(&mut effects, &handle, "mock://reset").await;
+    wait_for_dials(&handle, "mock://reset", 2).await;
+    ticks_dial_once_each(&mut effects, &client, &handle, "mock://reset", t0, 4).await;
+
+    handle.set_unreachable("mock://reset", false);
+    handle.set_key_rejected("mock://reset", true);
+    client.tick(t0 + PAST_THE_CAP * 5);
+    wait_for_dials(&handle, "mock://reset", 7).await;
+    for k in 6..=8 {
+        settle(&mut effects, &client, 300 + u64::from(k)).await;
+        client.tick(t0 + PAST_THE_CAP * k);
+    }
+    settle(&mut effects, &client, 310).await;
+    assert_eq!(handle.connect_call_count("mock://reset"), 7);
+}

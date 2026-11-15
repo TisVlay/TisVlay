@@ -118,6 +118,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_power_on_closes`](crate::handle::MockHandle::set_power_on_closes).
     pub(crate) power_on_closes: std::collections::HashSet<String>,
 
+    /// Per-address flag: the TV answers a dial and turns it down, so
+    /// `MockConnector::connect` fails with `NotRegistered`. Set via
+    /// [`MockHandle::set_key_rejected`](crate::handle::MockHandle::set_key_rejected).
+    pub(crate) key_rejected: std::collections::HashSet<String>,
+
     /// Per-address flag: `power_off` closes the link without pushing a
     /// standby report first. Set via
     /// [`MockHandle::set_power_off_unreported`](crate::handle::MockHandle::set_power_off_unreported).

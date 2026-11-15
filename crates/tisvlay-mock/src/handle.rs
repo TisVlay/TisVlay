@@ -321,6 +321,20 @@ impl MockHandle {
         }
     }
 
+    /// Make the TV answer dials to `address` and turn them down with
+    /// `NotRegistered` while `enabled`, as one that has forgotten the
+    /// client key does. Unlike [`set_unreachable`](Self::set_unreachable),
+    /// something answered.
+    #[instrument(skip(self))]
+    pub fn set_key_rejected(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.key_rejected.insert(address.to_string());
+        } else {
+            state.key_rejected.remove(address);
+        }
+    }
+
     /// Make `power_off` close the link without a standby report first,
     /// as a TV that goes off without saying so does. Pass
     /// `enabled = false` to restore the report.

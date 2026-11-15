@@ -473,6 +473,11 @@ pub struct DialFailure {
     /// local-device TV keeps retrying these past its budget; world-side
     /// only, never on the wire.
     pub device_level: bool,
+    /// Nothing answered the dial: the network refused it, it timed out, or
+    /// the link closed under it. An outage looks like this; a TV that
+    /// answers and turns the dial down (a rejected key, a TV-side error)
+    /// or a config that can't be dialed doesn't. World-side only.
+    pub unanswered: bool,
 }
 
 impl DialFailure {
@@ -484,12 +489,20 @@ impl DialFailure {
                 path: Some(path.clone()),
                 message: error.to_string(),
                 device_level: true,
+                unanswered: false,
             },
             _ => Self {
                 code: None,
                 path: None,
                 message: error.to_string(),
                 device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
+                unanswered: matches!(
+                    error,
+                    tisvlay_core::Error::Io(_)
+                        | tisvlay_core::Error::Connection(_)
+                        | tisvlay_core::Error::RequestTimeout
+                        | tisvlay_core::Error::ConnectionClosed
+                ),
             },
         }
     }
@@ -501,6 +514,7 @@ impl DialFailure {
             path: None,
             message: message.into(),
             device_level: false,
+            unanswered: false,
         }
     }
 }
