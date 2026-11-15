@@ -953,15 +953,20 @@ impl Core {
         // stream) as it enters the core — the audit seam across transports.
         debug!(?event, "session event");
         // Idle-drift bookkeeping: an idle action opens the drift window,
-        // any activity or lock transition closes it (a fresh idle cycle
-        // will re-open it through its own timer).
+        // and any activity closes it (a fresh idle cycle will re-open it
+        // through its own timer).
         match event {
             SessionEvent::IdleTimeout => self.idle_fired = true,
             // Stream start and end are orthogonal to the idle-drift
             // window — they neither open nor close it.
             _ if event.is_stream_edge() => {}
-            // Any activity or lock transition closes the drift window (a
-            // fresh idle cycle re-opens it through its own timer).
+            // A lock isn't activity. A desk that idled and then locked on
+            // its own is as idle as before, and the locked idle timer
+            // won't say so again (it fires only for a desk already locked
+            // when it went idle), so the window stays as it is. A lock by
+            // hand follows activity, which closed it already.
+            SessionEvent::Lock => {}
+            // Anything else is someone at the desk.
             _ => {
                 self.idle_fired = false;
                 self.drift_at.clear();
@@ -1016,13 +1021,19 @@ impl Core {
             return;
         }
         let daemon = self.daemon.clone();
+        // A TV already known to be down will turn the action away; that
+        // is the expected answer, not news.
+        let known_down = self.tvs.get(&tv).is_some_and(|info| !info.connected);
         // Spawned so the release check, the matching gate and the rpc
         // timeout never block the core select.
         tokio::spawn(async move {
             let action = spec.action();
             match daemon.apply_action(tv, spec).await {
                 Ok(()) => info!(%tv, ?action, "profile action acked"),
-                Err(error) => warn!(%tv, ?action, %error, "profile action refused"),
+                Err(error) if known_down => {
+                    info!(%tv, ?action, %error, "profile action failed: the TV is disconnected");
+                }
+                Err(error) => warn!(%tv, ?action, %error, "profile action failed"),
             }
         });
     }

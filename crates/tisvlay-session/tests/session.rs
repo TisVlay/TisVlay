@@ -2141,3 +2141,52 @@ async fn an_idle_action_lost_with_the_link_goes_out_again_after_the_return() {
     })
     .await;
 }
+
+/// The usual way a desk is left: it idles unlocked, the TV blanks, and
+/// then the screen locks on its own. The lock isn't activity, so the idle
+/// action still holds, and a TV that comes back lit goes dark again after
+/// the locked idle timeout.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_desk_that_idled_then_locked_still_reblanks_a_tv_back_lit() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Den", "mock://auto-lock").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    create_and_assign(
+        &rig,
+        tv,
+        json!({
+            "name": "Auto-lock",
+            "locked_idle_timeout_seconds": 1,
+            "unlocked_idle_timeout_seconds": 1,
+        }),
+    )
+    .await;
+    drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
+    rig.stack
+        .is_locked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        rig.stack.client.send(SessionEvent::Lock),
+        "session core gone"
+    );
+
+    rig.mock.set_initial_power_state_override(
+        "mock://auto-lock",
+        tisvlay_core::PowerState::ScreenSaver,
+    );
+    outage(&rig, &sub, tv, "mock://auto-lock").await;
+    rig.mock.set_unreachable("mock://auto-lock", false);
+
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "screensaver"
+    })
+    .await;
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "screenoff"
+    })
+    .await;
+}
