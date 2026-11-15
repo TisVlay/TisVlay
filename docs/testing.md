@@ -509,6 +509,8 @@ The testing backend has no event loop and no public key helper, but `slint::Wind
 
 ## Test observability
 
+The world suite captures the reactor's own log lines with `spawn_reactor_capturing_logs()` (`tests/it/support/mod.rs`): a subscriber scoped to the reactor's task, returned as a `Logs` handle to assert on with `logs.contain("…")`. Scoped, so it works under plain `cargo test` too, where a process-wide subscriber is first come, first served.
+
 ### #[traced_test] — per-test log capture
 
 Installs a subscriber that captures all `tracing` events. On failure, dumps them to stderr. On success, discards.

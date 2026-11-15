@@ -311,8 +311,9 @@ pub enum Command {
         reply: Option<Reply<tv::Remove>>,
     },
     /// Request a (re)connect attempt for a TV that is down. Connection
-    /// dials are event-driven — a TV that disconnects stays down until
-    /// asked (a powered-off TV must not be fought back on).
+    /// dials are event-driven — a TV that turns off stays down until
+    /// asked (a powered-off TV must not be fought back on). For a TV
+    /// already being dialed, the next dial comes at once.
     Reconnect {
         id: Uuid,
         reply: Option<Reply<tv::Reconnect>>,

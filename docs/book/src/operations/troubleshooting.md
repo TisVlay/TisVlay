@@ -41,12 +41,12 @@ This applies to TVs that show an on-screen prompt (LG); HDMI-CEC has none.
 
 ## A TV shows Disconnected
 
-The service reconnects automatically, but a network TV drops its connection when it goes to standby. Click **Power on** on the TV's page to wake it, then try your action again. A TV's **Connected** or **Disconnected** badge is at the top of its page.
+A network TV drops its connection when it goes to standby, and the service leaves a TV that turned off alone: click **Power on** on the TV's page to wake it, then try your action again. A TV that was on when its connection dropped (a router reboot, a Wi-Fi outage) is tried again on its own until it answers; meanwhile screen-off and power-off are refused rather than saved for later. A TV's **Connected** or **Disconnected** badge is at the top of its page.
 
 <details>
 <summary>From a terminal</summary>
 
-If a command fails with "not connected", power the TV on first (`tisvlay power <id> on`) and retry. `tisvlay reconnect <id>` asks a downed TV to redial, and `tisvlay list` shows each TV's connection state.
+If a command fails with "not connected", the TV is off or can't be reached: power it on first (`tisvlay power <id> on`) and retry, or wait for the network if it is behind an outage. `tisvlay reconnect <id>` asks a downed TV to redial, and `tisvlay list` shows each TV's connection state.
 
 </details>
 
