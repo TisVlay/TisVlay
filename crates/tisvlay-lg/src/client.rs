@@ -220,7 +220,12 @@ impl WebOsClient {
 
         // Phase 2: wait for the Registered response (no re-send).
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        let response = self.conn()?.request_wait(&request.id, remaining).await?;
+        // The TV answered and is asking someone to accept: running out of
+        // time here is the pairing going unanswered, not the TV.
+        let response = match self.conn()?.request_wait(&request.id, remaining).await {
+            Err(Error::RequestTimeout) => return Err(Error::PairingTimeout),
+            other => other?,
+        };
         tracing::debug!(
             msg_type = ?response.msg_type,
             payload_keys = ?payload_keys(&response.payload),
@@ -821,6 +826,30 @@ mod tests {
             Some("returning-key")
         );
         client.close().await.unwrap();
+    }
+
+    /// A TV that shows its pairing prompt and gets no one to accept it
+    /// has answered: the dial fails as a pairing that timed out, not as
+    /// a TV that didn't respond.
+    #[tokio::test]
+    async fn an_unaccepted_prompt_is_a_pairing_timeout() {
+        let server = FakeSsapServer::start().await;
+        server.set_registration_outcome(RegistrationOutcome::PromptUnaccepted);
+        let url = server.ws_url();
+        let dial =
+            tokio::spawn(
+                async move { WebOsClient::connect_url(&url, Some("forgotten".into())).await },
+            );
+        // Let the prompt arrive in real time, then run out the wait.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_millis(timeouts::PAIRING_MS + 1)).await;
+        let result = dial.await.expect("the dial task ends");
+        assert!(
+            matches!(result, Err(Error::PairingTimeout)),
+            "got {:?}",
+            result.map(|_| ())
+        );
     }
 
     #[tokio::test]
