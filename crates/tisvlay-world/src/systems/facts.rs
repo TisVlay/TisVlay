@@ -705,6 +705,8 @@ pub(super) fn handle_carrier_events(
         Option<&ConnectionHandle>,
         Has<Parked>,
         Has<PendingConnect>,
+        Option<&State<payload::Power>>,
+        Has<Unreachable>,
     )>,
 ) {
     // A NIC can flap within one batch (down + up); only the latest
@@ -718,7 +720,7 @@ pub(super) fn handle_carrier_events(
         }
     }
     for (interface, up) in latest {
-        for (entity, id, traits, monitored, handle, parked, pending) in &q {
+        for (entity, id, traits, monitored, handle, parked, pending, power, unreachable) in &q {
             if monitored.is_none_or(|m| m.0.as_deref() != Some(interface)) {
                 continue;
             }
@@ -730,13 +732,16 @@ pub(super) fn handle_carrier_events(
                     if !pending {
                         redial(&mut e, false);
                     }
+                } else if unreachable && pending {
+                    // The path may be back with it: don't wait out the backoff.
+                    commands.entity(entity).remove::<RetryAt>();
                 }
             } else if handle.is_some() && traits.is_some_and(|t| t.0.network_dependent) {
                 tracing::info!(tv = %id.0, interface, "carrier lost, parking connection");
-                commands
-                    .entity(entity)
-                    .remove::<(ConnectionHandle, DispatchVerify)>()
+                let mut e = commands.entity(entity);
+                e.remove::<(ConnectionHandle, DispatchVerify)>()
                     .insert(Parked);
+                mark_parked_awake(&mut e, power);
             }
         }
     }
@@ -764,6 +769,8 @@ pub(super) fn apply_route_resolutions(
         Has<ConnectionHandle>,
         Has<Parked>,
         Has<PendingConnect>,
+        Option<&State<payload::Power>>,
+        Has<Unreachable>,
     )>,
 ) {
     // Later resolutions in the same batch supersede earlier ones — the
@@ -779,7 +786,9 @@ pub(super) fn apply_route_resolutions(
         let Some(entity) = index.get(&tv) else {
             continue;
         };
-        let Ok((id, traits, monitored, connected, parked, pending)) = q.get(entity) else {
+        let Ok((id, traits, monitored, connected, parked, pending, power, unreachable)) =
+            q.get(entity)
+        else {
             continue;
         };
         if monitored.is_some_and(|m| m.0 == *interface) {
@@ -794,6 +803,7 @@ pub(super) fn apply_route_resolutions(
                 tracing::info!(tv = %id.0, "route lost, parking connection");
                 e.remove::<(ConnectionHandle, DispatchVerify)>()
                     .insert(Parked);
+                mark_parked_awake(&mut e, power);
             }
             (Some(_), Some(_)) if connected && !traits.is_some_and(|t| t.0.survives_ip_change) => {
                 tracing::info!(tv = %id.0, "route moved to a different interface, redialing");
@@ -809,8 +819,21 @@ pub(super) fn apply_route_resolutions(
                     redial(&mut e, false);
                 }
             }
+            (_, Some(_)) if unreachable && pending => {
+                // The path may be back with it: don't wait out the backoff.
+                e.remove::<RetryAt>();
+            }
             _ => {}
         }
+    }
+}
+
+/// A TV parked while it was on is as unreachable as one whose own link
+/// dropped: the PC's side of the same outage. One that had announced its
+/// standby is just off.
+fn mark_parked_awake(e: &mut EntityCommands, power: Option<&State<payload::Power>>) {
+    if !power.is_some_and(|p| announces_standby(p.0.state)) {
+        e.insert(Unreachable);
     }
 }
 

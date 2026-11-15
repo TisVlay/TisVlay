@@ -437,3 +437,29 @@ async fn an_answer_that_refuses_ends_the_redial() {
     settle(&mut effects, &client, 310).await;
     assert_eq!(handle.connect_call_count("mock://reset"), 7);
 }
+
+/// The PC's own link coming back is the likeliest moment for the path to
+/// the TV to be back too: a redial under way dials then, not a backoff
+/// period later.
+#[tokio::test]
+async fn the_carrier_returning_during_a_redial_dials_at_once() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = add_connected_tv(&mut effects, &client, "mock://carrier-back").await;
+    client.tick(Instant::now());
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    settle(&mut effects, &client, 80).await;
+
+    outage(&mut effects, &handle, "mock://carrier-back").await;
+    wait_for_dials(&handle, "mock://carrier-back", 2).await;
+    settle(&mut effects, &client, 81).await;
+
+    handle.set_unreachable("mock://carrier-back", false);
+    client.send(InEvent::Carrier {
+        interface: "eth0".into(),
+        up: true,
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+}
