@@ -228,6 +228,7 @@ mock.simulate_user_accept("mock://lr");
 - `set_unreachable(address, bool)` — fail dials with `NetworkUnreachable`, as during that outage
 - `set_key_rejected(address, bool)` — make the TV answer dials and turn them down with `NotRegistered`, which is a refusal and not an outage
 - `set_screen_off_closes(address, bool)` — make a `screen_off` find the link dead, the way a send is often the first to notice an outage
+- `set_switch_input_noop(address, bool)` — make `switch_input` accept the switch without acting on it, so an input restore stays pending
 - `set_power_off_unreported(address, bool)` — make `power_off` close the link without a standby report first
 - `set_initial_power_state_override(address, PowerState)` — power state the next connect reports (e.g., connect straight into standby, CEC-style)
 - `screen_on_call_count(address)` / `screen_off_call_count(address)` / `connect_call_count(address)` — assert how many times the backend was actually driven

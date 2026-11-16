@@ -604,3 +604,64 @@ async fn a_refused_screen_off_cancels_the_wake_before_it() {
     settle(&mut effects, &client, 64).await;
     assert_eq!(handle.screen_on_call_count("mock://last-word"), 0);
 }
+
+/// An input restore still pending when the link drops goes with the
+/// drop: the TV isn't switched to the PC's input whenever the outage
+/// happens to end.
+#[tokio::test]
+async fn an_input_restore_pending_at_the_drop_is_dropped_with_it() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = uuid::Uuid::new_v4();
+    let mut config = mock_config("mock://restore");
+    config.insert("initial_input", "HDMI_2");
+    client.command(Command::AddTv {
+        record: Box::new(tisvlay_world::TvRecord {
+            primary_input: Some("HDMI_1".into()),
+            ..tv_record(id, "Restore", config)
+        }),
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    let t0 = Instant::now();
+    client.tick(t0);
+
+    // The switch is taken and not acted on, so the restore is still
+    // waiting on its next try when the link drops.
+    handle.set_switch_input_noop("mock://restore", true);
+    client.command(Command::SetScreen {
+        id,
+        on: true,
+        restore_input: true,
+        reply: Some(Reply::new(61)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 61)).await;
+    settle(&mut effects, &client, 62).await;
+    outage(&mut effects, &handle, "mock://restore").await;
+
+    handle.set_switch_input_noop("mock://restore", false);
+    handle.set_unreachable("mock://restore", false);
+    settle(&mut effects, &client, 63).await;
+    client.tick(t0 + PAST_THE_CAP);
+    // Everything from the reconnect on is kept: a restore that survived
+    // would switch the input within these steps.
+    let mut seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
+    for k in 2..=4 {
+        let barrier = 70 + u64::from(k);
+        client.command(Command::Reconnect {
+            id,
+            reply: Some(Reply::new(barrier)),
+        });
+        seen.extend(collect_until(&mut effects, |e| reply_to(e, barrier)).await);
+        client.tick(t0 + PAST_THE_CAP * k);
+    }
+    client.command(Command::Reconnect {
+        id,
+        reply: Some(Reply::new(79)),
+    });
+    seen.extend(collect_until(&mut effects, |e| reply_to(e, 79)).await);
+    let restored = |e: &tisvlay_world::WireEffect| {
+        is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1")
+    };
+    assert!(!seen.iter().any(restored), "{seen:#?}");
+    assert_quiet(&mut effects, Duration::from_millis(300), restored).await;
+}

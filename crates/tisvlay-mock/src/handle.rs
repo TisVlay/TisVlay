@@ -335,6 +335,19 @@ impl MockHandle {
         }
     }
 
+    /// Make `switch_input` accept the switch and not act on it, so an
+    /// input restore stays pending across its retries. Pass
+    /// `enabled = false` to switch again.
+    #[instrument(skip(self))]
+    pub fn set_switch_input_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.switch_input_noop.insert(address.to_string());
+        } else {
+            state.switch_input_noop.remove(address);
+        }
+    }
+
     /// Make `power_off` close the link without a standby report first,
     /// as a TV that goes off without saying so does. Pass
     /// `enabled = false` to restore the report.

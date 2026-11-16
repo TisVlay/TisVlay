@@ -123,6 +123,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_key_rejected`](crate::handle::MockHandle::set_key_rejected).
     pub(crate) key_rejected: std::collections::HashSet<String>,
 
+    /// Per-address flag: `switch_input` returns `Ok` without switching.
+    /// Set via
+    /// [`MockHandle::set_switch_input_noop`](crate::handle::MockHandle::set_switch_input_noop).
+    pub(crate) switch_input_noop: std::collections::HashSet<String>,
+
     /// Per-address flag: `power_off` closes the link without pushing a
     /// standby report first. Set via
     /// [`MockHandle::set_power_off_unreported`](crate::handle::MockHandle::set_power_off_unreported).

@@ -430,6 +430,11 @@ impl TvConnection for MockConnection {
                 format!("unknown input: {input_id}"),
             ));
         }
+        // A TV that takes the switch and doesn't act on it, so the
+        // daemon's restore stays pending across its retries.
+        if self.shared.lock().switch_input_noop.contains(&self.address) {
+            return Ok(());
+        }
         let id = input_id.to_string();
         self.mutate_and_push(|s| s.current_input = Some(id));
         Ok(())
