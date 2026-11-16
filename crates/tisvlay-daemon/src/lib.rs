@@ -160,6 +160,14 @@ struct Tasks {
 const STORE_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Stack {
+    /// The system profile's sleep requests, once: `run` hands them to the
+    /// logind sleeper, and a test can drive [`run_sleeper`] with them.
+    pub fn take_sleep_requests(
+        &mut self,
+    ) -> Option<mpsc::UnboundedReceiver<tisvlay_world::SleepRequest>> {
+        self.sleeps.take()
+    }
+
     /// Serve until `shutdown` resolves or a core task ends, then shut down
     /// in order: withdraw liveliness and close the session, stop the world
     /// (which releases the store writer's channel), and wait for the store
@@ -169,14 +177,6 @@ impl Stack {
     /// store can't be restarted in place, so the process exits and the
     /// service manager restarts it from the store, instead of leaving a
     /// daemon that looks alive but refuses every rpc.
-    /// The system profile's sleep requests, once: `run` hands them to the
-    /// logind sleeper, and a test can drive [`run_sleeper`] with them.
-    pub fn take_sleep_requests(
-        &mut self,
-    ) -> Option<mpsc::UnboundedReceiver<tisvlay_world::SleepRequest>> {
-        self.sleeps.take()
-    }
-
     pub async fn run_until(self, shutdown: impl Future<Output = ()>) -> Result<()> {
         let Self {
             daemon, mut tasks, ..
@@ -275,10 +275,14 @@ async fn mirror_stream(
     let ready = Arc::clone(ready);
     Ok(tokio::spawn(async move {
         while let Ok(sample) = sub.recv_async().await {
-            let Ok(state) = serde_json::from_slice::<tisvlay_protocol::payload::StreamState>(
+            let state = match serde_json::from_slice::<tisvlay_protocol::payload::StreamState>(
                 &sample.payload().to_bytes(),
-            ) else {
-                continue;
+            ) {
+                Ok(state) => state,
+                Err(e) => {
+                    warn!(%e, key = %sample.key_expr(), "undecodable stream sample");
+                    continue;
+                }
             };
             // The armed set is now known — release the boot gate.
             ready.mirror_seen.store(true, Ordering::Release);
@@ -575,7 +579,10 @@ async fn serve_stack(
             let idle = serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
                 .ok()
                 .and_then(|value| value.get("idle").and_then(serde_json::Value::as_bool));
-            let Some(idle) = idle else { continue };
+            let Some(idle) = idle else {
+                warn!(key = %sample.key_expr(), "undecodable greeter idle sample");
+                continue;
+            };
             let event = if idle {
                 SystemEvent::GreeterIdle
             } else {
@@ -719,6 +726,9 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
     // so the handler goes in before anything else can be signaled.
     let hangup = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .context("install the SIGHUP handler")?;
+    // Parsed before the daemon serves anything, so a bad seed file fails
+    // the start rather than a daemon clients already saw come up.
+    let seed = options.seed.as_deref().map(load_seed_config).transpose()?;
     use tisvlay_core::TvBackend;
     fn caps(backend: &dyn TvBackend) -> Vec<String> {
         backend
@@ -820,8 +830,8 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
 
     // The store applied in `serve`; the seed config only adds TVs it
     // didn't hold, so they persist as the real change they are.
-    if let Some(path) = &options.seed {
-        for tv in load_seed_config(path)?.tv {
+    if let Some(seed) = seed {
+        for tv in seed.tv {
             let id = tv.stable_id();
             if stack.stored.contains(&id) {
                 continue;
