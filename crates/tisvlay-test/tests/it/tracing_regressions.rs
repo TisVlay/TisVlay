@@ -9,8 +9,8 @@
 //! span lifecycle (new → enter → event → exit → drop) which makes
 //! them also a regression test for the `#[instrument]` attributes.
 
-use tisvlay_test::tracing_mock::{expect, subscriber};
 use tracing::subscriber::set_default;
+use tracing_mock::{expect, subscriber};
 
 #[test]
 fn publish_tv_emits_instrumented_debug_event() {

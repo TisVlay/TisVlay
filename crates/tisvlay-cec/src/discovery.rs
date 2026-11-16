@@ -124,12 +124,6 @@ impl TvDiscovery for CecDiscovery {
     }
 }
 
-/// Is `name` a CEC device node — `cec` followed by one or more digits?
-fn is_cec_device(name: &str) -> bool {
-    name.strip_prefix("cec")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
-}
-
 /// Synchronous enumeration core: read the directory and map each CEC node
 /// to a [`DiscoveredTv`]. Split out so it's exercised without async.
 fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
@@ -139,7 +133,7 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
     };
     let mut tvs: Vec<DiscoveredTv> = entries
         .flatten()
-        .filter(|e| is_cec_device(&e.file_name().to_string_lossy()))
+        .filter(|e| crate::wakeup::is_cec_node(&e.file_name().to_string_lossy()))
         .map(|e| {
             let device = e.path().to_string_lossy().into_owned();
             DiscoveredTv {
@@ -166,7 +160,7 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
 }
 
 /// The `N` in a `/dev/cecN` path, for numeric ordering. Unparsable paths
-/// sort last (they shouldn't occur — `is_cec_device` gates enumeration).
+/// sort last (they shouldn't occur — `is_cec_node` gates enumeration).
 fn cec_index(address: &str) -> u32 {
     address
         .rsplit("cec")
@@ -186,18 +180,6 @@ mod tests {
     /// leaves each node as its bare `/dev/cecN` entry.
     fn no_identity_opener() -> Arc<dyn CecLinkOpener> {
         Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby))
-    }
-
-    #[test]
-    fn is_cec_device_matches_cec_n() {
-        assert!(is_cec_device("cec0"));
-        assert!(is_cec_device("cec1"));
-        assert!(is_cec_device("cec12"));
-        assert!(!is_cec_device("cec")); // no number
-        assert!(!is_cec_device("cecx")); // non-digit suffix
-        assert!(!is_cec_device("ceca0")); // letter then digit
-        assert!(!is_cec_device("video0"));
-        assert!(!is_cec_device("dri"));
     }
 
     #[tokio::test]

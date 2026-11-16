@@ -1,6 +1,6 @@
 [package]
 name = "tisvlay-test"
-description = "Shared test utilities for the tisvlay workspace (private dbus-daemon, fake logind, fake screensaver, a link-breaking socket relay)"
+description = "Shared test utilities for the tisvlay workspace (private dbus-daemon, fake logind, a link-breaking socket relay)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,13 @@ repository.workspace = true
 [dependencies]
 zbus = { workspace = true }
 tracing = { workspace = true }
-tracing-test = { workspace = true }
-tracing-mock = { workspace = true }
 tempfile = { workspace = true }
-libc = "0.2"
+libc = { workspace = true }
 # The socket relay: batches forwarded with read_exact/write_all.
 tokio = { workspace = true, features = ["io-util"] }
 
-# Sync mutex without poisoning for the cached dbus-daemon Child handle.
+# Sync mutex without poisoning for the cached dbus-daemon Child handle
+# and the relay's controls.
 parking_lot = { workspace = true }
 
 [dev-dependencies]
@@ -27,6 +26,8 @@ tokio = { workspace = true, features = ["test-util"] }
 futures-util = { workspace = true }
 tisvlay-core = { workspace = true }
 tisvlay-mock = { workspace = true }
+tracing-test = { workspace = true }
+tracing-mock = { workspace = true }
 
 [lints]
 workspace = true

@@ -22,8 +22,9 @@
 //! back holds a zenoh session's close until its open timeout.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use parking_lot::Mutex;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{UnixListener, UnixStream};
@@ -130,22 +131,14 @@ impl Relay {
     /// `marker`. Payloads travel uncompressed, so a sample's JSON body
     /// makes a good marker.
     pub fn drop_batch_containing(&self, marker: &[u8]) {
-        *self
-            .controls
-            .drop_marker
-            .lock()
-            .expect("nothing panics while the drop marker is held") = Some(marker.to_vec());
+        *self.controls.drop_marker.lock() = Some(marker.to_vec());
     }
 
     /// Whether the marker set by
     /// [`drop_batch_containing`](Self::drop_batch_containing) has been
     /// used.
     pub fn dropped(&self) -> bool {
-        self.controls
-            .drop_marker
-            .lock()
-            .expect("nothing panics while the drop marker is held")
-            .is_none()
+        self.controls.drop_marker.lock().is_none()
     }
 }
 
@@ -233,10 +226,7 @@ async fn read_batch(from: &mut OwnedReadHalf) -> Option<Vec<u8>> {
 
 /// Whether `batch` carries the drop marker, clearing it if so.
 fn take_marker(controls: &Controls, batch: &[u8]) -> bool {
-    let mut marker = controls
-        .drop_marker
-        .lock()
-        .expect("nothing panics while the drop marker is held");
+    let mut marker = controls.drop_marker.lock();
     let hit = marker.as_deref().is_some_and(|marker| {
         !marker.is_empty() && batch.windows(marker.len()).any(|window| window == marker)
     });
