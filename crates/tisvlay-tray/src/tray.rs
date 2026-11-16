@@ -1,7 +1,7 @@
 //! ksni `Tray` implementation: renders the view, funnels every click
 //! into `TrayCommand`s over an mpsc — the async processor owns the zenoh
-//! rpcs. Structure ports the root `tisvlay-tray` menu; strings stay
-//! English literals until the workspace grows its i18n pass at promotion.
+//! rpcs. Strings are English literals: the tray isn't translated yet
+//! (docs/i18n.md).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -563,7 +563,7 @@ impl TvTray {
         .into()
     }
 
-    /// Root shape: "Profiles" parent with nested "User: {current}" and
+    /// A "Profiles" parent with nested "User: {current}" and
     /// "System: {current}" pickers over the catalog; an unassigned TV
     /// renders as the reserved default entity selected.
     fn profile_submenu(&self, id: Uuid, tv: &TvView) -> MenuItem<Self> {
@@ -642,7 +642,7 @@ fn profile_picker(
     .into()
 }
 
-/// Root's "Manage"/"Unmanage" toggle with the play/pause icon pair.
+/// The "Manage"/"Unmanage" toggle with the play/pause icon pair.
 fn managed_toggle(
     tx: &mpsc::UnboundedSender<TrayCommand>,
     id: Uuid,

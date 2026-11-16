@@ -1,5 +1,4 @@
-//! tisvlay-greeter — login-screen idle client, the root `tisvlay-greeter`
-//! reshaped for zenoh.
+//! tisvlay-greeter — the login screen's idle client.
 //!
 //! Runs inside the greeter session and watches the greeter compositor's
 //! `ext-idle-notify-v1`. Idle/resume edges become `{idle}` puts on
@@ -11,8 +10,7 @@
 //! The timeout to register comes from the daemon's cached
 //! `greeter/timeout` key (`0` = disabled: assert presence, then exit).
 //! The idle key itself is a cached publish, so a daemon restarting under
-//! a live greeter re-hydrates the current idle state instead of needing
-//! the D-Bus stack's notify-with-retry loop.
+//! a live greeter can re-hydrate the current idle state.
 
 pub mod service;
 

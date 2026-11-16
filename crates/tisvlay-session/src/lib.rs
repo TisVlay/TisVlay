@@ -238,7 +238,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // The writer's record of what's on disk is the file as loaded, before
     // the default profile is ensured below; a reload compares against it.
     let mut snapshot = loaded.clone();
-    // Root ensure_default parity: the editable default profile exists
+    // The editable default profile exists
     // from first boot; stored edits to it survive (seed only if absent),
     // and its name stays pinned.
     if !snapshot
@@ -1055,7 +1055,7 @@ impl Core {
     }
 
     /// The resolved action for this event *before* the stream gate: the
-    /// root chain per field (assignment → profile → editable default
+    /// chain per field (assignment → profile → editable default
     /// profile → hard-coded floor). One field per event, no direction bias
     /// — an event carries no inherent wake/off-going meaning, only the
     /// profile it resolves through does.
@@ -1088,7 +1088,7 @@ impl Core {
     }
 
     /// Merge an assignment through the editable default profile down to
-    /// the hard-coded floor (root resolve chain).
+    /// the hard-coded floor.
     fn resolve_for(&self, tv: &Uuid) -> ResolvedUserProfile {
         // Merge off borrowed bodies — `merge_with_base`/`resolve` take refs,
         // so an absent assignment or default profile falls back to a shared

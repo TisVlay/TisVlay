@@ -304,7 +304,7 @@ impl TvConnection for LgConnection {
         // Create a channel for TvState updates.
         let (state_tx, state_rx) = mpsc::unbounded_channel();
 
-        // Send the initial seeded state so D-Bus cached properties are
+        // Send the initial seeded state so the world's published state is
         // populated immediately, rather than waiting for the first
         // subsequent WebSocket push from the TV.
         let _ = state_tx.send(initial_state.clone());

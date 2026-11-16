@@ -1,4 +1,4 @@
-//! tisvlay-tray: the root ksni tray reshaped for zenoh. The menu renders
+//! tisvlay-tray: the ksni system tray. The menu renders
 //! from the SDK clients' mirrors of the daemon (plus the session
 //! service's user keys when its socket exists); every click is an rpc.
 
@@ -40,8 +40,8 @@ impl TrayHandle {
     }
 }
 
-/// Optimistic per-TV intent for the scroll targets — the root stack's
-/// reconciler pattern: scroll math bases on what the user last asked
+/// Optimistic per-TV intent for the scroll targets — the reconciler
+/// pattern: scroll math bases on what the user last asked
 /// for rather than the daemon cache bouncing during a TV-side ramp, and
 /// the observed echo releases the gate.
 #[derive(Clone)]
@@ -527,7 +527,7 @@ pub fn default_user_socket() -> PathBuf {
 }
 
 /// Terminal pairing phases become toasts — non-terminal progress is the
-/// wizard's job to surface, not the tray's (root stance).
+/// wizard's job to surface, not the tray's.
 async fn spawn_pairing_toasts(
     system: &Session,
     site: &str,

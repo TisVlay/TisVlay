@@ -114,8 +114,8 @@ impl TvDiscovery for CecDiscovery {
             }
             // Carry the resolved canonical vendor so the wizard tile brands by
             // it (`lg`) instead of the backend id (`cec`). `vendor_data` is the
-            // free-form channel that already crosses D-Bus to the wizard;
-            // adding a `DiscoveredTv` field would change its wire signature.
+            // free-form channel that already reaches the wizard in the
+            // `DiscoveredTv` payload, so the brand needs no new field.
             if let Some(brand) = identity.brand {
                 tv.vendor_data.insert("brand".to_string(), brand);
             }
