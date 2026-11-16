@@ -292,10 +292,16 @@ async fn handle_request(
                 return true;
             };
             state.monitor(tv, ip);
-            let interface = resolve_interface_for_ip(ip).await;
-            state
-                .on_resolved(tv, interface)
-                .is_none_or(|event| send(world, event))
+            match resolve_interface_for_ip(ip).await {
+                Ok(interface) => state
+                    .on_resolved(tv, interface)
+                    .is_none_or(|event| send(world, event)),
+                // Unresolved until the next route or address event.
+                Err(e) => {
+                    warn!(%tv, error = format!("{e:#}"), "route lookup failed");
+                    true
+                }
+            }
         }
         RouteRequest::Forget { tv } => {
             state.forget(tv);
@@ -338,7 +344,14 @@ async fn dump_links() -> anyhow::Result<Vec<LinkMessage>> {
 /// for changes only. Returns false when the world is gone.
 async fn re_resolve(world: &WorldClient, state: &mut MonitorState) -> bool {
     for (tv, ip) in state.monitored() {
-        let interface = resolve_interface_for_ip(ip).await;
+        // A failed lookup isn't an answer: the last resolution stands.
+        let interface = match resolve_interface_for_ip(ip).await {
+            Ok(interface) => interface,
+            Err(e) => {
+                warn!(%tv, error = format!("{e:#}"), "route lookup failed; keeping the last resolution");
+                continue;
+            }
+        };
         if let Some(event) = state.on_resolved(tv, interface)
             && !send(world, event)
         {
@@ -352,25 +365,33 @@ async fn re_resolve(world: &WorldClient, state: &mut MonitorState) -> bool {
 ///
 /// Queries the kernel routing table via rtnetlink (`RTM_GETROUTE`),
 /// equivalent to `ip route get <ip>`. Returns the output interface
-/// name (e.g., `"eno2"`) or `None` if no usable route exists.
+/// name (e.g., `"eno2"`) or `None` if no usable route exists, and an
+/// error when the lookup itself fails: `None` is a fact the world acts
+/// on (it parks a live connection), so a failed lookup mustn't read as
+/// one.
 ///
 /// Works correctly with bridges, VLANs, bonding, VPNs — the kernel
 /// routing table is the source of truth.
-async fn resolve_interface_for_ip(ip: IpAddr) -> Option<String> {
-    let (connection, handle, _) = match new_connection() {
-        Ok(c) => c,
-        Err(e) => {
-            warn!(error = %e, "failed to create netlink connection for route resolution");
-            return None;
-        }
-    };
+async fn resolve_interface_for_ip(ip: IpAddr) -> anyhow::Result<Option<String>> {
+    let (connection, handle, _) =
+        new_connection().context("open a netlink connection for route resolution")?;
     let conn_task = tokio::spawn(connection);
     let result = resolve_route(&handle, ip).await;
     conn_task.abort();
     result
 }
 
-async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String> {
+/// Whether a route lookup's error is the kernel's answer that no route
+/// exists, as `ip route get` to an unreachable address gets.
+fn is_no_route(error: &rtnetlink::Error) -> bool {
+    matches!(
+        error,
+        rtnetlink::Error::NetlinkError(message)
+            if matches!(message.raw_code().abs(), libc::ENETUNREACH | libc::EHOSTUNREACH)
+    )
+}
+
+async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> anyhow::Result<Option<String>> {
     // LookupTable matches `ip route get` behavior — without it the
     // kernel may return cached/stale routes for deconfigured interfaces.
     use netlink_packet_route::route::RouteFlags;
@@ -392,7 +413,13 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
     };
 
     let mut route_replies = handle.route().get(route_msg).execute();
-    while let Ok(Some(route)) = route_replies.try_next().await {
+    loop {
+        let route = match route_replies.try_next().await {
+            Ok(Some(route)) => route,
+            Ok(None) => break,
+            Err(e) if is_no_route(&e) => break,
+            Err(e) => return Err(e).context("look up the route"),
+        };
         let oif = route.attributes.iter().find_map(|attr| match attr {
             RouteAttribute::Oif(index) => Some(*index),
             _ => None,
@@ -400,7 +427,11 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
         let Some(oif) = oif else { continue };
 
         let mut links = handle.link().get().match_index(oif).execute();
-        let Ok(Some(link)) = links.try_next().await else {
+        let Some(link) = links
+            .try_next()
+            .await
+            .context("look up the route's interface")?
+        else {
             continue;
         };
         let name = link.attributes.iter().find_map(|attr| match attr {
@@ -415,7 +446,11 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
         use netlink_packet_route::AddressFamily;
         let mut addrs = handle.address().get().set_link_index_filter(oif).execute();
         let mut has_routable_addr = false;
-        while let Ok(Some(addr_msg)) = addrs.try_next().await {
+        while let Some(addr_msg) = addrs
+            .try_next()
+            .await
+            .context("list the interface's addresses")?
+        {
             if addr_msg.header.family == AddressFamily::Inet {
                 has_routable_addr = true;
                 break;
@@ -432,19 +467,34 @@ async fn resolve_route(handle: &rtnetlink::Handle, ip: IpAddr) -> Option<String>
         }
         if !has_routable_addr {
             debug!(ip = %ip, interface = %name, "route exists but interface has no usable address");
-            return None;
+            return Ok(None);
         }
         trace!(ip = %ip, interface = %name, index = oif, "resolved route");
-        return Some(name);
+        return Ok(Some(name));
     }
 
     debug!(ip = %ip, "no route found");
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only the kernel's unreachable answer is "no route"; any other
+    /// netlink failure is a failed lookup.
+    #[test]
+    fn only_unreachable_answers_mean_no_route() {
+        let error = |errno: i32| {
+            let mut message = netlink_packet_core::ErrorMessage::default();
+            message.code = std::num::NonZeroI32::new(-errno);
+            rtnetlink::Error::NetlinkError(message)
+        };
+        assert!(is_no_route(&error(libc::ENETUNREACH)));
+        assert!(is_no_route(&error(libc::EHOSTUNREACH)));
+        assert!(!is_no_route(&error(libc::ENOBUFS)));
+        assert!(!is_no_route(&rtnetlink::Error::RequestFailed));
+    }
 
     fn link(flags: LinkFlags, oper: netlink_packet_route::link::State) -> LinkMessage {
         let mut link = LinkMessage::default();
@@ -530,7 +580,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolves_localhost_to_lo() {
-        let iface = resolve_interface_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)).await;
+        let iface = resolve_interface_for_ip(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .await
+            .unwrap();
         assert_eq!(iface.as_deref(), Some("lo"));
     }
 
@@ -546,6 +598,12 @@ mod tests {
             eprintln!("no ::1 on this host: the v6 route arm is only checked for absence");
         }
         let iface = resolve_interface_for_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)).await;
-        assert_eq!(iface.as_deref(), has_v6_loopback.then_some("lo"));
+        if has_v6_loopback {
+            assert_eq!(iface.unwrap().as_deref(), Some("lo"));
+        } else {
+            // No route, or a lookup the kernel refuses outright: never an
+            // interface.
+            assert!(!matches!(iface, Ok(Some(_))), "{iface:?}");
+        }
     }
 }
