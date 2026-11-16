@@ -16,22 +16,22 @@ use tisvlay_core::VendorConfig;
 use uuid::Uuid;
 
 #[derive(Deserialize, Debug, Default)]
-pub struct SeedConfig {
+pub(crate) struct SeedConfig {
     #[serde(default)]
-    pub tv: Vec<SeedTv>,
+    pub(crate) tv: Vec<SeedTv>,
 }
 
 #[derive(Deserialize, Debug)]
-pub struct SeedTv {
+pub(crate) struct SeedTv {
     /// Stable id; omitted → derived deterministically from the entry
     /// itself (see [`SeedTv::stable_id`]).
-    pub id: Option<Uuid>,
-    pub name: String,
-    pub vendor: String,
+    pub(crate) id: Option<Uuid>,
+    pub(crate) name: String,
+    pub(crate) vendor: String,
     #[serde(default = "default_true")]
-    pub managed: bool,
+    pub(crate) managed: bool,
     /// Vendor config table, passed to the backend verbatim.
-    pub config: VendorConfig,
+    pub(crate) config: VendorConfig,
 }
 
 impl SeedTv {
@@ -42,7 +42,7 @@ impl SeedTv {
     /// Editing a declared entry changes its derived identity — that
     /// reads as remove-old + add-new, which is the honest projection
     /// of "the declaration changed" without a declared id.
-    pub fn stable_id(&self) -> Uuid {
+    pub(crate) fn stable_id(&self) -> Uuid {
         if let Some(id) = self.id {
             return id;
         }
@@ -57,7 +57,7 @@ fn default_true() -> bool {
     true
 }
 
-pub fn load_seed_config(path: &Path) -> Result<SeedConfig> {
+pub(crate) fn load_seed_config(path: &Path) -> Result<SeedConfig> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("read seed config {}", path.display()))?;
     toml::from_str(&text).with_context(|| format!("parse seed config {}", path.display()))

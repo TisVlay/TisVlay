@@ -40,7 +40,6 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig, RecoveryConfig};
 pub use discovery::DynDiscovery;
 pub use dpms::watch_dpms;
 pub use logind::{run_sleeper, supervise_logind, watch_logind};
-pub use seed::{SeedConfig, SeedTv, load_seed_config};
 pub use store::load_store;
 
 /// An open daemon session: zenoh peer listening on a Unix socket, with the
@@ -728,7 +727,11 @@ pub async fn run(options: DaemonOptions) -> Result<()> {
         .context("install the SIGHUP handler")?;
     // Parsed before the daemon serves anything, so a bad seed file fails
     // the start rather than a daemon clients already saw come up.
-    let seed = options.seed.as_deref().map(load_seed_config).transpose()?;
+    let seed = options
+        .seed
+        .as_deref()
+        .map(seed::load_seed_config)
+        .transpose()?;
     use tisvlay_core::TvBackend;
     fn caps(backend: &dyn TvBackend) -> Vec<String> {
         backend
