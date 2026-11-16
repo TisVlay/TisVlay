@@ -60,18 +60,20 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
 /// someone edited it and never reloaded, so move it aside to
 /// `<path>.edited` (see [`set_aside`]) with a warning rather than
 /// overwrite the edit. Returns whether the write may go ahead: false when
-/// the edit couldn't be set aside. A missing file has nothing to keep.
+/// the edit couldn't be set aside. A missing file has nothing to keep; one
+/// that can't be read as text (an edit in another encoding) is an edit.
 ///
 /// Blocking: async callers run it on `spawn_blocking`.
 pub fn keep_unreloaded_edit<T: DeserializeOwned>(
     path: &Path,
     is_record: impl FnOnce(&T) -> bool,
 ) -> bool {
-    let Ok(text) = fs::read_to_string(path) else {
-        return true;
-    };
-    if toml::from_str::<T>(&text).is_ok_and(|disk| is_record(&disk)) {
-        return true;
+    match fs::read_to_string(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return true,
+        Ok(text) if toml::from_str::<T>(&text).is_ok_and(|disk| is_record(&disk)) => {
+            return true;
+        }
+        _ => {}
     }
     match set_aside(path) {
         Ok(aside) => {
@@ -588,6 +590,20 @@ ip = "192.168.4.170"
         fs::write(&path, "version = 1\n").unwrap();
         assert!(keep_unreloaded_edit(&path, ours));
         assert!(path.exists());
+    }
+
+    /// An edit saved in another encoding isn't UTF-8, so `write_toml`
+    /// can't read it either: kept aside, it no longer blocks every write.
+    #[test]
+    fn an_edit_that_isnt_utf8_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.toml");
+        fs::write(&path, b"# caf\xe9\nversion = 1\n").unwrap();
+        let ours = |table: &toml::Table| table["version"].as_integer() == Some(1);
+        assert!(keep_unreloaded_edit(&path, ours));
+        assert!(!path.exists());
+        assert!(dir.path().join("store.toml.edited").exists());
+        assert!(write_toml(&path, &toml::toml! { version = 1 }).is_ok());
     }
 
     #[test]
