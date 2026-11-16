@@ -122,6 +122,17 @@ pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> Sha
 /// convention. Background failures (state-watcher reconnects, etc.)
 /// are *not* routed here — they live in journald instead, since
 /// surfacing every transient flap would drown the user.
+/// The reserved-default system profile as the profile pickers list it
+/// (localized "default" plus its indicator glyph), so a picker seeded
+/// with it resolves `current-value` to that row.
+fn default_system_profile_display() -> SharedString {
+    SharedString::from(state::display_profile_name(
+        DEFAULT_SYSTEM_PROFILE_UUID,
+        "default",
+        DEFAULT_SYSTEM_PROFILE_UUID,
+    ))
+}
+
 fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
     on_ui(app_weak, move |app| {
         let errors = app.global::<Errors>();
@@ -2198,17 +2209,7 @@ fn register_callbacks(
                 wizard.set_selected_address(SharedString::from(entry.address.as_str()));
                 wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
-                    // Pre-select the reserved-default profile in the
-                    // wizard's picker. Must match the display form
-                    // used in `Profiles.system-profiles` (localized
-                    // "default" + indicator glyph) so std `ComboBox`'s
-                    // string-match `current-value` resolves to the
-                    // right model row.
-                    wizard.set_system_profile(SharedString::from(state::display_profile_name(
-                        DEFAULT_SYSTEM_PROFILE_UUID,
-                        "default",
-                        DEFAULT_SYSTEM_PROFILE_UUID,
-                    )));
+                    wizard.set_system_profile(default_system_profile_display());
                 }
                 // User picked a TV — stop the streaming discovery
                 // session AND any in-flight manual-entry MAC lookup
@@ -2248,6 +2249,7 @@ fn register_callbacks(
                 let config =
                     build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
                 let managed = wizard.get_managed();
+                let profile = wizard.get_system_profile().to_string();
 
                 wizard.set_step(3);
                 wizard.set_pair_phase(SharedString::default());
@@ -2257,7 +2259,7 @@ fn register_callbacks(
                 let wg = ctx.generation.clone();
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
+                    run_wizard_pair(d, app_weak, wg, name, vendor, config, managed, profile).await;
                 });
             }
             // Pair → Done. Only allowed once pairing completed.
@@ -2305,6 +2307,7 @@ fn register_callbacks(
         let vendor = wizard.get_selected_vendor().to_string();
         let config = build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
         let managed = wizard.get_managed();
+        let profile = wizard.get_system_profile().to_string();
 
         wizard.set_pair_phase(SharedString::default());
         wizard.set_pair_message(SharedString::default());
@@ -2313,7 +2316,7 @@ fn register_callbacks(
         let wg = ctx.generation.clone();
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
+            run_wizard_pair(d, app_weak, wg, name, vendor, config, managed, profile).await;
         });
     });
 
@@ -2402,11 +2405,8 @@ fn register_callbacks(
         }
     });
 
-    // Other input handlers — Slint's `<=>` already handles
-    // property-level sync; these are no-ops for now.
+    // The name's `<=>` binding already syncs it.
     wizard.on_name_edited(|_| {});
-    wizard.on_profile_selected(|_| {});
-    wizard.on_managed_toggled(|_| {});
 
     // Manual-entry: the vendor ComboBox writes its `current-index`
     // straight into `manual-vendor-index` via two-way binding (no
@@ -2771,7 +2771,7 @@ fn register_callbacks(
                 wizard.set_selected_hw_model(SharedString::default());
                 fill_picked_tv_name(&wizard, &ip_for_ui);
                 if wizard.get_system_profile().is_empty() {
-                    wizard.set_system_profile("default".into());
+                    wizard.set_system_profile(default_system_profile_display());
                 }
                 wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
                 wizard.set_schema_valid(false);

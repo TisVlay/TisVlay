@@ -16,6 +16,7 @@ use tisvlay::{
     DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
 };
 use tisvlay::{FailureCode, PairingPhase};
+use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
 use tracing::warn;
 
 use crate::edit_pane::extract_invalid_vendor_config;
@@ -432,6 +433,10 @@ fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
 ///   the live `wizard_gen`. A user who clicks Cancel + reopens the
 ///   wizard before this task finishes won't get stale phase
 ///   messages bleeding into the new session.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a spawned task: the client handles plus the pair request's fields, each moved in once from the caller"
+)]
 pub(crate) async fn run_wizard_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
@@ -440,6 +445,7 @@ pub(crate) async fn run_wizard_pair(
     vendor: String,
     config: serde_json::Map<String, serde_json::Value>,
     managed: bool,
+    system_profile: String,
 ) {
     // Capture the generation at task start. Every callback below
     // re-reads the live gen and skips if it has drifted.
@@ -508,7 +514,40 @@ pub(crate) async fn run_wizard_pair(
     let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
+    if result.is_ok() {
+        assign_initial_profile(&daemon, tv_id, &system_profile).await;
+    }
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
+}
+
+/// Give a just-paired TV the system profile picked on the configure
+/// step. The picker lists display names, resolved here the way the TVs
+/// pane resolves its own picks; a paired TV already has the reserved
+/// default, so picking it needs no write. A failure leaves the TV on the
+/// default, which the TVs pane can change, and is only logged: the pair
+/// itself succeeded.
+async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: &str) {
+    if picked.is_empty() {
+        return;
+    }
+    let bodies = daemon.list_system_profile_bodies().await;
+    let Some(profile) = bodies
+        .iter()
+        .find(|(id, body)| {
+            crate::state::display_profile_name(**id, &body.name, DEFAULT_SYSTEM_PROFILE_UUID)
+                == picked
+        })
+        .map(|(id, _)| *id)
+    else {
+        warn!(%tv, picked, "the picked system profile is no longer in the catalog");
+        return;
+    };
+    if profile == DEFAULT_SYSTEM_PROFILE_UUID {
+        return;
+    }
+    if let Err(e) = daemon.set_tv_system_profile(tv, Some(profile)).await {
+        warn!(%tv, %profile, error = %error_text(&e), "couldn't assign the picked system profile");
+    }
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails
