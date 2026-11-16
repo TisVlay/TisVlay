@@ -671,62 +671,6 @@ export component ProfileTile inherits Rectangle {
 }
 
 // =============================================================================
-// DangerBtn — destructive-action button (accent fill, white text).
-// =============================================================================
-//
-// Accent fill, not danger red: Plasma users expect their DE-chosen
-// accent on filled buttons, and a red one next to accent-tinted UI
-// looks alien. Placement
-// (right side, after a Cancel) and explicit wording carry the
-// destructive intent, matching `ThemedButton { primary }`'s look. Kept as a separate component so call sites are
-// self-documenting (`DangerBtn { text: "Remove TV" }` reads
-// destructive-by-name, even though the rendering matches a primary
-// button).
-
-export component DangerBtn inherits Focusable {
-    in property <string> text;
-    in property <length> min-button-width: 80px;
-    callback clicked();
-
-    accessible-label: root.text;
-    activated => {
-        root.clicked();
-    }
-
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-    min-height: Design.size-input;
-    min-width: min-button-width;
-
-    background: !root.enabled
-        ? Theme.surface2
-        : root.hovered ? Theme.accent-pressed
-        : Theme.accent;
-    border-color: !root.enabled
-        ? Theme.border
-        : root.hovered ? Theme.accent-pressed
-        : Theme.accent;
-    border-width: Design.border-thin;
-    border-radius: Design.radius-control;
-    animate background, border-color { duration: 150ms; }
-
-    HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: Design.gap-row;
-        padding-right: Design.gap-row;
-        alignment: center;
-        Text {
-            text: root.text;
-            color: !root.enabled ? Theme.text-faint : white;
-            font-size: Design.font-body;
-            font-weight: 500;
-            vertical-alignment: center;
-        }
-    }
-}
-
-// =============================================================================
 // UriBtn — neutral outlined button for opening URLs.
 // =============================================================================
 //
@@ -892,6 +836,20 @@ export component ThemedButton inherits Focusable {
             vertical-alignment: center;
         }
     }
+}
+
+// =============================================================================
+// DangerBtn — destructive-action button (accent fill, white text).
+// =============================================================================
+//
+// Accent fill, not danger red: Plasma users expect their DE-chosen
+// accent on filled buttons, and a red one next to accent-tinted UI
+// looks alien. Placement (right side, after a Cancel) and explicit
+// wording carry the destructive intent. A primary `ThemedButton` under
+// its own name, so call sites read destructive-by-name
+// (`DangerBtn { text: "Remove TV" }`).
+export component DangerBtn inherits ThemedButton {
+    primary: true;
 }
 
 // =============================================================================
