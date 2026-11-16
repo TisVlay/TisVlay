@@ -36,7 +36,7 @@ On the branch: a drop the TV didn't announce marks it unreachable and redials it
 
 ## Checking it on the TV
 
-The TV is the test PC's only display and these passes blank it, so each runs as one unattended block: read the block's first lines for what to do and when, start it, and touch nothing but the TV's remote where it says so, until `DONE` prints. Pass A takes about 7 minutes and pass B about 19.
+The TV is the test PC's only display and these passes blank it, so each runs as one unattended block: read the block's first lines for what to do and when, start it, and touch nothing until `DONE` prints. Pass A takes about 7 minutes and pass B about the same.
 
 Each pass cuts the TV off from the PC the way that night did, without touching the router: an nftables table of its own rejects the PC's traffic to the TV as unreachable, and the daemon's open connection is killed (`ss -K`, which needs a kernel with `CONFIG_INET_DIAG_DESTROY`) so the drop doesn't wait on a send. The table is named, so a run that died is undone with `sudo nft delete table inet tisvlay_outage`.
 
@@ -104,7 +104,11 @@ end 2>&1 | tee ~/tisvlay-outage-a.log
 
 ### Pass B: the TV turned off during the outage
 
-On the branch only. It checks that redialing a TV that is off neither wakes it nor keeps it awake, which the "redial until it answers" rule rests on. Start a timer when you start the block: the remote is needed twice, at times the block prints first.
+On the branch only, and for a TV that also has a CEC connection configured, which is how the block turns it off and on again without anyone at the remote. It checks that redialing a TV that is off doesn't wake it or bring up a pairing prompt, which the "redial until it answers" rule rests on. Set the CEC twin's uuid as well:
+
+```fish
+set cec_id 00000000-0000-0000-0000-000000000000      # the same TV's CEC entry, from `tisvlay list`
+```
 
 ```fish
 sudo -v
@@ -112,11 +116,7 @@ begin
     fish -c 'while true; sudo -n -v; sleep 50; end' &
     set keepalive $last_pid
     set start (date '+%F %T')
-    set off_at (math $idle + 120)
-    set on_at (math $idle + 900)
-    echo "$start: hands off until DONE, about "(math "($idle + 1080) / 60")" min, except:"
-    echo "  at "(math "$off_at / 60")" min: turn the TV OFF with its remote"
-    echo "  at "(math "$on_at / 60")" min: turn the TV ON with its remote"
+    echo "$start: hands off the keyboard, mouse and TV until DONE, about "(math "($idle + 400) / 60")" min"
     function snap; date +%T; tisvlay --json list | jq -c 'map_values({name: ."meta/identity".name, link: ."state/link", power: ."state/power"})'; end
     fish -c 'tisvlay watch | while read -l line; echo (date +%T) $line; end' &
     set watcher $last_pid
@@ -126,23 +126,27 @@ begin
     sudo $nft add chain inet tisvlay_outage out '{ type filter hook output priority 0; }'
     sudo $nft add rule inet tisvlay_outage out ip daddr $tv_ip reject with icmp type net-unreachable
     sudo ss -K dst $tv_ip
-    sleep 180; snap
-    echo "outage ends, with the TV off since about a minute after it started"
+    sleep 10
+    echo "the TV is turned off over CEC, where the outage keeps it from saying so on the network"
+    tisvlay power $cec_id off
+    sleep 50; snap
+    echo "outage ends, with the TV off"
     sudo $nft delete table inet tisvlay_outage
-    for minute in (seq 10)
-        sleep 60; snap; ping -c1 -W1 $tv_ip >/dev/null; and echo "the TV answers ping"; or echo "the TV doesn't answer ping"
+    for minute in (seq 4)
+        sleep 60; snap
     end
-    echo "the TV should be turned on about now"
-    sleep 150; snap
+    echo "the TV is turned on over CEC"
+    tisvlay power $cec_id on
+    sleep 90; snap
     pkill -P $watcher; pkill -P $keepalive; kill $watcher $keepalive
     journalctl -t tisvlay-daemon -t tisvlay-session --since "$start" --no-pager -o short-precise | grep -v 'qualifies for socket access'
     echo DONE
 end 2>&1 | tee ~/tisvlay-outage-b.log
 ```
 
-**Expect:** through the ten minutes the TV is off, its link stays down, its CEC twin (if one is configured) keeps reporting standby, and the TV itself stays dark, with no pairing prompt and no wake. Whether it keeps answering ping says whether the dials hold it out of deep standby. Turned on again, it reconnects within about a minute without being asked.
+**Expect:** through the four minutes the TV is off after the path returns, the daemon keeps dialing it about once a minute, the network link stays down, and the CEC twin keeps reporting standby: the dials don't wake it. Turned on again, it reconnects on the next dial without being asked. A pairing prompt can only be seen, so look at the TV when `DONE` prints: it should show the PC's picture and nothing else.
 
-If the TV wakes, prompts or is kept from deep standby, the rule that an off TV may be redialed is wrong for it and is revisited before the branch merges.
+If the TV wakes or prompts, the rule that an off TV may be redialed is wrong for it and is revisited before the branch merges. Whether the dials keep such a TV from a deeper standby isn't something this block can tell: an LG with its network standby on answers ping while off whether or not anything dials it.
 
 ## Results
 
