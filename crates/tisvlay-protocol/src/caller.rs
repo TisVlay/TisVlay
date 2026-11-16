@@ -171,7 +171,12 @@ impl Caller {
 
     /// The cached single-reply querier for `key`.
     async fn querier(&self, key: &str) -> Result<Arc<Querier<'static>>, RpcError> {
-        if let Some(querier) = self.queriers.lock().expect("querier cache lock").get(key) {
+        if let Some(querier) = self
+            .queriers
+            .lock()
+            .expect("no code panics while the querier cache lock is held, so it is never poisoned")
+            .get(key)
+        {
             return Ok(Arc::clone(querier));
         }
         let declared = Arc::new(
@@ -186,7 +191,9 @@ impl Caller {
         Ok(Arc::clone(
             self.queriers
                 .lock()
-                .expect("querier cache lock")
+                .expect(
+                    "no code panics while the querier cache lock is held, so it is never poisoned",
+                )
                 .entry(key.to_string())
                 .or_insert(declared),
         ))

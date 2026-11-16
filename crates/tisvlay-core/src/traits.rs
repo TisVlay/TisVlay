@@ -48,8 +48,8 @@ use std::net::IpAddr;
 
 /// Communication transport used by a backend to connect to a device.
 ///
-/// The daemon uses this to scope system events (e.g., NetworkManager
-/// signals) to the appropriate devices — only network-dependent
+/// The daemon uses this to scope system events (its netlink route and
+/// carrier watch) to the appropriate devices — only network-dependent
 /// connections are affected by network loss/restore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
@@ -96,7 +96,8 @@ impl Transport {
 pub trait TvBackend: Send + Sync + 'static {
     /// Unique identifier for this backend (e.g., "lg", "samsung").
     ///
-    /// This is used in configuration files and D-Bus interfaces to identify the vendor.
+    /// This is used in configuration files and the protocol's vendor
+    /// catalog to identify the vendor.
     fn vendor_id(&self) -> &'static str;
 
     /// Human-readable vendor name (e.g., "LG WebOS", "Samsung Tizen").
@@ -213,7 +214,7 @@ impl LocalDevice {
 /// For `power_off()`, the implementation should close its own transport
 /// connection after sending the command, since the device is shutting down.
 ///
-/// `TvConnection` is the primary interface used by the daemon and CLI.
+/// `TvConnection` is the interface the daemon drives each TV through.
 #[async_trait]
 pub trait TvConnection: Send + Sync {
     /// Get the vendor ID for this connection's backend.
@@ -563,8 +564,8 @@ pub trait TvConnector: Send + Sync {
     /// Backend's primary descriptor — the value of the first
     /// `UserInput`-visibility entry from the vendor config.
     /// Convention: backends order their `config_schema` so the most
-    /// informative editable field (LG: ip; future Bluetooth: MAC;
-    /// USB-CEC: serial port) comes first. Used by daemon-internal log
+    /// informative editable field (LG: ip; CEC: device node) comes
+    /// first. Used by daemon-internal log
     /// formatters and route resolution where a single
     /// transport-appropriate string is needed.
     ///
@@ -662,12 +663,10 @@ pub trait TvConnector: Send + Sync {
     /// - **INFO pane** ([`display_config`](Self::display_config) +
     ///   [`display_diagnostics`](Self::display_diagnostics)):
     ///   `UserInput + Diagnostic`, skips `Secret`.
-    /// - **Edit pane** (future): `UserInput` only.
+    /// - **Edit pane**: `UserInput` only.
     ///
-    /// Default impl returns an empty list — backends that haven't
-    /// migrated to schema-driven config keep their previous
-    /// behavior (no INFO-pane rows, no edit support). Override to
-    /// describe the full vendor-config shape and tag each field's
+    /// Default impl returns an empty list: no INFO-pane rows and no
+    /// edit support. Override to describe the full vendor-config shape and tag each field's
     /// visibility; the framework handles projection from there.
     fn config_schema(&self) -> Vec<crate::PairingField> {
         Vec::new()
@@ -685,8 +684,7 @@ pub trait TvConnector: Send + Sync {
     ///
     /// Default impl filters [`config_schema`](Self::config_schema)
     /// to `UserInput`-visibility fields. Backends that override
-    /// `config_schema` get this projection for free; backends that
-    /// haven't migrated can still override this directly.
+    /// `config_schema` get this projection for free.
     fn pairing_schema(&self) -> Vec<crate::PairingField> {
         self.config_schema()
             .into_iter()
@@ -762,14 +760,12 @@ fn field_as_string(config: &VendorConfig, name: &str) -> Option<String> {
     }
 }
 
-/// Discovery of TVs on the network.
+/// Discovery of TVs reachable over the backend's transport.
 ///
 /// Backends that support the [`Capabilities::DISCOVERY`] flag should implement this trait.
 pub trait TvDiscovery: Send + Sync {
-    /// Discover TVs on the local network.
-    ///
-    /// This scans the network for TVs supported by this backend and returns
-    /// information about each discovered TV.
+    /// Discover the TVs this backend can reach (on the network, on the
+    /// CEC bus) and return what it learns about each.
     fn discover(
         &self,
         timeout: std::time::Duration,

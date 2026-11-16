@@ -24,7 +24,7 @@ pub enum SessionAction {
     ScreenOn,
     /// Power off the TV.
     PowerOff,
-    /// Power on the TV (Wake-on-LAN).
+    /// Power on the TV, by its transport's wake.
     PowerOn,
 }
 
@@ -561,7 +561,7 @@ impl Default for ResolvedSystemProfile {
 /// Profile configuration for session behavior.
 ///
 /// Fields are `Option<T>` to support layered inheritance:
-/// user profile -> system default profile -> hard-coded defaults.
+/// user profile -> default user profile -> built-in defaults.
 ///
 /// Use [`UserProfileConfig::resolve()`] or [`UserProfileConfig::merge_with_base()`]
 /// to produce a [`ResolvedUserProfile`] with concrete values.
@@ -672,7 +672,7 @@ profile_plumbing! {
 /// A fully resolved profile with no optional fields.
 ///
 /// This is the result of merging a [`UserProfileConfig`] chain
-/// (user profile -> system default -> hard-coded defaults).
+/// (user profile -> default user profile -> built-in defaults).
 /// Consumers (session monitor, idle detector) use this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedUserProfile {

@@ -355,7 +355,7 @@ pub fn parse_manager_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
         .strip_prefix("/manager/rpc/")
 }
 
-/// Parse a pairing-progress key into the pairing uuid.
+/// Parse a pairing-progress key into the TV's id.
 pub fn parse_pairing_progress(site: &str, key: &str) -> Option<Uuid> {
     let rest = key
         .strip_prefix("tisvlay/")?
