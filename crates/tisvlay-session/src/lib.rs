@@ -849,9 +849,9 @@ impl Core {
     /// Bounded: awaits up to `EAGER_TIMEOUT` in the single-owner Core loop,
     /// and only when a live Sunshine source is holding down a real dispatch
     /// (see `eager_refresh_applies`) — infrequent and tight, which is why the
-    /// budget is small and the trigger narrow. It refreshes the source only;
-    /// the connect/disconnect edge accounting stays with the poll and the
-    /// report path.
+    /// budget is small and the trigger narrow. It refreshes the source only:
+    /// a stream it ends this way fires no `StreamEnd` edge, and the poll,
+    /// which reports its level every tick, re-arms one that resumes.
     async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
         let has_sunshine = self
             .stream_sources
