@@ -341,9 +341,7 @@ fn apply_tv_edit(
         .get(entity)
         .unwrap_or((None, false, None, None, None, None));
     if handle.is_some() || pending {
-        let mut e = commands.entity(entity);
-        e.remove::<(ConnectionHandle, RetryAt)>();
-        redial(&mut e, false);
+        redial_on_new_config(&mut commands.entity(entity));
     }
 }
 
