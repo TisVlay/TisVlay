@@ -2636,11 +2636,14 @@ fn register_callbacks(
                         // Per-field validation errors get routed back
                         // to the originating row so the user can fix
                         // them in place. Non-field errors fall through
-                        // to the generic banner.
-                        if let Some((field, reason)) = extract_invalid_vendor_config(&e) {
-                            let model = edit_pane.get_fields();
-                            mark_edit_field_invalid(&edit_pane, &model, &field, &reason);
-                        } else {
+                        // to the generic banner, as does a field no row
+                        // shows.
+                        let routed =
+                            extract_invalid_vendor_config(&e).is_some_and(|(field, reason)| {
+                                let model = edit_pane.get_fields();
+                                mark_edit_field_invalid(&edit_pane, &model, &field, &reason)
+                            });
+                        if !routed {
                             edit_pane.set_error(SharedString::from(error_text(&e)));
                         }
                     }
