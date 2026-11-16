@@ -55,7 +55,7 @@ TisVlay TV control
 
 **Usage:** `tisvlay [OPTIONS] <COMMAND>`
 
-A TV setting or state reads when its value is left out and sets when it's given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` sets it. On/off settings take `--toggle`, and settings that can be unset take `--clear`. Commands that change something print nothing on success.
+A TV setting or state reads when its value is left out and sets when it's given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` sets it. On/off settings take `--toggle`, and settings that can be unset take `--clear`. Setting a value prints nothing on success; `--toggle` prints the value it sent, and commands that create something print its UUID.
 
 ###### **Subcommands:**
 
@@ -89,7 +89,7 @@ A TV setting or state reads when its value is left out and sets when it's given:
 ###### **Options:**
 
 * `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
-* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile` and `stream` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile`, `stream` and `reload` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions; leave it unless you run more than one daemon
 
   Default value: `main`

@@ -30,7 +30,9 @@ use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
     after_long_help = "A TV setting or state reads when its value is left out and sets when it's \
                        given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` \
                        sets it. On/off settings take `--toggle`, and settings that can be unset \
-                       take `--clear`. Commands that change something print nothing on success."
+                       take `--clear`. Setting a value prints nothing on success; `--toggle` \
+                       prints the value it sent, and commands that create something print its \
+                       UUID."
 )]
 pub struct Cli {
     /// Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
@@ -38,8 +40,8 @@ pub struct Cli {
     #[arg(long)]
     pub socket: Option<PathBuf>,
 
-    /// Session-service user socket for the `profile user`, `user-profile`
-    /// and `stream` verbs (default:
+    /// Session-service user socket for the `profile user`, `user-profile`,
+    /// `stream` and `reload` verbs (default:
     /// $XDG_RUNTIME_DIR/tisvlay/session.sock).
     #[arg(long)]
     pub user_socket: Option<PathBuf>,
@@ -152,6 +154,7 @@ pub enum Command {
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// 0–100; leave it out to print the current level.
+        #[arg(value_parser = clap::value_parser!(u8).range(..=100))]
         level: Option<u8>,
     },
     /// Set a TV's backlight level, or print it.
@@ -159,6 +162,7 @@ pub enum Command {
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// 0–100; leave it out to print the current level.
+        #[arg(value_parser = clap::value_parser!(u8).range(..=100))]
         level: Option<u8>,
     },
     /// Switch a TV's input, or print the current one.

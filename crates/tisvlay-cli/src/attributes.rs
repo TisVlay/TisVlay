@@ -32,8 +32,8 @@ use crate::render::print_reply;
 use crate::{ack, call};
 
 /// How long a cache read waits for the next sample before taking what it
-/// has: the same window `list` uses.
-const STATE_QUIET: Duration = Duration::from_millis(400);
+/// has; `list` shares it.
+pub(crate) const STATE_QUIET: Duration = Duration::from_millis(400);
 
 /// One TV's device state from the publisher caches, decoded per payload.
 /// A key that never arrived (or didn't decode) is `None`.

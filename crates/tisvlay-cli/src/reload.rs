@@ -15,16 +15,20 @@ use crate::release_mismatch;
 /// the daemon's, then the session's and the tray's over the user socket.
 /// A service that isn't running has nothing to reload, so it's reported
 /// rather than failed; any other error fails the command after the report.
+/// `daemon` is `None` when the daemon's socket didn't open.
 pub(crate) async fn reload(
-    caller: &Caller,
+    daemon: Option<&Caller>,
     user_socket: Option<PathBuf>,
     site: &str,
     json_out: bool,
 ) -> Result<()> {
-    let daemon = match release_mismatch::<manager::Info>(caller, "daemon").await {
-        Err(_) => ReloadOutcome::NotRunning,
-        Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
-        Ok(None) => reload_outcome(Some(caller.call::<manager::Reload>(&(), &()).await)),
+    let daemon = match daemon {
+        None => ReloadOutcome::NotRunning,
+        Some(caller) => match release_mismatch::<manager::Info>(caller, "daemon").await {
+            Err(_) => ReloadOutcome::NotRunning,
+            Ok(Some(mismatch)) => ReloadOutcome::Failed(mismatch),
+            Ok(None) => reload_outcome(Some(caller.call::<manager::Reload>(&(), &()).await)),
+        },
     };
     let user_socket =
         user_socket.unwrap_or_else(tisvlay_protocol::bootstrap::default_session_socket_path);

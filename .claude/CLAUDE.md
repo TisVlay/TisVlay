@@ -175,7 +175,7 @@ tisvlay volume <uuid> 40             # set; `tisvlay volume <uuid>` reads it bac
 tisvlay mute <uuid> --toggle
 tisvlay config <uuid> '{"name":"Renamed"}'
 tisvlay profile system list          # system profiles (editable default included)
-tisvlay profile user list --user-socket …
+tisvlay --user-socket … profile user list   # client flags go before the verb
 ```
 
 ### NixOS Installation
