@@ -770,6 +770,8 @@ component StepPair {
     in property <string> phase;        // "awaiting_tv" / "complete" / "failed" / ""
     in property <string> message;
     in property <string> tv-address;
+    /// False while re-pairing, which has no discovery to go back to.
+    in property <bool> can-go-back: true;
     callback retry();
     callback back-to-discovery();
     // The failed phase's two buttons are a row for the arrows.
@@ -878,7 +880,7 @@ component StepPair {
                     primary: true;
                     clicked => { root.retry(); }
                 }
-                ThemedButton {
+                if root.can-go-back: ThemedButton {
                     nav-row: root.actions-row;
                     text: @tr("Back to discovery");
                     clicked => { root.back-to-discovery(); }
@@ -1195,6 +1197,7 @@ export component PairingWizardPane inherits Rectangle {
                     phase: PairingWizard.pair-phase;
                     message: PairingWizard.pair-message;
                     tv-address: PairingWizard.selected-address;
+                    can-go-back: !PairingWizard.re-pair;
                     retry => { PairingWizard.retry-pair(); }
                     back-to-discovery => { PairingWizard.back-to-discovery(); }
                 }

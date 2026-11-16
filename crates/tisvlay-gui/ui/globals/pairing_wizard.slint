@@ -102,11 +102,16 @@ export global PairingWizard {
     /// `Daemon.request-pair()` and false on cancel/finish.
     in-out property <bool> active;
     in-out property <int> step: 1;
+    /// The session re-pairs the TV in `pair-tv-id` rather than adding
+    /// one: Retry re-pairs it, and there is no configure step or
+    /// discovery to go back to.
+    in-out property <bool> re-pair;
     /// The footer's Back and Cancel, which Escape mirrors: Back on the
-    /// configure step and on a pair step that isn't mid-handshake,
-    /// Cancel on every step but the last.
-    out property <bool> back-enabled: root.step == 2
-        || (root.step == 3 && root.pair-phase != "awaiting_tv" && root.pair-phase != "awaiting_input");
+    /// configure step and on a failed pair step (not mid-handshake, and
+    /// not once paired, where a second Pair would add the TV twice),
+    /// never while re-pairing; Cancel on every step but the last.
+    out property <bool> back-enabled: !root.re-pair
+        && (root.step == 2 || (root.step == 3 && root.pair-phase == "failed"));
     out property <bool> cancel-enabled: root.step != 4;
     in-out property <[WizardDiscoveredTv]> discovered;
     in-out property <bool> discovery-streaming;

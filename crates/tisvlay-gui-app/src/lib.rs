@@ -2112,11 +2112,10 @@ fn register_callbacks(
         wizard.set_selected_vendor(vendor_id);
         wizard.set_selected_vendor_name(vendor_name);
         wizard.set_selected_address(tv.primary_descriptor.clone());
-        // Hardware model isn't carried in TvViewModel today — leave
-        // blank; the wizard's StepPair UI handles an empty value.
-        wizard.set_selected_hw_model(SharedString::default());
+        wizard.set_selected_hw_model(tv.hw_model);
         wizard.set_tv_name(tv.name);
         wizard.set_pair_tv_id(SharedString::from(tv_id_str.as_str()));
+        wizard.set_re_pair(true);
         wizard.set_step(3);
         wizard.set_active(true);
 
@@ -2292,7 +2291,8 @@ fn register_callbacks(
         }
     });
 
-    // Pair-failed → retry: restart pair_tv with the same parameters.
+    // Pair-failed → retry: re-pair the same TV, or restart pair_tv with
+    // the same parameters.
     let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
     wizard.on_retry_pair(move || {
@@ -2300,6 +2300,20 @@ fn register_callbacks(
             return;
         };
         let wizard = app.global::<PairingWizard>();
+        if wizard.get_re_pair() {
+            let Ok(tv) = wizard.get_pair_tv_id().parse::<uuid::Uuid>() else {
+                warn!("wizard: re-pair retry without a TV id, ignoring");
+                return;
+            };
+            wizard.set_pair_phase(SharedString::default());
+            wizard.set_pair_message(SharedString::default());
+            let ctx = ctx.clone();
+            let app_weak = app.as_weak();
+            tokio::spawn(async move {
+                run_wizard_re_pair(ctx.daemon, app_weak, ctx.generation, tv).await;
+            });
+            return;
+        }
         let name = wizard.get_tv_name().to_string();
         if name.is_empty() {
             return;
@@ -3988,9 +4002,19 @@ mod tests {
         assert_eq!(wizard.get_step(), 3);
         assert_eq!(wizard.get_tv_name(), "Retry TV");
         assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        assert!(wizard.get_re_pair());
         wait_for_ui(&app, |app| {
             app.global::<PairingWizard>().get_pair_phase() == "complete"
         });
+        // A re-pair has no configure step to go back to, and its Retry
+        // re-pairs the same TV rather than pairing a new one.
+        assert!(!wizard.get_back_enabled());
+        wizard.invoke_retry_pair();
+        assert_eq!(wizard.get_pair_phase(), "");
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        assert_eq!(wizard.get_pair_tv_id(), retry_tv.to_string().as_str());
         wizard.set_mac_notice("differs".into());
         wizard.set_pair_tv_id(uuid::Uuid::new_v4().to_string().into());
         wizard.set_mac_reported("84:90:0A:63:A9:94".into());

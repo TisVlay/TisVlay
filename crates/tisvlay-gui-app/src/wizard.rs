@@ -201,6 +201,7 @@ pub(crate) fn reset_wizard(
     cancel_wizard_manual_lookup(manual_lookup_cancel);
     let wizard = app.global::<PairingWizard>();
     wizard.set_active(false);
+    wizard.set_re_pair(false);
     wizard.set_step(1);
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
