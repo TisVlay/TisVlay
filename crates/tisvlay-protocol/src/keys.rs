@@ -25,6 +25,12 @@ pub fn tv_path(site: &str, tv: &Uuid, path: &str) -> String {
     format!("tisvlay/{site}/tv/{tv}/{path}")
 }
 
+/// One per-TV path across every TV: `tisvlay/<site>/tv/*/<path>`, e.g.
+/// every TV's identity with [`StatePayload::PATH`](crate::payload::StatePayload::PATH).
+pub fn tv_path_wild(site: &str, path: &str) -> String {
+    format!("tisvlay/{site}/tv/*/{path}")
+}
+
 /// Observability tap: `tisvlay/<site>/event/<name>`.
 pub fn event(site: &str, name: &str) -> String {
     format!("tisvlay/{site}/event/{name}")
