@@ -40,6 +40,8 @@ proptest = { workspace = true }
 tempfile = { workspace = true }
 tisvlay-cec = { workspace = true, features = ["test-link"] }
 tisvlay-test = { workspace = true }
+# `start_paused` for the unit tests that run in virtual time.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
