@@ -21,13 +21,12 @@ export global Toast {
 export component ToastView inherits Rectangle {
     visible: Toast.message != "";
 
-    // Toasts surface short success messages dynamically; AT users
-    // need the text announced when it appears. Slint 1.16 doesn't
-    // expose `accessible-live` (slint-ui/slint#11646 landed
-    // post-release); the role + label combination at least makes
-    // the content readable when the AT client polls.
+    // Toasts surface short success messages dynamically; a polite live
+    // region has AT announce the text when it appears without
+    // interrupting.
     accessible-role: text;
     accessible-label: Toast.message;
+    accessible-live-region: polite;
 
     // Window-level children inherit the Window's full size unless
     // bound explicitly, so size to the inner Text's preferred
