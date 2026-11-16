@@ -159,11 +159,11 @@ Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The TV's display name
 
 ###### **Options:**
 
-* `--vendor <VENDOR>`
+* `--vendor <VENDOR>` — The backend to pair with (`tisvlay vendor` lists them)
 
   Default value: `lg`
 * `--params <PARAMS>` — Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'
@@ -179,7 +179,7 @@ Re-run the pairing handshake for an existing TV
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -191,7 +191,7 @@ Ask a downed TV to reconnect
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -203,7 +203,7 @@ Remove a TV (deletes all its keys)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -227,7 +227,7 @@ Power a TV on or off, or print whether it's on (connected and awake)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -247,7 +247,7 @@ Blank or wake a TV's screen, or print whether it shows a picture
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -267,7 +267,7 @@ Mute or unmute a TV, or print whether it's muted
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -287,7 +287,7 @@ Set whether a TV's profiles act (on the TV, and on this PC for its events), or p
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -307,7 +307,7 @@ Set a TV's volume, or print it
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<LEVEL>` — 0–100; leave it out to print the current level
 
 
@@ -320,7 +320,7 @@ Set a TV's backlight level, or print it
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<LEVEL>` — 0–100; leave it out to print the current level
 
 
@@ -333,7 +333,7 @@ Switch a TV's input, or print the current one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<INPUT>` — The input ID; leave it out to print the current one
 
 
@@ -346,7 +346,7 @@ Set a TV's primary input (the one automation restores and compares against), or 
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<INPUT>` — The input ID; leave it out to print the primary one
 
 ###### **Options:**
@@ -363,7 +363,7 @@ Rename a TV, or print its name
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<NAME>` — The new name; leave it out to print the current one
 
 
@@ -376,7 +376,7 @@ Patch a TV's config, or print it (vendor secrets redacted)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PATCH>` — A JSON object merged into the config (null unsets a vendor key); leave it out to print the config
 
 
@@ -389,7 +389,7 @@ Assign a TV's system profile, or print the assigned one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
 
 ###### **Options:**
@@ -407,7 +407,7 @@ Assign a TV's user profile (via --user-socket), or print the assigned one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
 
 ###### **Options:**
@@ -463,11 +463,11 @@ Create a profile, printing its UUID: `--body` is a SystemProfileConfig body
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The new profile's name
 
 ###### **Options:**
 
-* `--body <BODY>`
+* `--body <BODY>` — The profile body as JSON; unset fields inherit
 
 
 
@@ -479,8 +479,8 @@ Replace a profile's body (full JSON body; name required inside)
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<BODY>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<BODY>` — The full profile body as JSON, name included
 
 
 
@@ -492,8 +492,8 @@ Copy a profile under a new name, printing the copy's UUID
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<NAME>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<NAME>` — The copy's name
 
 
 
@@ -505,7 +505,7 @@ Delete a profile (assignments referring to it fall back to default)
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
 
 
 
@@ -550,11 +550,11 @@ Create a profile, printing its UUID: `--body` is a UserProfileConfig body
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The new profile's name
 
 ###### **Options:**
 
-* `--body <BODY>`
+* `--body <BODY>` — The profile body as JSON; unset fields inherit
 
 
 
@@ -566,8 +566,8 @@ Replace a profile's body (full JSON body; name required inside)
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<BODY>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<BODY>` — The full profile body as JSON, name included
 
 
 
@@ -579,8 +579,8 @@ Copy a profile under a new name, printing the copy's UUID
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<NAME>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<NAME>` — The copy's name
 
 
 
@@ -592,7 +592,7 @@ Delete a profile (assignments referring to it fall back to default)
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
 
 
 
@@ -626,7 +626,7 @@ Arm the named source
 
 ###### **Options:**
 
-* `--source <SOURCE>`
+* `--source <SOURCE>` — The source to arm or disarm: its name in the stream fact
 
   Default value: `manual`
 
@@ -640,7 +640,7 @@ Disarm the named source
 
 ###### **Options:**
 
-* `--source <SOURCE>`
+* `--source <SOURCE>` — The source to arm or disarm: its name in the stream fact
 
   Default value: `manual`
 

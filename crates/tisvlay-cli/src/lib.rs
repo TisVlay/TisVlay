@@ -89,7 +89,9 @@ pub enum Command {
     },
     /// Pair a new TV, streaming the pairing progress (ctrl-c cancels).
     Pair {
+        /// The TV's display name.
         name: String,
+        /// The backend to pair with (`tisvlay vendor` lists them).
         #[arg(long, default_value = "lg", add = vendor_completions())]
         vendor: String,
         /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
@@ -101,16 +103,19 @@ pub enum Command {
     },
     /// Re-run the pairing handshake for an existing TV.
     Repair {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
     },
     /// Ask a downed TV to reconnect.
     Reconnect {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
     },
     /// Remove a TV (deletes all its keys).
     Remove {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
     },
@@ -123,6 +128,7 @@ pub enum Command {
     /// Power a TV on or off, or print whether it's on (connected and
     /// awake).
     Power {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         #[command(flatten)]
@@ -130,6 +136,7 @@ pub enum Command {
     },
     /// Blank or wake a TV's screen, or print whether it shows a picture.
     Screen {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         #[command(flatten)]
@@ -137,6 +144,7 @@ pub enum Command {
     },
     /// Mute or unmute a TV, or print whether it's muted.
     Mute {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         #[command(flatten)]
@@ -144,6 +152,7 @@ pub enum Command {
     },
     /// Set whether a TV's profiles act (on the TV, and on this PC for its events), or print it.
     Managed {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         #[command(flatten)]
@@ -151,6 +160,7 @@ pub enum Command {
     },
     /// Set a TV's volume, or print it.
     Volume {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// 0–100; leave it out to print the current level.
@@ -159,6 +169,7 @@ pub enum Command {
     },
     /// Set a TV's backlight level, or print it.
     Backlight {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// 0–100; leave it out to print the current level.
@@ -167,6 +178,7 @@ pub enum Command {
     },
     /// Switch a TV's input, or print the current one.
     Input {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// The input ID; leave it out to print the current one.
@@ -176,6 +188,7 @@ pub enum Command {
     /// Set a TV's primary input (the one automation restores and
     /// compares against), or print it.
     PrimaryInput {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// The input ID; leave it out to print the primary one.
@@ -187,6 +200,7 @@ pub enum Command {
     },
     /// Rename a TV, or print its name.
     Name {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// The new name; leave it out to print the current one.
@@ -195,6 +209,7 @@ pub enum Command {
     },
     /// Patch a TV's config, or print it (vendor secrets redacted).
     Config {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// A JSON object merged into the config (null unsets a vendor
@@ -203,6 +218,7 @@ pub enum Command {
     },
     /// Assign a TV's system profile, or print the assigned one.
     SystemProfile {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// The profile to assign; leave it out to print the assigned one
@@ -220,6 +236,7 @@ pub enum Command {
     /// Assign a TV's user profile (via --user-socket), or print the
     /// assigned one.
     UserProfile {
+        /// The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon).
         #[arg(value_name = "TV", add = tv_completions())]
         tv: Uuid,
         /// The profile to assign; leave it out to print the assigned one
@@ -330,11 +347,13 @@ pub enum ProfileScope {
 pub enum StreamCmd {
     /// Arm the named source.
     Start {
+        /// The source to arm or disarm: its name in the stream fact.
         #[arg(long, default_value = "manual")]
         source: String,
     },
     /// Disarm the named source.
     Stop {
+        /// The source to arm or disarm: its name in the stream fact.
         #[arg(long, default_value = "manual")]
         source: String,
     },
@@ -349,24 +368,31 @@ pub enum SystemProfileCmd {
     /// Create a profile, printing its UUID: `--body` is a
     /// SystemProfileConfig body.
     Create {
+        /// The new profile's name.
         name: String,
+        /// The profile body as JSON; unset fields inherit.
         #[arg(long)]
         body: Option<String>,
     },
     /// Replace a profile's body (full JSON body; name required inside).
     Update {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = system_profile_completions())]
         id: Uuid,
+        /// The full profile body as JSON, name included.
         body: String,
     },
     /// Copy a profile under a new name, printing the copy's UUID.
     Duplicate {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = system_profile_completions())]
         id: Uuid,
+        /// The copy's name.
         name: String,
     },
     /// Delete a profile (assignments referring to it fall back to default).
     Delete {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = system_profile_completions())]
         id: Uuid,
     },
@@ -381,24 +407,31 @@ pub enum UserProfileCmd {
     /// Create a profile, printing its UUID: `--body` is a
     /// UserProfileConfig body.
     Create {
+        /// The new profile's name.
         name: String,
+        /// The profile body as JSON; unset fields inherit.
         #[arg(long)]
         body: Option<String>,
     },
     /// Replace a profile's body (full JSON body; name required inside).
     Update {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = user_profile_completions())]
         id: Uuid,
+        /// The full profile body as JSON, name included.
         body: String,
     },
     /// Copy a profile under a new name, printing the copy's UUID.
     Duplicate {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = user_profile_completions())]
         id: Uuid,
+        /// The copy's name.
         name: String,
     },
     /// Delete a profile (assignments referring to it fall back to default).
     Delete {
+        /// The profile's UUID (`tisvlay profile … list` shows it).
         #[arg(add = user_profile_completions())]
         id: Uuid,
     },
