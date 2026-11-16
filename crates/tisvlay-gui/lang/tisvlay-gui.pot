@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tisvlay-gui\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-11-16 00:49-0600\n"
+"POT-Creation-Date: 2026-11-16 00:52-0600\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -208,6 +208,10 @@ msgstr ""
 #: crates/tisvlay-gui-app/src/profiles.rs:418
 msgctxt "profile field"
 msgid "On TV power on"
+msgstr ""
+
+#: crates/tisvlay-gui-app/src/profiles.rs:1995
+msgid "The profile hasn't loaded yet; try again."
 msgstr ""
 
 #: crates/tisvlay-gui-app/src/lib.rs:224

@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gettextrs::pgettext;
+use gettextrs::{gettext, pgettext};
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
@@ -1965,10 +1965,14 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
 
 /// Read the cached body for the current selection (the per-uuid entry
 /// if present, the `default_body` slot when `uuid` matches the
-/// reserved default, or an empty body as a last resort). Returned by
-/// value so the caller can mutate without holding the editor lock
-/// across the daemon call.
-fn snapshot_system_body(state: &ProfileEditorState, uuid: Uuid) -> SystemProfileBody {
+/// reserved default). Returned by value so the caller can mutate
+/// without holding the editor lock across the daemon call. An edit is a
+/// whole-body write, so a body that hasn't loaded refuses the edit
+/// rather than writing an empty one over the profile.
+fn snapshot_system_body(
+    state: &ProfileEditorState,
+    uuid: Uuid,
+) -> anyhow::Result<SystemProfileBody> {
     state
         .system
         .bodies
@@ -1981,10 +1985,17 @@ fn snapshot_system_body(state: &ProfileEditorState, uuid: Uuid) -> SystemProfile
                 None
             }
         })
-        .unwrap_or_default()
+        .ok_or_else(not_loaded)
 }
 
-fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> UserProfileBody {
+/// The refusal for an edit to a profile whose body hasn't loaded.
+fn not_loaded() -> anyhow::Error {
+    // Outside the macro, where xgettext finds it.
+    let message = gettext("The profile hasn't loaded yet; try again.");
+    anyhow::anyhow!(message)
+}
+
+fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> anyhow::Result<UserProfileBody> {
     state
         .user
         .bodies
@@ -1997,13 +2008,14 @@ fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> UserProfileBody
                 None
             }
         })
-        .unwrap_or_default()
+        .ok_or_else(not_loaded)
 }
 
 /// Read-modify-write helper for a single field on a system profile.
 /// Snapshots the cached body, applies `mutate`, then writes it back
-/// over D-Bus. The lock is held only for the snapshot; the daemon
-/// round-trip happens after `drop`.
+/// and caches what it wrote, so a second edit before the published
+/// echo builds on this one. The lock is held only for the snapshot and
+/// the cache write; the daemon round-trip happens between them.
 async fn update_system_field(
     editor: &ProfileEditor,
     daemon: &DaemonClient,
@@ -2013,10 +2025,12 @@ async fn update_system_field(
 ) -> anyhow::Result<()> {
     let mut body = {
         let state = editor.lock();
-        snapshot_system_body(&state, uuid)
+        snapshot_system_body(&state, uuid)?
     };
     set_system_field(&mut body, wire, patch)?;
-    Ok(daemon.update_system_profile(uuid, body).await?)
+    daemon.update_system_profile(uuid, body.clone()).await?;
+    editor.lock().system.cache_body(uuid, body);
+    Ok(())
 }
 
 async fn update_user_field(
@@ -2028,14 +2042,16 @@ async fn update_user_field(
 ) -> anyhow::Result<()> {
     let mut body = {
         let state = editor.lock();
-        snapshot_user_body(&state, uuid)
+        snapshot_user_body(&state, uuid)?
     };
     set_user_field(&mut body, wire, patch)?;
     let session_ref = session.read().await;
     let client = session_ref
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-    Ok(client.update_user_profile(uuid, body).await?)
+    client.update_user_profile(uuid, body.clone()).await?;
+    editor.lock().user.cache_body(uuid, body);
+    Ok(())
 }
 
 /// Apply a ComboBox-driven enum edit to the selected profile. The
@@ -2275,18 +2291,20 @@ pub(crate) async fn dispatch_reset_all(
         EditorKind::System => {
             let snapshot = {
                 let state = editor.lock();
-                snapshot_system_body(&state, uuid)
+                snapshot_system_body(&state, uuid)?
             };
             let body = SystemProfileBody {
                 name: snapshot.name,
                 ..Default::default()
             };
-            Ok(daemon.update_system_profile(uuid, body).await?)
+            daemon.update_system_profile(uuid, body.clone()).await?;
+            editor.lock().system.cache_body(uuid, body);
+            Ok(())
         }
         EditorKind::User => {
             let snapshot = {
                 let state = editor.lock();
-                snapshot_user_body(&state, uuid)
+                snapshot_user_body(&state, uuid)?
             };
             let body = UserProfileBody {
                 name: snapshot.name,
@@ -2296,7 +2314,9 @@ pub(crate) async fn dispatch_reset_all(
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, body).await?)
+            client.update_user_profile(uuid, body.clone()).await?;
+            editor.lock().user.cache_body(uuid, body);
+            Ok(())
         }
     }
 }
@@ -2317,22 +2337,26 @@ pub(crate) async fn dispatch_rename(
         EditorKind::System => {
             let mut body = {
                 let state = editor.lock();
-                snapshot_system_body(&state, uuid)
+                snapshot_system_body(&state, uuid)?
             };
             body.name = new_name.to_string();
-            Ok(daemon.update_system_profile(uuid, body).await?)
+            daemon.update_system_profile(uuid, body.clone()).await?;
+            editor.lock().system.cache_body(uuid, body);
+            Ok(())
         }
         EditorKind::User => {
             let mut body = {
                 let state = editor.lock();
-                snapshot_user_body(&state, uuid)
+                snapshot_user_body(&state, uuid)?
             };
             body.name = new_name.to_string();
             let session_ref = session.read().await;
             let client = session_ref
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, body).await?)
+            client.update_user_profile(uuid, body.clone()).await?;
+            editor.lock().user.cache_body(uuid, body);
+            Ok(())
         }
     }
 }
@@ -3813,7 +3837,7 @@ mod tests {
             on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
-        let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID);
+        let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID).unwrap();
         assert_eq!(snap.name, "default");
         assert_eq!(snap.on_startup, Some(SessionAction::PowerOn.into()));
     }
@@ -3830,17 +3854,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let snap = snapshot_system_body(&state, uuid);
+        let snap = snapshot_system_body(&state, uuid).unwrap();
         assert_eq!(snap.name, "evening");
         assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]
-    fn snapshot_system_body_returns_empty_for_uncached_non_default_uuid() {
+    fn snapshot_system_body_refuses_an_uncached_non_default_uuid() {
+        // An edit is a whole-body write: an empty body would wipe the
+        // profile's name and every field.
         let state = ProfileEditorState::default();
-        let snap = snapshot_system_body(&state, Uuid::new_v4());
-        assert_eq!(snap.name, "");
-        assert_eq!(snap.on_startup, None);
+        assert!(snapshot_system_body(&state, Uuid::new_v4()).is_err());
+        assert!(snapshot_user_body(&state, Uuid::new_v4()).is_err());
     }
 
     #[test]
@@ -3851,7 +3876,7 @@ mod tests {
             unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
-        let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID);
+        let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID).unwrap();
         assert_eq!(snap.name, "default");
         assert_eq!(snap.unlocked_idle_timeout_seconds, Some(300));
     }
