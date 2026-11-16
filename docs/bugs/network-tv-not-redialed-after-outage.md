@@ -92,7 +92,7 @@ begin
     sudo $nft delete table inet tisvlay_outage
     sleep 90; snap
     echo "waiting $idle s for the idle timeout to re-blank a TV found lit"; sleep (math $idle + 30); snap
-    kill $watcher $keepalive
+    pkill -P $watcher; pkill -P $keepalive; kill $watcher $keepalive
     journalctl -t tisvlay-daemon -t tisvlay-session --since "$start" --no-pager -o short-precise | grep -v 'qualifies for socket access'
     echo DONE
 end 2>&1 | tee ~/tisvlay-outage-a.log
@@ -134,7 +134,7 @@ begin
     end
     echo "the TV should be turned on about now"
     sleep 150; snap
-    kill $watcher $keepalive
+    pkill -P $watcher; pkill -P $keepalive; kill $watcher $keepalive
     journalctl -t tisvlay-daemon -t tisvlay-session --since "$start" --no-pager -o short-precise | grep -v 'qualifies for socket access'
     echo DONE
 end 2>&1 | tee ~/tisvlay-outage-b.log
@@ -146,4 +146,6 @@ If the TV wakes, prompts or is kept from deep standby, the rule that an off TV m
 
 ## Results
 
-None yet.
+**Pass A on 0.6.0 (2026-11-15, 19:59, LG C3).** Reproduced. The idle timeout blanked the TV 20 s in (`state/power` to screen off at 19:59:21). The outage began at 19:59:50; one second later the daemon logged `WebSocket read error, reader task exiting` and `state/link` went to disconnected, so the killed socket is noticed at once and doesn't wait on a send. The link was still down, never `reconnecting`, 20 s into the outage, at its end three minutes later, 90 s after the path was back, and at the end of the pass; the daemon's journal has nothing after the read error. The last power report stayed "on, screen off" throughout, the stale state the session used to trust.
+
+The block's background helpers kept its output pipe open for up to 50 s after `DONE`, which delayed the profile's restore that long; the blocks now end their helpers' children first.
