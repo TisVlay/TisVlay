@@ -480,7 +480,7 @@ pub(crate) async fn run_wizard_pair(
 
     // `pair_tv` is sync-validation-only — it returns the reserved
     // tv_id immediately. Errors here are unknown-vendor /
-    // ConfigInvalidVendorConfig / etc. — route via the field-mapper
+    // an invalid-field refusal / etc. — route via the field-mapper
     // so per-field problems bounce back to step 2.
     let PairStarted { id: tv_id, attempt } =
         match daemon.pair_tv(&name, &vendor, config, managed).await {
@@ -563,7 +563,7 @@ async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: &
 /// convert RPC-success into an explicit error rather than risk
 /// showing a `complete` phase that lets the user click Done over
 /// a pair that may still be in flight or fail. Sync-validation
-/// errors (unknown vendor, ConfigInvalidVendorConfig) still
+/// errors (unknown vendor, an invalid field) still
 /// route through their normal field-mapping path.
 #[expect(
     clippy::too_many_arguments,

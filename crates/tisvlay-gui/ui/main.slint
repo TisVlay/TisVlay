@@ -45,7 +45,7 @@ export enum Pane {
 }
 
 // Sidebar entry. Optional `icon` (a freedesktop-resolved symbolic
-// SVG loaded from the user's icon theme — see `main.rs::load_themed_icon`)
+// SVG loaded from the user's icon theme — see `icon_theme::load_symbolic_icon`)
 // renders left-of-label, tinted to white when selected and
 // `Theme.sidebar-text` otherwise. If the icon failed to resolve the
 // `image` property is empty and Slint draws nothing in its slot —
@@ -414,7 +414,7 @@ export component AppWindow inherits Window {
     callback open-config-folder(string);
 
     // Sidebar glyphs — Rust resolves these against the user's
-    // freedesktop icon theme at startup (see `main.rs`). Empty
+    // freedesktop icon theme at startup (see `icon_theme.rs`). Empty
     // images render as blank, so missing names degrade to
     // label-only without errors.
     in property <image> tvs-icon;
@@ -798,7 +798,7 @@ export component AppWindow inherits Window {
     // renders on top of the panes. Positioned by `x`/`y` rather than
     // a layout because we want it to float over the chrome (titlebar
     // edge included), not inside the sidebar+pane split. Auto-clears
-    // via Rust-side timer (see `show_toast` in main.rs).
+    // via Rust-side timer (see `toast::show_toast`).
     ToastView {
         x: (root.width - self.width) / 2;
         y: 24px;

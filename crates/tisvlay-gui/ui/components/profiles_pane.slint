@@ -936,8 +936,8 @@ component ProfileDetailHeader inherits Rectangle {
     // the pencil flips this header into edit mode, swapping the Text
     // for a LineEditField and the pencil + Duplicate / Delete buttons
     // for ✓ / ✗. Commits ride a `name`-only body patch through
-    // `UpdateSystemProfile` / `UpdateUserProfile`; the echoed
-    // `SystemProfileChanged` / `UserProfileChanged` signal redraws
+    // the profile update rpc; the profile key's published update
+    // redraws
     // `root.name` automatically.
     //
     // The pencil is only rendered while a profile is selected (the
@@ -1815,8 +1815,8 @@ export component ProfilesPane {
     }
 
     // New-profile name-input dialog. `kind` is set when opening; the
-    // post-confirm `confirm-create` routes to either Manager1 or
-    // Session1 based on it.
+    // post-confirm `confirm-create` routes to the daemon or the session
+    // service based on it.
     NameInputDialog {
         open: root.pending-new-kind != ProfileKind.none;
         title: root.pending-new-kind == ProfileKind.system

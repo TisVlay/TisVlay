@@ -625,7 +625,7 @@ component StepConfigure {
     in-out property <bool> managed;
     in property <[string]> system-profiles;
     /// Vendor's pairing-form schema rows (driven by Rust through
-    /// `Manager1.GetPairingSchema`, autofilled from the selected
+    /// the vendor's schema rpc, autofilled from the selected
     /// TV's `vendor_data`). Empty schema → the field-renderer block
     /// disappears and the user just confirms name/profile/managed.
     in property <[PairingFieldRow]> schema-fields;
@@ -1033,7 +1033,7 @@ component StepDone {
                 }
                 Text {
                     // Vendor display name — supplied by the daemon via
-                    // `Manager1.GetSupportedVendors` and looked up
+                    // the vendor catalog and looked up
                     // Rust-side at every setter site. Falls back to
                     // the id (machine identifier) if the model is empty.
                     text: root.tv-vendor-name == "" ? root.tv-vendor : root.tv-vendor-name;

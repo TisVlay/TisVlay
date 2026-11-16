@@ -2,7 +2,7 @@
 // step-2 panel and the TVs-pane edit-mode toggle.
 //
 // Both consumers feed the same `[PairingFieldRow]` model: rows
-// generated from a vendor schema (`Manager1.GetPairingSchema` for
+// generated from a vendor schema (the vendor's schema rpc for
 // pairing, the daemon's stored schema for editing) plus per-row
 // validation lifecycle. The Rust side bridges (`schema_form.rs`)
 // owns parse / validate / build-json / autofill; the components
@@ -77,8 +77,7 @@ export component FieldRenderer {
 
         // Helper / error text. `error` (typed validation failure
         // — client-side from `PairingField::validate` or
-        // server-side from a `ConfigInvalidVendorConfig` D-Bus
-        // error) replaces the default helper when set, with a
+        // server-side from an `invalid-field` refusal) replaces the default helper when set, with a
         // danger tone so it reads as the field-level message.
         if root.field.error != "": Text {
             text: root.field.error;

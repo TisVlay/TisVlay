@@ -23,7 +23,7 @@ import { ServiceHealth } from "../globals/health.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
-/// One vendor-specific diagnostic row from `Tv1.VendorInfo`.
+/// One vendor-specific diagnostic row from the TV's vendor info.
 /// Rendered in the TVs pane's INFO group alongside the cross-vendor
 /// identity columns (TV ID, manufacturer, model, …). Backends
 /// decide what to surface; LG returns IP + MAC.
@@ -36,7 +36,7 @@ export struct TvViewModel {
     uuid: string,
     name: string,
     vendor: string,
-    /// Canonical vendor for branding the tile (`Tv1.Brand`): the device's
+    /// Canonical vendor for branding the tile (the identity's brand): the device's
     /// resolved vendor for CEC (e.g. `lg`), else the backend vendor.
     brand: string,
     primary-descriptor: string,
@@ -55,9 +55,9 @@ export struct TvViewModel {
     /// (LG: has a MAC). The Power-on button is disabled when both
     /// `connected == false` AND `supports-wake == false` — that's
     /// the only state where Power-on has no path to succeed.
-    /// Sourced from `Tv1.Power.SupportsWake` D-Bus property.
+    /// Sourced from the link state's `supports_wake`.
     supports-wake: bool,
-    /// Per-capability flags from `Tv1.Capabilities`. Used to hide
+    /// Per-capability flags from the identity's capabilities. Used to hide
     /// controls a backend can't drive — a CEC TV, for instance, has no
     /// volume, mute, backlight, or screen-blank. Static per vendor:
     /// populated whether or not the TV is connected, so controls don't
@@ -101,13 +101,13 @@ export struct TvViewModel {
     hw-serial: string,
     desktop-connector: string,
     /// User-editable `(label, value)` rows from
-    /// `Tv1.VendorConfig` (LG: IP, MAC). Rendered in the CONFIG
+    /// the TV's vendor config (LG: IP, MAC). Rendered in the CONFIG
     /// group's view-mode list; the edit form replaces these with
     /// `EditPane.fields` while the user is editing. Empty for
     /// backends without any `UserInput` schema fields.
     vendor-config: [VendorInfoRow],
     /// Backend-discovered diagnostic `(label, value)` rows from
-    /// `Tv1.VendorInfo` (LG: WebSocket scheme). Read-only;
+    /// the TV's vendor info (LG: WebSocket scheme). Read-only;
     /// rendered in the INFO group alongside the cross-vendor
     /// identity rows. Empty for backends without any `Diagnostic`
     /// schema fields.

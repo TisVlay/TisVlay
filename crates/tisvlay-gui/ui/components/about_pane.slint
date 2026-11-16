@@ -36,8 +36,8 @@ import { Nav } from "../globals/nav.slint";
 //   - `tip`: the chip's hover hint, saying why it's colored.
 //   - `config_path`: absolute path to the peer's config file.
 //     Drives the folder-open IconBtn — present and enabled when
-//     non-empty, present-but-disabled (40% opacity) for D-Bus peers
-//     without a config file (e.g., GUI today), absent for the CLI
+//     non-empty, present-but-disabled (40% opacity) for a peer
+//     without a config file, absent for the CLI
 //     (which has no config of its own).
 export struct AboutComponentRow {
     name: string,
@@ -65,8 +65,8 @@ export struct AboutComponentRow {
 // the first, so the rows read as separated.
 //
 // `open-config-folder(path)` fires when the title-row IconBtn is
-// clicked. AboutPane re-emits it; main.rs lands it on the
-// FileManager1.ShowItems helper.
+// clicked. AboutPane re-emits it; Rust hands it to the file
+// manager's `ShowItems`.
 component ComponentRow {
     in property <AboutComponentRow> entry;
     in property <bool> show-divider;
