@@ -374,8 +374,13 @@ impl WebOsClient {
                     initial_responses.push((uri_string.clone(), response));
                     id_to_uri.insert(req_id, uri_string);
                 }
+                // No first answer in time isn't a refusal: a waking TV may
+                // still subscribe and answer late, so its pushes, the late
+                // first answer included, are routed like any other. Only an
+                // error response means the TV refused.
                 Err(e) => {
                     tracing::warn!(uri = %uri_string, error = %e, "Subscribe request failed");
+                    id_to_uri.insert(req_id, uri_string);
                 }
             }
         }
