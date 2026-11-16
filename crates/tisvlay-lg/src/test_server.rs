@@ -355,7 +355,7 @@ impl FakeSsapServer {
             }),
             audio::GET_VOLUME => json!({
                 "returnValue": true,
-                "volumeStatus": { "volume": 30, "muted": false }
+                "volumeStatus": { "volume": 30, "muteStatus": false }
             }),
             audio::GET_MUTE => json!({
                 "returnValue": true,
@@ -393,7 +393,7 @@ impl FakeSsapServer {
             }),
             audio::GET_VOLUME => json!({
                 "returnValue": true,
-                "volumeStatus": { "volume": 30, "muted": false }
+                "volumeStatus": { "volume": 30, "muteStatus": false }
             }),
             audio::GET_MUTE => json!({
                 "returnValue": true,

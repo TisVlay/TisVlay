@@ -15,7 +15,7 @@ use crate::endpoints::{
 };
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
-    VolumeInfo, VolumeResponse,
+    VolumeInfo, VolumeResponse, payload_keys,
 };
 use crate::transport::Connection;
 use serde_json::{Value, json};
@@ -23,15 +23,6 @@ use std::net::IpAddr;
 use std::time::Duration;
 use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, Secret, TvState};
 use tokio::sync::mpsc;
-
-/// A response payload's key names, for logs: the `Registered` payload
-/// carries the client key, so the values never reach a log line.
-fn payload_keys(payload: &Value) -> Vec<&str> {
-    payload
-        .as_object()
-        .map(|object| object.keys().map(String::as_str).collect())
-        .unwrap_or_default()
-}
 
 /// Client for controlling an LG WebOS TV.
 pub(crate) struct WebOsClient {
@@ -527,12 +518,11 @@ impl WebOsClient {
     /// Get current mute state.
     pub(crate) async fn get_mute(&mut self) -> Result<bool> {
         let response = self.command(audio::GET_MUTE, json!({})).await?;
-        let muted = response
+        response
             .payload
             .get("mute")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Ok(muted)
+            .ok_or_else(|| Error::InvalidResponse("No mute in response".to_string()))
     }
 
     // -------------------------------------------------------------------------
@@ -604,7 +594,7 @@ impl WebOsClient {
             .get("settings")
             .and_then(|s| s.get("backlight"))
             .and_then(Value::as_i64)
-            .unwrap_or(50);
+            .ok_or_else(|| Error::InvalidResponse("No backlight in response".to_string()))?;
 
         Ok(raw.clamp(0, 100) as u8)
     }
@@ -1055,7 +1045,7 @@ mod tests {
             &vol_req_id,
             serde_json::json!({
                 "returnValue": true,
-                "volumeStatus": { "volume": 75, "muted": true }
+                "volumeStatus": { "volume": 75, "muteStatus": true }
             }),
         );
 

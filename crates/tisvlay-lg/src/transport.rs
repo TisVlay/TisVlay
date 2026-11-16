@@ -31,6 +31,34 @@ type WsSink = SplitSink<WsStream, Message>;
 /// Pending request waiters keyed by request ID.
 type PendingMap = Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
 
+/// A request's waiter in the pending map, removed when the request ends
+/// however it ends: answered, timed out, or its future dropped by a caller
+/// that stopped waiting (a wake poll cut off at its deadline). Without it
+/// a reply that never comes would leave the entry for the connection's
+/// life. Only a waiter whose receiver is gone is removed, so a later
+/// waiter on the same id (a registration's second phase) is left alone.
+struct Waiter<'a> {
+    pending: &'a PendingMap,
+    id: &'a str,
+}
+
+impl<'a> Waiter<'a> {
+    fn register(pending: &'a PendingMap, id: &'a str) -> (Self, oneshot::Receiver<Response>) {
+        let (tx, rx) = oneshot::channel();
+        pending.lock().insert(id.to_owned(), tx);
+        (Self { pending, id }, rx)
+    }
+}
+
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let mut pending = self.pending.lock();
+        if pending.get(self.id).is_some_and(oneshot::Sender::is_closed) {
+            pending.remove(self.id);
+        }
+    }
+}
+
 /// WebSocket connection to an LG TV.
 ///
 /// The connection is split into a shared writer and a background reader
@@ -342,28 +370,16 @@ impl Connection {
         request: &Request,
         timeout_dur: Duration,
     ) -> Result<Response> {
-        let (tx, rx) = oneshot::channel();
-
         // Register the waiter before sending to avoid race conditions.
-        self.pending.lock().insert(request.id.clone(), tx);
-
-        if let Err(e) = self.send(request).await {
-            // Remove the waiter on send failure.
-            self.pending.lock().remove(&request.id);
-            return Err(e);
-        }
-
+        let (_waiter, rx) = Waiter::register(&self.pending, &request.id);
+        self.send(request).await?;
+        // The receiver goes with the match, so `_waiter` then finds its
+        // sender closed and removes it.
         match timeout(timeout_dur, rx).await {
             Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => {
-                // Oneshot sender was dropped — reader task exited.
-                Err(Error::ConnectionClosed)
-            }
-            Err(_) => {
-                // Timeout — remove the stale waiter.
-                self.pending.lock().remove(&request.id);
-                Err(Error::RequestTimeout)
-            }
+            // Oneshot sender was dropped — reader task exited.
+            Ok(Err(_)) => Err(Error::ConnectionClosed),
+            Err(_) => Err(Error::RequestTimeout),
         }
     }
 
@@ -374,16 +390,11 @@ impl Connection {
     /// pairing sends a `Response` acknowledgment first, then `Registered`
     /// with the client key after the user accepts the TV prompt).
     pub(crate) async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().insert(id.to_string(), tx);
-
+        let (_waiter, rx) = Waiter::register(&self.pending, id);
         match timeout(timeout_dur, rx).await {
             Ok(Ok(response)) => Ok(response),
             Ok(Err(_)) => Err(Error::ConnectionClosed),
-            Err(_) => {
-                self.pending.lock().remove(id);
-                Err(Error::RequestTimeout)
-            }
+            Err(_) => Err(Error::RequestTimeout),
         }
     }
 
