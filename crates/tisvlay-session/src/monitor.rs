@@ -453,7 +453,7 @@ impl PortalTracker {
                 state.open += 1;
                 if confirmed && !state.confirmed {
                     state.confirmed = true;
-                    return vec![portal_report(exe, true, false)];
+                    return vec![portal_report(owner, &exe, true, false)];
                 }
                 Vec::new()
             }
@@ -464,8 +464,8 @@ impl PortalTracker {
                 state.confirmed = confirmed;
                 state.open = 1;
                 vec![
-                    portal_report(old_exe, false, false),
-                    portal_report(exe, true, !confirmed),
+                    portal_report(owner, &old_exe, false, false),
+                    portal_report(owner, &exe, true, !confirmed),
                 ]
             }
             // Brand new owner: track it and report the source.
@@ -478,7 +478,7 @@ impl PortalTracker {
                         open: 1,
                     },
                 );
-                vec![portal_report(exe, true, !confirmed)]
+                vec![portal_report(owner, &exe, true, !confirmed)]
             }
         }
     }
@@ -495,7 +495,7 @@ impl PortalTracker {
         if state.get().open > 0 {
             return Vec::new();
         }
-        vec![portal_report(state.remove().exe, false, false)]
+        vec![portal_report(owner, &state.remove().exe, false, false)]
     }
 
     /// Tear down every tracked session (a monitor reconnect): clear each
@@ -503,21 +503,23 @@ impl PortalTracker {
     pub(crate) fn clear(&mut self) -> Vec<StreamReport> {
         let reports = self
             .owners
-            .values()
-            .map(|state| portal_report(state.exe.clone(), false, false))
+            .iter()
+            .map(|(owner, state)| portal_report(owner, &state.exe, false, false))
             .collect();
         self.owners.clear();
         reports
     }
 }
 
-/// A `Portal` source report attributed to `exe`. `provisional` marks a
+/// A `Portal` source report attributed to `exe`, running as bus name
+/// `owner`. The owner keeps two processes of one exe apart, so the first
+/// to close can't clear the other's source. `provisional` marks a
 /// bootstrapped guess the aggregator admits only under a corroborating
 /// screencast signal; a confirmed report always arms.
-fn portal_report(exe: String, active: bool, provisional: bool) -> StreamReport {
+fn portal_report(owner: &str, exe: &str, active: bool, provisional: bool) -> StreamReport {
     StreamReport {
         kind: StreamSourceKind::Portal,
-        detail: exe,
+        detail: format!("{exe} ({owner})"),
         active,
         provisional,
     }
@@ -681,7 +683,7 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
         assert!(!r[0].provisional, "a confirmed open always arms");
-        assert_eq!(r[0].detail, "krdpserver");
+        assert_eq!(r[0].detail, "krdpserver (:1.42)");
         // The single session closes: the source clears.
         let r = t.closed(":1.42");
         assert_eq!(r.len(), 1);
@@ -710,7 +712,7 @@ mod tests {
         let r = t.closed(":1.42");
         assert_eq!(r.len(), 1);
         assert!(!r[0].active);
-        assert_eq!(r[0].detail, "krdpserver");
+        assert_eq!(r[0].detail, "krdpserver (:1.42)");
         // Fully drained: another close is a no-op.
         assert!(t.closed(":1.42").is_empty());
     }
@@ -746,9 +748,26 @@ mod tests {
         r.sort_by(|a, b| a.detail.cmp(&b.detail));
         assert_eq!(r.len(), 2);
         assert!(r.iter().all(|report| !report.active));
-        assert_eq!(r[0].detail, "krdpserver");
-        assert_eq!(r[1].detail, "rustdesk");
+        assert_eq!(r[0].detail, "krdpserver (:1.42)");
+        assert_eq!(r[1].detail, "rustdesk (:1.43)");
         // A cleared tracker has nothing left to tear down.
         assert!(t.clear().is_empty());
+    }
+
+    /// Two processes of one exe (a RustDesk reconnect under a new bus
+    /// name before the old one's session closes) are two sources: the
+    /// first to close leaves the other armed.
+    #[test]
+    fn tracker_keeps_owners_of_one_exe_apart() {
+        let mut t = PortalTracker::default();
+        let first = t.opened(":1.42", "rustdesk".into());
+        let second = t.opened(":1.43", "rustdesk".into());
+        assert_ne!(first[0].detail, second[0].detail);
+        let r = t.closed(":1.42");
+        assert_eq!(r.len(), 1);
+        assert_eq!(
+            r[0].detail, first[0].detail,
+            "only the closed owner's source clears"
+        );
     }
 }
