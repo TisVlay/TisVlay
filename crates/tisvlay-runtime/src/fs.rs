@@ -598,7 +598,7 @@ ip = "192.168.4.170"
     fn an_edit_that_isnt_utf8_is_set_aside() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("store.toml");
-        fs::write(&path, b"# caf\xe9\nversion = 1\n").unwrap();
+        fs::write(&path, b"# Latin-1: \xe9\nversion = 1\n").unwrap();
         let ours = |table: &toml::Table| table["version"].as_integer() == Some(1);
         assert!(keep_unreloaded_edit(&path, ours));
         assert!(!path.exists());
