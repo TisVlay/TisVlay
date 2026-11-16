@@ -67,7 +67,7 @@ fn owned_stream<S, T, F>(
     samples: zenoh::handlers::fifo::RecvStream<'static, zenoh::sample::Sample>,
     handshake: &Arc<Handshake>,
     mut decode: F,
-) -> impl futures_util::Stream<Item = T> + use<S, T, F>
+) -> impl futures_core::Stream<Item = T> + use<S, T, F>
 where
     F: FnMut(&zenoh::sample::Sample) -> Option<T>,
 {
@@ -551,7 +551,7 @@ impl DaemonClient {
     /// does.
     pub async fn pairing_progress_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = (Uuid, PairingProgress)> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
@@ -584,7 +584,7 @@ impl DaemonClient {
         on_progress: impl FnMut(PairingPhase, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
+        S: futures_core::Stream<Item = (Uuid, PairingProgress)>,
     {
         let mut stream = std::pin::pin!(stream);
         Self::drain_pair_to_terminal_pinned(stream.as_mut(), tv, attempt, on_progress).await
@@ -600,7 +600,7 @@ impl DaemonClient {
         mut on_progress: impl FnMut(PairingPhase, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
+        S: futures_core::Stream<Item = (Uuid, PairingProgress)>,
     {
         use futures_util::StreamExt;
         while let Some((sample_tv, progress)) = stream.as_mut().next().await {
@@ -633,7 +633,7 @@ impl DaemonClient {
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
-    ) -> Result<impl futures_util::Stream<Item = PowerPhase> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = PowerPhase> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
@@ -680,7 +680,7 @@ impl DaemonClient {
     /// release, and silent while it does.
     pub async fn discovery_found_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = DiscoveredTv> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
@@ -1445,8 +1445,7 @@ const CHECK_RETRY_MAX: Duration = Duration::from_secs(30);
 #[non_exhaustive]
 pub struct StateWatcherConfig {
     /// How often the watcher emits [`StateEvent::FallbackPoll`], a
-    /// safety net for a missed change. Must be nonzero: a zero interval
-    /// panics the watcher's poll task, and no poll fires.
+    /// safety net for a missed change. Zero turns the poll off.
     pub fallback_poll_interval: Duration,
 }
 
@@ -1522,6 +1521,9 @@ impl StateWatcher {
                     }
                 }
             });
+        }
+        if config.fallback_poll_interval.is_zero() {
+            return Self { rx };
         }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(config.fallback_poll_interval);
