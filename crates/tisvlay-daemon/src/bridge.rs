@@ -566,6 +566,9 @@ impl Bridge {
             responder.err(&WireError::unknown_vendor(vendor)).await;
             return;
         }
+        // Sessions that ended themselves (below) leave a finished handle.
+        self.discovery_sessions
+            .retain(|_, handle| !handle.is_finished());
         let session_id = Uuid::new_v4();
         let discoveries = Arc::clone(&self.discoveries);
         let zenoh = self.session.clone();
@@ -577,6 +580,17 @@ impl Bridge {
                 .await;
             if let Err(e) = &alive {
                 warn!(%e, "discovery session liveliness failed");
+            }
+            // Never put to: its matching status says whether anyone still
+            // subscribes to this session's findings. Its callers subscribe
+            // before starting it and stop it when done, but one that dies
+            // first (a crashed GUI, a killed CLI) can't, so the session
+            // ends itself once nothing listens.
+            let listeners = zenoh
+                .declare_publisher(keys::discovery_found(&site, &session_id, "listeners"))
+                .await;
+            if let Err(e) = &listeners {
+                warn!(%e, "discovery session can't watch for its listeners");
             }
             loop {
                 for (vendor, discovery) in discoveries.iter() {
@@ -607,6 +621,15 @@ impl Bridge {
                         }
                         Err(error) => warn!(vendor, %error, "discovery scan failed"),
                     }
+                }
+                if let Ok(listeners) = &listeners
+                    && listeners
+                        .matching_status()
+                        .await
+                        .is_ok_and(|status| !status.matching())
+                {
+                    debug!(session = %session_id, "discovery session has no listener left; ending it");
+                    return;
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
