@@ -90,7 +90,9 @@ tisvlay/
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
 │   │   streams/                  # stream detectors
 │   ├── ideas/, bugs/, concerns/  # one doc per item; each folder's README.md is its index
-│   └── firewall.md, testing.md
+│   ├── firewall.md, testing.md, diagnostics.md, discovery.md,
+│   │   licensing.md, i18n.md
+│   └── kde/, configs/            # KDE notes; example seed and tray configs
 └── .claude/CLAUDE.md             # This file
 ```
 
@@ -127,7 +129,7 @@ Vendor/protocol quirks (unchanged by the rewrite):
 - LG pairing is two-phase (`Response` prompt shown → `Registered` accepted); see docs/lg/firmware-quirks.md
 - CEC: Connected ≠ powered (reachable in standby); `power_on` = Image View On wake-in-place; INPUT capability deliberately not advertised — see docs/cec/protocol.md
 - CEC: the kernel keeps a logical-address claim after the handle closes, and clearing it blanks the OSD name — so the connection-holding opens clear before setting the name, and the probe/bare wake reuse a held claim (`link::Claim`)
-- SSDP discovery pins source port 1901 so one firewall rule admits the replies (why: docs/firewall.md; the rules: the book's Firewall & Discovery)
+- SSDP discovery pins its source port (`--ssdp-port`) so one firewall rule admits the replies (why: docs/firewall.md; the rules: the book's Firewall & Discovery)
 - KWin on Wayland writes DPMS-off through to the legacy sysfs `dpms` connector attribute, so the daemon polls it without a per-DE compositor protocol; the watcher gates on `status == connected`
 
 Stream detection quirks (session-side detectors — see docs/streams/detection.md):
@@ -158,7 +160,7 @@ Deployment model:
 
 ### Running the Stack (dev)
 
-The contributing guide's Setup has the basic `*-start` recipes, `just cli` and `just stop-all`. Beyond those, the dev-run targets share socket and site knobs (the justfile's dev section): `DPMS_CONNECTOR=…`, `EPHEMERAL=true` and `SSDP_PORT=…` for the daemon, `GUI_MCP=true` for the Slint MCP server, and `just greeter-start`, which needs a Wayland compositor.
+The contributing guide's Setup has the basic `*-start` recipes, `just cli` and `just stop-all`. Beyond those, the dev-run targets share socket and site knobs (the justfile's dev section): `DPMS_CONNECTOR=…`, `EPHEMERAL=true` and `SSDP_PORT=…` for the daemon, `GUI_MCP=false`/`GUI_LIVE=false` to drop the GUI's Slint MCP server or live preview (both on by default), `RELEASE=true` for the shipped profile, and `just greeter-start`, which needs a Wayland compositor.
 
 After a `flake.nix` change, run `direnv reload` (or reopen the terminal) before restarting the stack: a stale dev shell rebuilds with the old inputs, e.g. the session without pipewire's pkg-config entry, so its screencast detector stays off.
 

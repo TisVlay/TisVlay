@@ -5,7 +5,7 @@
 
 ### Context
 
-`tisvlay pair <name> --vendor <v> --params '<json>'` sends its `--params` object as the pairing config, and the daemon's `pair_tv` passes that through to the connector verbatim, merging **no** defaults from the vendor's `config_schema()`. Any field can be carried, but every field whose default matters has to be spelled out.
+`tisvlay pair <name> --vendor <v> --params '<json>'` sends its `--params` object as the pairing config, and the daemon's pair command passes that through to the connector's `start_pairing` verbatim, merging **no** defaults from the vendor's `config_schema()`. Any field can be carried, but every field whose default matters has to be spelled out.
 
 The concrete victim is the mock backend: its `pairing` shorthand serde-defaults to `"manual"`, which waits for a `MockHandle` call that only exists in tests (`new_production_parts` deliberately creates no handle). So `tisvlay pair <name> --vendor mock --params '{"address":"mock://x"}'` hangs in production; the mock health check in the [troubleshooting page](../book/src/operations/troubleshooting.md) passes `"pairing":"accept"` explicitly for that reason. The GUI is unaffected: the wizard's schema-driven form prefills the schema default (`"accept"`).
 

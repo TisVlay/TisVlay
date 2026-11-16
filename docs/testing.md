@@ -372,7 +372,7 @@ relay.restore();
 
 ## Wire-level integration tests
 
-Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tempfile::tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
+Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tisvlay_test::socket_tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
 
 ### Wiring
 
@@ -395,12 +395,13 @@ flowchart TD
     BUS --> WORLD
 ```
 
-The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template:
+The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template (`wire()` is `wire_with_store(false)`):
 
 ```rust
-async fn wire() -> Wire {
-    let dir = tempfile::tempdir().unwrap();
+async fn wire_with_store(store: bool) -> Wire {
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("w.sock");
+    let store = store.then(|| dir.path().join("daemon.toml"));
     let (connector, discovery, handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
         &socket,
@@ -409,7 +410,7 @@ async fn wire() -> Wire {
             tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
                 .with_discovery(Arc::new(discovery)),
         ],
-        None,
+        store.as_deref(),
     )
     .await
     .unwrap();
@@ -441,6 +442,8 @@ async fn wire() -> Wire {
 - `tisvlay/tests/it/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, the release check, and discarding cached TVs/profiles across daemon lifetimes.
 - `tisvlay/tests/it/conformance.rs` — the cases every mirror must pass, through a `Relay`: each SDK client against a fake service (`tests/it/fake.rs`) across a cut link, a stalled then cut link, a restart, a delete while down, a record re-created under its key, a sample lost within a lifetime, a TV key arriving before its identity, and an assignment for a TV the daemon doesn't have; and the services' mirrors of each other against the real daemon and session, with the session's system link through the relay. A case the code fails today is `#[ignore]`d with the reason, until the change that fixes it turns it on.
 - `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, stream sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
+- `tisvlay-cli/tests/it/services.rs` — `tisvlay service daemon` and `tisvlay service session` as real processes, the way their units start them: the service entry points, the CLI's dispatch to them and the logging init.
+- `tisvlay-cli/tests/it/completions.rs` — each shell's completion registration script, so a `clap_complete` bump that changes the template fails here.
 
 ### Zenoh testing gotchas
 

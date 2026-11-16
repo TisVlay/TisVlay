@@ -54,7 +54,7 @@ alive/{daemon,session,…}                              liveliness tokens (sessi
 --- user socket only ---
 user/profile/<uuid>, user/profile/rpc/<verb>          user-profile catalog + CRUD
 user/tv/<uuid>/profile                                per-TV user-profile assignment
-user/stream/state, user/stream/rpc/<verb>             stream fact (cached pub) + manual arm/disarm verbs
+user/stream/state, user/stream/rpc/<verb>             stream fact (cached pub) + set (a manual source on/off)/status
 user/tray/settings, user/tray/rpc/<verb>              tray notification switches (cached pub) + get/update/test/info/reload
 user/alive/{session,tray}                             per-user service liveliness
 ```

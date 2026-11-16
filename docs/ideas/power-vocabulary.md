@@ -80,9 +80,9 @@ One breaking change (no aliases), grouped by what each one breaks:
   - the GUI's "Wake outcome", "Sending wake-up…", "Wake failed", "wake from standby with WoL", "screen-blank with instant resume", "only answer while awake", "power-cycle this TV" and "On lock wake";
   - the CLI's help ("connected and awake", "Blank or wake a TV's screen", "power events").
 - **Docs:**
-  - the user guide (about 95 hits in 16 files, worst in automation.md, quick-start.md, remote-sessions.md and gui-tray.md);
+  - the user guide (worst in automation.md, quick-start.md, streaming.md and gui-tray.md);
   - architecture.md;
-  - docs/watchers, docs/cec, docs/backends, docs/remote and docs/testing.md;
+  - docs/watchers, docs/cec, docs/backends, docs/streams and docs/testing.md;
   - two file names (lg/benchmarks/wake-reconnect.md, concerns/cec-standby-ignored-after-wake.md).
   - docs/design.md, the retired D-Bus design, was removed; git history keeps it (last at `cbb3ee27`).
 

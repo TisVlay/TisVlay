@@ -1,8 +1,8 @@
 # DE-driven theming via xdg-desktop-portal Settings
 
-The Slint `fluent` style doesn't pick up the user's KDE accent color or custom palette. True DE-driven theming would require:
+The accent color already follows the desktop: `crates/tisvlay-gui-app/src/accent.rs` reads xdg-desktop-portal's `accent-color` and follows its changes. The rest of a custom palette and the color-scheme preference don't. Following them would require:
 
-- xdg-desktop-portal `Settings` namespace queries for the accent color and color-scheme preference.
+- xdg-desktop-portal `Settings` namespace queries for the color-scheme preference and the palette.
 - Writing the resolved values into `Palette.accent-background` / `Palette.background` etc. at runtime.
 - Watching for Settings-namespace change signals so the UI re-tints when the user changes their KDE settings.
 

@@ -7,7 +7,11 @@ Nix packaging for tisvlay: the Rust package derivation, the NixOS module, and an
 | File | Purpose |
 |---|---|
 | [`package.nix`](package.nix) | `rustPlatform.buildRustPackage` derivation for the workspace. |
-| [`module.nix`](module.nix) | NixOS module wiring the system daemon and both user services. |
+| [`module.nix`](module.nix) | NixOS module wiring the system daemon, the wakeup unit, the user services (session, tray, optional greeter) and the CEC adapter units. |
+| [`cargo-about.nix`](cargo-about.nix) | The pinned cargo-about the build's license report needs. |
+| [`slint-runtime.nix`](slint-runtime.nix) | The libraries the GUI and the idle watchers load at run time, shared by the package's rpath and the dev shell. |
+| [`slint-viewer.nix`](slint-viewer.nix) | The dev shell's Slint viewer, built at the workspace's Slint version. |
+| [`pulse8-cec.nix`](pulse8-cec.nix), [`pulse8-cec-disarm-on-disconnect.patch`](pulse8-cec-disarm-on-disconnect.patch) | The in-tree Pulse-Eight CEC driver built as an out-of-tree module, with its disconnect fix (`cec.pulse8.enable`). |
 | [`test.nix`](test.nix) | `pkgs.testers.runNixOSTest` — boots a VM with the module enabled and asserts daemon startup, the socket and its access model, the CLI probes, the sleep integration, and `systemd-analyze` posture. |
 
 Companion files outside this directory:
@@ -16,7 +20,7 @@ Companion files outside this directory:
 |---|---|
 | [`../../default.nix`](../../default.nix) | flake-compat shim: the flake's outputs for plain Nix (`nix-build`, `import`). |
 | [`../systemd/tisvlay-daemon.service`](../systemd/tisvlay-daemon.service) | Distro (.deb/.rpm/.archlinux) unit file. Hardening kept in sync with `module.nix`. |
-| [`../systemd/tisvlay-{session,tray}.service`](../systemd/) | Distro user-service unit files. Unhardened (see "User services" below). |
+| [`../systemd/`](../systemd/) | The other distro units: the session, tray and greeter (plasma-login and GDM) user services, unhardened (see "User services" below), the wakeup unit, and the GUI's D-Bus activation file. |
 | [`../scripts/{post,pre}install.sh`](../scripts/) | Distro package lifecycle hooks — create the `tisvlay` system user, reload systemd and enable the units. |
 
 ## Using the module

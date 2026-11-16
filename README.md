@@ -13,8 +13,8 @@
   - TV power on/off with PC, Screen on/off with lock screen
   - Easily adjust backlight, volume, active input, and more
 - 🤖 Automation via system/user events
-  - System boot, reboot, shutdown, suspend, wake, DPMS
-  - User lock/unlock, idle, stream connect/disconnect
+  - System boot, reboot, shutdown, sleep, wake, DPMS
+  - User lock/unlock, idle, stream start/end
 - 🎮 TV console remote control
   - PC sleep/wake/lock with TV power state or TV's remote
   - Navigate PC via TV remote keypress (via HDMI CEC)
@@ -82,6 +82,7 @@ Session -->|socket| Daemon
 Tray -->|socket| Daemon
 Gui -->|socket| Daemon
 Cli -->|socket| Daemon
+Greeter -->|socket| Daemon
 Daemon -.->|HDMI-CEC| TV1
 Daemon -.->|WebSocket / WoL| TV2
 ```

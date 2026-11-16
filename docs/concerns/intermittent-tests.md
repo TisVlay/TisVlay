@@ -9,7 +9,7 @@
 
 ## Risk
 
-A red CI run that passes on retry hides a real regression in the same test. The nextest `ci` profile retries once, which masks both.
+A red CI run that passes on retry hides a real regression in the same test. The nextest `ci` profile has no retries, so either flake fails CI; docs/testing.md's rule is to quarantine one with `#[ignore = "flaky: #N"]` and an issue.
 
 ## Mitigation options
 
