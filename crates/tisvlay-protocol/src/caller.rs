@@ -286,12 +286,13 @@ fn reply_bytes(key: &str, reply: zenoh::query::Reply) -> Result<Vec<u8>, RpcErro
                 Ok(error) => Err(RpcError::Service(error)),
                 // Zenoh's query timeout arrives as a synthetic
                 // ReplyError("Timeout"), not a WireError — keep "service
-                // slow" distinguishable from a genuine service error.
-                Err(_) if String::from_utf8_lossy(&bytes).contains("Timeout") => {
-                    Err(RpcError::Timeout {
-                        key: key.to_string(),
-                    })
-                }
+                // slow" distinguishable from a genuine service error. The
+                // whole payload, so a newer service's refusal that merely
+                // mentions a timeout stays undecodable rather than read as
+                // one.
+                Err(_) if *bytes == *b"Timeout" => Err(RpcError::Timeout {
+                    key: key.to_string(),
+                }),
                 Err(source) => Err(RpcError::Undecodable {
                     key: key.to_string(),
                     source,
