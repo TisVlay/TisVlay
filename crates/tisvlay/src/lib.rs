@@ -58,6 +58,32 @@ pub type SystemProfileBody = SystemProfileConfig;
 /// [`SystemProfileBody`].
 pub type UserProfileBody = UserProfileConfig;
 
+/// `samples`, decoded by `decode`, as a stream that owns `subscriber`:
+/// dropping the stream undeclares it, where a forwarding task would keep
+/// it until its next sample, which may never come. Samples are skipped
+/// while the daemon is known to run another release.
+fn owned_stream<S, T, F>(
+    subscriber: S,
+    samples: zenoh::handlers::fifo::RecvStream<'static, zenoh::sample::Sample>,
+    handshake: &Arc<Handshake>,
+    mut decode: F,
+) -> impl futures_util::Stream<Item = T> + use<S, T, F>
+where
+    F: FnMut(&zenoh::sample::Sample) -> Option<T>,
+{
+    use futures_util::StreamExt;
+    let handshake = Arc::clone(handshake);
+    samples.filter_map(move |sample| {
+        let _owner = &subscriber;
+        let item = if handshake.known_mismatch().is_some() {
+            None
+        } else {
+            decode(&sample)
+        };
+        std::future::ready(item)
+    })
+}
+
 /// Terminal pairing outcome, drained from the progress key.
 #[derive(Debug, Clone)]
 pub enum PairTerminal {
@@ -533,30 +559,18 @@ impl DaemonClient {
             .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let samples = (*sub).clone().into_stream();
         let site = self.site.clone();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
-                }
-                let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str())
-                else {
-                    continue;
-                };
-                let Ok(progress) =
-                    serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes())
-                else {
-                    warn!(%tv, "undecodable pairing progress sample skipped");
-                    continue;
-                };
-                if tx.send((tv, progress)).is_err() {
-                    return;
+        Ok(owned_stream(sub, samples, &self.handshake, move |sample| {
+            let tv = keys::parse_pairing_progress(&site, sample.key_expr().as_str())?;
+            match serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes()) {
+                Ok(progress) => Some((tv, progress)),
+                Err(e) => {
+                    warn!(%tv, %e, "undecodable pairing progress sample skipped");
+                    None
                 }
             }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+        }))
     }
 
     /// Drain a pairing-progress stream to `attempt`'s terminal phase on
@@ -626,24 +640,21 @@ impl DaemonClient {
             .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
+        let samples = (*sub).clone().into_stream();
+        Ok(owned_stream(
+            sub,
+            samples,
+            &self.handshake,
+            move |sample| match serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
+                &sample.payload().to_bytes(),
+            ) {
+                Ok(progress) => Some(progress.phase),
+                Err(e) => {
+                    warn!(%tv, %e, "undecodable power progress sample skipped");
+                    None
                 }
-                let Ok(progress) = serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
-                    &sample.payload().to_bytes(),
-                ) else {
-                    continue;
-                };
-                if tx.send(progress.phase).is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+            },
+        ))
     }
 
     /// Open an open-ended discovery session; it scans on the daemon's
@@ -676,25 +687,19 @@ impl DaemonClient {
             .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
             .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
+        let samples = (*sub).clone().into_stream();
+        Ok(owned_stream(
+            sub,
+            samples,
+            &self.handshake,
+            |sample| match serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes()) {
+                Ok(found) => Some(found),
+                Err(e) => {
+                    warn!(%e, "undecodable discovery finding skipped");
+                    None
                 }
-                let Ok(found) =
-                    serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
-                else {
-                    warn!("undecodable discovery finding skipped");
-                    continue;
-                };
-                if tx.send(found).is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+            },
+        ))
     }
 
     /// Manual-entry hint: the daemon probes its ARP cache (after the
