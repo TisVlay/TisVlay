@@ -469,16 +469,25 @@ pub struct DialFailure {
     pub path: Option<String>,
     /// Human-readable English message (the log/fallback text).
     pub message: String,
+    /// What stood between the dial and a connection, which decides
+    /// whether trying again can help. World-side only, never on the wire.
+    pub cause: DialFailureCause,
+}
+
+/// Why a dial failed, as far as retrying is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialFailureCause {
     /// The local device couldn't be opened or set up (permission, missing,
-    /// busy, claim refused), as opposed to the TV not answering. A
-    /// local-device TV keeps retrying these past its budget; world-side
-    /// only, never on the wire.
-    pub device_level: bool,
-    /// Nothing answered the dial: the network refused it, it timed out, or
-    /// the link closed under it. An outage looks like this; a TV that
-    /// answers and turns the dial down (a rejected key, a TV-side error)
-    /// or a config that can't be dialed doesn't. World-side only.
-    pub unanswered: bool,
+    /// busy, claim refused). A local-device TV keeps retrying these past
+    /// its budget: a busy adapter frees up.
+    Device,
+    /// Nothing answered: the network refused the dial, it timed out, or
+    /// the link closed under it. An outage looks like this.
+    NoAnswer,
+    /// Everything else: the TV answered and turned the dial down (a
+    /// rejected key, a TV-side error), or the config can't be dialed.
+    /// Asking again changes nothing.
+    Refused,
 }
 
 impl DialFailure {
@@ -489,15 +498,13 @@ impl DialFailure {
                 code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
-                device_level: true,
-                unanswered: false,
+                cause: DialFailureCause::Device,
             },
             _ => Self {
                 code: None,
                 path: None,
                 message: error.to_string(),
-                device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
-                unanswered: nothing_answered(error),
+                cause: DialFailureCause::of(error),
             },
         }
     }
@@ -508,22 +515,26 @@ impl DialFailure {
             code: None,
             path: None,
             message: message.into(),
-            device_level: false,
-            unanswered: false,
+            cause: DialFailureCause::Refused,
         }
     }
 }
 
-/// Whether a dial failed with nothing answering it. Everything not named
-/// here counts as an answer, a new error variant included: a wrong "no
-/// answer" redials a TV forever, a wrong "answered" stops after the
-/// usual three dials.
-fn nothing_answered(error: &tisvlay_core::Error) -> bool {
-    use tisvlay_core::Error;
-    matches!(
-        error,
-        Error::Io(_) | Error::Connection(_) | Error::RequestTimeout | Error::ConnectionClosed
-    )
+impl DialFailureCause {
+    /// Sort a connect error. Anything not named here is a refusal, a new
+    /// error variant included: a wrong "no answer" redials a TV forever,
+    /// a wrong "refused" stops after the usual three dials.
+    fn of(error: &tisvlay_core::Error) -> Self {
+        use tisvlay_core::Error;
+        match error {
+            Error::PermissionDenied { .. } | Error::DeviceUnavailable { .. } => Self::Device,
+            Error::Io(_)
+            | Error::Connection(_)
+            | Error::RequestTimeout
+            | Error::ConnectionClosed => Self::NoAnswer,
+            _ => Self::Refused,
+        }
+    }
 }
 
 /// Transport characteristics derived from the vendor config — the

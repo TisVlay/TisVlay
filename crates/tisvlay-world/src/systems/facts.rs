@@ -402,8 +402,9 @@ pub(super) fn apply_backend_events(
                 // forgotten prompts for pairing each time).
                 let local = writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
                 let was_unreachable = writes.unreachable.get(entity).is_ok();
+                let unanswered = reason.cause == DialFailureCause::NoAnswer;
                 let (enters_outage, ends_outage) =
-                    outage_change(reason.unanswered, attempts, local, was_unreachable);
+                    outage_change(unanswered, attempts, local, was_unreachable);
                 if enters_outage {
                     tracing::info!(%tv, attempts, "no answer within the dial budget; redialing until the TV is back");
                     // Nothing is held through an outage: a screen request
@@ -416,8 +417,11 @@ pub(super) fn apply_backend_events(
                     tracing::warn!(%tv, error = %reason.message, "the TV answered the redial and turned it down; no longer redialing");
                     commands.entity(entity).remove::<Unreachable>();
                 }
-                let persistent = (reason.device_level && local)
-                    || (reason.unanswered && (enters_outage || was_unreachable));
+                let persistent = match reason.cause {
+                    DialFailureCause::Device => local,
+                    DialFailureCause::NoAnswer => enters_outage || was_unreachable,
+                    DialFailureCause::Refused => false,
+                };
                 if attempts == 1 {
                     tracing::warn!(%tv, error = %reason.message, "dial failed");
                 } else {
