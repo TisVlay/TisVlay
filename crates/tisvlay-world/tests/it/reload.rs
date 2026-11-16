@@ -298,11 +298,35 @@ async fn an_invalid_edit_is_refused_whole() {
     );
 
     // Removing a profile a TV still uses.
-    let disk = snapshot(vec![assigned], vec![]);
+    let disk = snapshot(vec![assigned.clone()], vec![]);
     let seen = w.reload(&base, &disk).await;
     assert_eq!(
         seen.iter().find_map(|e| reply_err_code(e, 100)),
         Some(ErrorCode::ProfileInUse)
+    );
+
+    // Assigning a profile the file doesn't hold, as set-system-profile
+    // would refuse it.
+    let mut dangling = assigned;
+    dangling.system_profile = Some(Uuid::new_v4());
+    let disk = snapshot(vec![dangling], vec![profile(evening, "Evening")]);
+    let seen = w.reload(&base, &disk).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 100)),
+        Some(ErrorCode::ProfileNotFound)
+    );
+
+    // update-config refuses it the same way.
+    w.client.command(Command::UpdateConfig {
+        id,
+        patch: serde_json::from_value(serde_json::json!({ "system_profile": Uuid::new_v4() }))
+            .unwrap(),
+        reply: Some(Reply::new(2)),
+    });
+    let seen = collect_until(&mut w.effects, |e| reply_to(e, 2)).await;
+    assert_eq!(
+        seen.iter().find_map(|e| reply_err_code(e, 2)),
+        Some(ErrorCode::ProfileNotFound)
     );
 }
 

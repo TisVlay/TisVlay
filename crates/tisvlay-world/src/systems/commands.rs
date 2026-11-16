@@ -400,11 +400,23 @@ pub(crate) fn update_config(
     In((id, patch)): In<(Uuid, tisvlay_protocol::rpc::UpdateConfig)>,
     mut commands: Commands,
     index: Res<TvIndex>,
+    profiles: Res<ProfileIndex>,
     q: Query<LinkQuery>,
     mut writes: SettingsWrites,
     mut outbox: ResMut<Outbox>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
+    // As set-system-profile refuses it: a dangling id would silently run
+    // the default profile. A malformed one is the patch's bad request.
+    if let Some(profile) = patch
+        .0
+        .get("system_profile")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        && profiles.get(&profile).is_none()
+    {
+        return Err(WireError::profile_not_found(profile));
+    }
     apply_config_patch(
         &mut commands,
         entity,

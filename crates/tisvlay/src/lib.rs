@@ -887,8 +887,9 @@ impl DaemonClient {
     /// Patch the TV's config: known top-level keys apply to its settings,
     /// everything else merges into the vendor table. Rpc, refused with
     /// [`ErrorCode::TvNotFound`], [`ErrorCode::InvalidField`] (a value the
-    /// field rejects; see [`Error::invalid_field`]) or
-    /// [`ErrorCode::BadRequest`] (a key of the wrong type).
+    /// field rejects; see [`Error::invalid_field`]),
+    /// [`ErrorCode::ProfileNotFound`] (a `system_profile` naming no profile)
+    /// or [`ErrorCode::BadRequest`] (a key of the wrong type).
     pub async fn update_tv_config(
         &self,
         tv: Uuid,
