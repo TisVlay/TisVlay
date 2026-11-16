@@ -36,17 +36,33 @@ On the branch: a drop the TV didn't announce marks it unreachable and redials it
 
 ## Checking it on the TV
 
-The TV is the test PC's only display and these passes blank it, so each runs as one unattended block: read the block's first lines for what to do and when, start it, and touch nothing but the TV's remote where it says so, until `DONE` prints. A pass takes about 20 minutes.
+The TV is the test PC's only display and these passes blank it, so each runs as one unattended block: read the block's first lines for what to do and when, start it, and touch nothing but the TV's remote where it says so, until `DONE` prints. Pass A takes about 7 minutes and pass B about 19.
 
 Each pass cuts the TV off from the PC the way that night did, without touching the router: an nftables table of its own rejects the PC's traffic to the TV as unreachable, and the daemon's open connection is killed (`ss -K`, which needs a kernel with `CONFIG_INET_DIAG_DESTROY`) so the drop doesn't wait on a send. The table is named, so a run that died is undone with `sudo nft delete table inet tisvlay_outage`.
 
-Before a pass: the stack under test is running and the TV connected, the session's profile has an unlocked idle timeout set, and nothing is streaming. Set the variables for the TV and the stack; `nft` is spelled out because root's path may not have it (on NixOS, `nix build --no-link --print-out-paths nixpkgs#nftables` gives the directory).
+Before a pass: the stack under test is running and the TV connected, the desk is unlocked, and nothing is streaming. Set the variables for the TV and the stack; `nft` is spelled out because root's path may not have it (on NixOS, `nix build --no-link --print-out-paths nixpkgs#nftables` gives the directory).
 
 ```fish
 set tv_ip 192.0.2.10                                 # the TV's address
 set tv_id 00000000-0000-0000-0000-000000000000       # its uuid, from `tisvlay list`
-set idle 300                                         # the profile's unlocked idle timeout, in seconds
+set idle 20                                          # the test profile's idle timeout, in seconds
 set nft /usr/sbin/nft                                # the nftables binary
+```
+
+The passes wait out the idle timeout twice, so they run under a user profile of their own with a short one, assigned to the TV for the session under test and removed afterwards. Once per stack, before its passes:
+
+```fish
+set was (tisvlay user-profile $tv_id)
+set check (tisvlay profile user create outage-check --body "{\"unlocked_idle_timeout_seconds\": $idle, \"locked_idle_timeout_seconds\": $idle}")
+tisvlay user-profile $tv_id $check
+tisvlay user-profile $tv_id --effective
+```
+
+And after them, which also undoes it for a run that died:
+
+```fish
+tisvlay user-profile $tv_id $was
+tisvlay profile user delete $check
 ```
 
 ### Pass A: the outage, and the return
@@ -60,7 +76,7 @@ begin
     set keepalive $last_pid
     set start (date '+%F %T')
     echo "$start: hands off the keyboard, mouse and TV until DONE, about "(math "($idle * 2 + 420) / 60")" min"
-    tisvlay profile user list
+    tisvlay user-profile $tv_id --effective
     function snap; date +%T; tisvlay --json list | jq -c --arg id $tv_id '.[$id] | {link: ."state/link", power: ."state/power"}'; end
     fish -c 'tisvlay watch | while read -l line; echo (date +%T) $line; end' &
     set watcher $last_pid
