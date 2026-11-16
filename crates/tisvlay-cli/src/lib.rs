@@ -562,7 +562,7 @@ fn system_profile_candidates() -> Vec<CompletionCandidate> {
 fn user_profile_candidates() -> Vec<CompletionCandidate> {
     blocking_candidates(collect_catalog_candidates(
         &tisvlay_protocol::bootstrap::default_session_socket_path(),
-        "tisvlay/main/user/profile/*",
+        &keys::user_profile_wild("main"),
     ))
 }
 

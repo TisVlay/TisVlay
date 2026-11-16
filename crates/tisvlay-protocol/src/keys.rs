@@ -75,6 +75,11 @@ pub fn user_profile(site: &str, id: &Uuid) -> String {
     format!("tisvlay/{site}/user/profile/{id}")
 }
 
+/// Every user profile body: the catalog wildcard over [`user_profile`].
+pub fn user_profile_wild(site: &str) -> String {
+    format!("tisvlay/{site}/user/profile/*")
+}
+
 /// Per-TV user-profile assignment on the user socket.
 pub fn user_tv_profile(site: &str, tv: &Uuid) -> String {
     format!("tisvlay/{site}/user/tv/{tv}/profile")
