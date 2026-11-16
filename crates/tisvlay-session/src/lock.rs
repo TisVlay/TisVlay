@@ -103,7 +103,7 @@ async fn lock_own_seat_session(connection: &zbus::Connection) -> zbus::Result<bo
 /// Spawn the lock watcher. Reports `Lock`/`Unlock` into the session core;
 /// the task supervises its own system-bus connection and never blocks the
 /// caller. `is_locked` mirrors the lock state for the idle adapter's
-/// lock-wake policy and the core's drift re-assert; `is_active` mirrors the
+/// lock-wake policy and the core's idle window; `is_active` mirrors the
 /// session's foreground (`Active`) state for the core's active-session
 /// arbitration gate.
 pub fn spawn(client: SessionClient, is_locked: Arc<AtomicBool>, is_active: Arc<AtomicBool>) {
@@ -174,6 +174,13 @@ async fn watch(
     // wait for one to appear (the service can start before the session).
     let (session_id, session) = acquire_session(connection, &manager, own_uid).await?;
 
+    // Seed the foreground state for active-session arbitration first: the
+    // lock edge below is dispatched against it. Unlike the lock seed this
+    // fires no event and always stores the current value — `Active` gates
+    // the core's dispatch, it does not itself dispatch.
+    if let Ok(active) = session.active().await {
+        is_active.store(active, Ordering::SeqCst);
+    }
     // Seed the lock state. The first attach seeds silently: the initial
     // state is not an edge, and a synthesized Lock would re-blank a TV the
     // daemon already parked. A reconnect is different — the flag persists
@@ -193,12 +200,6 @@ async fn watch(
         }
     }
     *attached = true;
-    // Seed the foreground state for active-session arbitration. Unlike the
-    // lock seed this fires no event and always stores the current value —
-    // `Active` gates the core's dispatch, it does not itself dispatch.
-    if let Ok(active) = session.active().await {
-        is_active.store(active, Ordering::SeqCst);
-    }
     let mut locked_changes = session.receive_locked_hint_changed().await;
     let mut active_changes = session.receive_active_changed().await;
 
