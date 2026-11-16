@@ -5,9 +5,10 @@
 //! top — the session service's lock-screen wake, or the greeter idle
 //! client's screen blank/restore.
 //!
-//! Uses the standard `ext-idle-notify-v1` protocol (KDE Plasma 6+, Sway,
-//! Hyprland, Mutter, …) rather than the D-Bus `GetSessionIdleTime` approach,
-//! which does not work on KDE Plasma Wayland.
+//! Uses the standard `ext-idle-notify-v1` protocol (KWin, Sway, Hyprland and
+//! other wlroots compositors) rather than the D-Bus `GetSessionIdleTime`
+//! approach, which does not work on KDE Plasma Wayland. Mutter lacks the
+//! protocol; `idle_mutter` is its transport.
 
 use rustix::event::{PollFd, PollFlags, poll};
 use std::os::fd::OwnedFd;
@@ -240,9 +241,9 @@ fn spawn_watch(
         .clone();
 
     info!(
-        "Wayland idle notifier available (server: v{}, using: v{})",
-        notifier_global.version,
-        notifier_global.version.min(EXT_IDLE_NOTIFIER_VERSION)
+        server = notifier_global.version,
+        using = notifier_global.version.min(EXT_IDLE_NOTIFIER_VERSION),
+        "Wayland idle notifier available"
     );
 
     // Stop pipe: the returned `WatchHandle` holds the write end; closing it
@@ -320,11 +321,11 @@ fn run_idle_loop(
     // `blocking_read` poll, with the stop fd added as a second source.
     loop {
         if let Err(e) = event_queue.dispatch_pending(&mut state) {
-            error!("Wayland event dispatch error: {}", e);
+            error!(%e, "Wayland event dispatch error");
             break;
         }
         if let Err(e) = event_queue.flush() {
-            error!("Wayland flush error: {}", e);
+            error!(%e, "Wayland flush error");
             break;
         }
         // `None`: events are already queued; loop back to dispatch them.
@@ -342,7 +343,7 @@ fn run_idle_loop(
                 // Interrupted by a signal — drop the guard and retry.
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(e) => {
-                    error!("Wayland poll error: {}", e);
+                    error!(%e, "Wayland poll error");
                     break;
                 }
             }
@@ -361,7 +362,7 @@ fn run_idle_loop(
                 // Spurious readiness — the next iteration retries.
                 Err(WaylandError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => {
-                    error!("Wayland read error: {}", e);
+                    error!(%e, "Wayland read error");
                     break;
                 }
             }

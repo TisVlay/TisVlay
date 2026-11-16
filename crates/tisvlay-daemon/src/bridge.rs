@@ -7,6 +7,7 @@
 //! exhaustively: a new rpc without a route here doesn't compile.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -188,33 +189,33 @@ impl Bridge {
     }
 
     async fn publish(&mut self, key: &str, payload: &Value) {
-        if !self.publishers.contains_key(key) {
-            let depth = if keys::parse_pairing_progress(&self.site, key).is_some() {
-                PAIRING_HISTORY
-            } else {
-                1
-            };
-            let declared = self
-                .session
-                .declare_publisher(key.to_string())
-                .encoding(Encoding::APPLICATION_JSON)
-                .cache(CacheConfig::default().max_samples(depth))
-                .sample_miss_detection(
-                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
-                )
-                .publisher_detection()
-                .await;
-            match declared {
-                Ok(publisher) => {
-                    self.publishers.insert(key.to_string(), publisher);
-                }
-                Err(e) => {
-                    warn!(%key, %e, "declare publisher failed, sample dropped");
-                    return;
+        let publisher = match self.publishers.entry(key.to_owned()) {
+            Entry::Occupied(declared) => declared.into_mut(),
+            Entry::Vacant(slot) => {
+                let depth = if keys::parse_pairing_progress(&self.site, key).is_some() {
+                    PAIRING_HISTORY
+                } else {
+                    1
+                };
+                let declared = self
+                    .session
+                    .declare_publisher(key.to_string())
+                    .encoding(Encoding::APPLICATION_JSON)
+                    .cache(CacheConfig::default().max_samples(depth))
+                    .sample_miss_detection(
+                        MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                    )
+                    .publisher_detection()
+                    .await;
+                match declared {
+                    Ok(publisher) => slot.insert(publisher),
+                    Err(e) => {
+                        warn!(%key, %e, "declare publisher failed, sample dropped");
+                        return;
+                    }
                 }
             }
-        }
-        let publisher = self.publishers.get(key).expect("just inserted");
+        };
         match serde_json::to_vec(payload) {
             Ok(bytes) => {
                 if let Err(e) = publisher.put(bytes).await {
@@ -745,7 +746,6 @@ impl Bridge {
     }
 }
 
-/// Map a system-profile rpc onto its world command.
 /// Vendor configs are JSON on the wire and a [`VendorConfig`] at the backend
 /// seam — a pure serde transcode (a JSON `null` has no TOML form and
 /// errors).

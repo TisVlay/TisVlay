@@ -7,7 +7,7 @@
 //! of sessions with `Active=yes`, because seatless sessions self-report
 //! active (a plain SSH shell reads `Remote=yes Type=tty Active=yes`). The
 //! active session qualifies only as a human desktop login: `Class=user`
-//! (excludes the greeter session, which Workstream A's group entry
+//! (excludes the greeter session, which the greeter-group ACL entry
 //! covers), `Type` x11/wayland (excludes a bare foreground VT), and not
 //! `Remote`. The qualifying uids across all seats become named-user ACL
 //! entries via [`acl::reconcile`].
@@ -152,13 +152,13 @@ async fn watch_seats(
             tokio::select! {
                 signal = seat_new.next() => {
                     if signal.is_none() {
-                        return Err(zbus::Error::InvalidReply);
+                        return Err(zbus::Error::Failure("logind's seat signals ended".into()));
                     }
                     break;
                 }
                 signal = seat_removed.next() => {
                     if signal.is_none() {
-                        return Err(zbus::Error::InvalidReply);
+                        return Err(zbus::Error::Failure("logind's seat signals ended".into()));
                     }
                     break;
                 }

@@ -1,5 +1,5 @@
-//! Desktop identity probe (ported from the root daemon): parse each
-//! connected DRM connector's EDID into a `HardwareId`, match against TV
+//! Desktop identity probe: parse each connected DRM connector's EDID
+//! into a `HardwareId`, match against TV
 //! identities — consumed from our own wire, the identity keys — and feed
 //! matches back into the world, where they scope DPMS events per TV.
 //!
@@ -119,7 +119,7 @@ fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
     score
 }
 
-/// Deterministic greedy matcher (ported): displays sort by connector name,
+/// Deterministic greedy matcher: displays sort by connector name,
 /// each TV claims its best-scoring unclaimed display.
 pub(crate) fn match_displays_to_tvs<'a>(
     displays: &'a [ProbedDisplay],

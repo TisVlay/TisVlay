@@ -37,8 +37,9 @@ use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
 
 /// Trailing re-resolution pass after a burst of route/address events: the
-/// first event resolves immediately, then one more pass after the burst
-/// settles. NIC transitions fire dozens of events over seconds.
+/// first event resolves immediately, and the events within the next
+/// `ROUTE_SETTLE` share one trailing pass. NIC transitions fire dozens of
+/// events over seconds.
 const ROUTE_SETTLE: Duration = Duration::from_millis(100);
 
 /// Reconnect backoff after the kernel connection fails: doubling from the
@@ -249,7 +250,7 @@ async fn watch_network(
                             // Reachability may have changed in either
                             // direction — re-resolve every monitored TV.
                             // Immediate pass on the first event of a burst,
-                            // one trailing pass after it settles.
+                            // one trailing pass for the rest of it.
                             trace!("route table changed, re-resolving monitored TVs");
                             if settle_at.is_none() {
                                 if !re_resolve(world, state).await {
