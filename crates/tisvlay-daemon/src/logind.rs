@@ -115,11 +115,13 @@ where
 /// supervisor reconnects.
 pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> anyhow::Result<()> {
     let manager = Login1ManagerProxy::new(&connection).await?;
-    // Best-effort delay inhibitors: without them the box may sleep before
-    // the TVs get their actions. A fake logind without Inhibit is fine.
-    let mut inhibitors = take_inhibitors(&manager).await;
     let mut sleep_stream = manager.receive_prepare_for_sleep().await?;
     let mut shutdown_stream = manager.receive_prepare_for_shutdown().await?;
+    // Best-effort delay inhibitors: without them the box may sleep before
+    // the TVs get their actions. A fake logind without Inhibit is fine.
+    // Taken once the signals are subscribed: a sleep starting in between
+    // would otherwise wait out logind's delay with no TV action running.
+    let mut inhibitors = take_inhibitors(&manager).await;
     info!("logind watcher started");
     loop {
         tokio::select! {
@@ -156,6 +158,11 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                     info!(?event, "system shutting down");
                     world.send(InEvent::System { event, connector: None });
                     release_after_drain(&world, &manager, &mut inhibitors).await;
+                } else {
+                    // The shutdown was cancelled or failed: retake the
+                    // inhibitors it released, or later sleeps run without.
+                    info!("system shutdown cancelled");
+                    inhibitors = take_inhibitors(&manager).await;
                 }
             }
         }
