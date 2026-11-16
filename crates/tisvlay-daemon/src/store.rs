@@ -102,7 +102,9 @@ pub(crate) async fn store_task(
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
-                        write_blocking(&path, snapshot, base).await;
+                        // A failure was logged where it happened; there's
+                        // no later write to keep the snapshot for.
+                        let _ = write_blocking(&path, snapshot, base).await;
                     }
                     return;
                 }
@@ -118,10 +120,15 @@ pub(crate) async fn store_task(
                 tokio::time::sleep_until(due.expect("the branch is enabled only while due is Some")).await;
             }, if due.is_some() && !reloading => {
                 due = None;
-                if let Some(snapshot) = pending.take()
-                    && let Some(written) = write_blocking(&path, snapshot, base.clone()).await
-                {
-                    base = written;
+                if let Some(snapshot) = pending.take() {
+                    match write_blocking(&path, snapshot, base.clone()).await {
+                        Ok(written) => base = written,
+                        // The world counts a snapshot it sent as persisted
+                        // and won't send it again, so keep it: the world's
+                        // next snapshot replaces it, or the final flush
+                        // retries it.
+                        Err(snapshot) => pending = Some(snapshot),
+                    }
                 }
             }
         }
@@ -130,28 +137,27 @@ pub(crate) async fn store_task(
 
 /// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
-/// `base`, what the writer last wrote). Returns the snapshot once it's on
-/// disk.
+/// `base`, what the writer last wrote). Returns the snapshot: `Ok` once
+/// it's on disk, `Err` when it isn't (the failure is logged).
 async fn write_blocking(
     path: &Path,
     snapshot: StoreSnapshot,
     base: StoreSnapshot,
-) -> Option<StoreSnapshot> {
+) -> Result<StoreSnapshot, StoreSnapshot> {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || {
+    let attempt = snapshot.clone();
+    let written = tokio::task::spawn_blocking(move || {
         let may_write = tisvlay_runtime::fs::keep_unreloaded_edit::<StoreSnapshot>(&path, |disk| {
             same_content(disk, &base)
         });
-        (may_write && write_store(&path, &snapshot)).then_some(snapshot)
+        may_write && write_store(&path, &attempt)
     })
     .await
-    {
-        Ok(written) => written,
-        Err(e) => {
-            error!(%e, "store write task failed");
-            None
-        }
-    }
+    .unwrap_or_else(|e| {
+        error!(%e, "store write task failed");
+        false
+    });
+    if written { Ok(snapshot) } else { Err(snapshot) }
 }
 
 /// The same TVs and profiles, whatever their order in the file.
@@ -318,6 +324,37 @@ mod tests {
         await_contains(&path, "Renamed").await;
         drop(persist_tx);
         task.await.unwrap();
+    }
+
+    /// The world won't send a snapshot again once it's sent it, so one
+    /// whose write failed waits for the final flush instead of being lost.
+    #[tokio::test]
+    async fn a_failed_write_keeps_the_snapshot_for_the_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        let base = StoreSnapshot::default();
+        assert!(write_store(&path, &base));
+        let (_reactor, _effects, world) = tisvlay_world::Reactor::new("t", Vec::new());
+        let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+        let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(store_task(path.clone(), base, persist_rx, reload_rx, world));
+
+        // A directory where the write's temp file goes fails the write.
+        let blocker = dir.path().join("daemon.toml.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        persist_tx
+            .send(StoreMsg::Persist(Box::new(one_tv("Paired"))))
+            .unwrap();
+        tokio::time::sleep(DEBOUNCE * 2).await;
+        assert!(
+            !std::fs::read_to_string(&path).unwrap().contains("Paired"),
+            "the write should have failed"
+        );
+
+        std::fs::remove_dir(&blocker).unwrap();
+        drop(persist_tx);
+        task.await.unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("Paired"));
     }
 
     fn one_tv(name: &str) -> StoreSnapshot {
