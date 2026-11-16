@@ -70,6 +70,7 @@ export component FieldRenderer {
             toggled => { root.value-edited(self.checked ? "true" : "false"); }
         }
         if root.field.field-type == "select": ThemedSelect {
+            accessible-label: root.field.label;
             model: root.field.options;
             current-value: root.field.value;
             selected(v) => { root.value-edited(v); }

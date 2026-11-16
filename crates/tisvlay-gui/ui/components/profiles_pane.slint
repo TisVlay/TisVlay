@@ -725,6 +725,7 @@ component ProfileFieldRowEnum inherits ProfileFieldRow {
                 horizontal-stretch: 1;
                 alignment: center;
                 enum-control := ThemedSelect {
+                    accessible-label: root.entry.label;
                     nav-row: root.row-id;
                     accessible-id: "profiles-field-" + root.entry.field-name;
                     model: root.entry.options;

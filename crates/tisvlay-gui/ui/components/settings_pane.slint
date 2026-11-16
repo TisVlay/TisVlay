@@ -51,6 +51,7 @@ component NotificationRow {
         VerticalLayout {
             alignment: center;
             ThemedSwitch {
+                accessible-label: root.label;
                 checked: root.checked;
                 enabled: root.enabled;
                 toggled => { root.toggled(self.checked); }
@@ -127,6 +128,7 @@ export component SettingsPane inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     couch-select := ThemedSelect {
+                        accessible-label: @tr("Couch mode");
                         accessible-id: "settings-couch-mode";
                         width: 200px;
                         model: root.couch-modes;

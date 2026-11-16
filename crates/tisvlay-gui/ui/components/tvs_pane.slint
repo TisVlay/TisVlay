@@ -961,6 +961,7 @@ component TvDetail inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 ThemedSwitch {
+                                    accessible-label: managed-row.label;
                                     nav-row: managed-row.row-id;
                                     accessible-id: root.id-prefix + "managed";
                                     checked: root.tv.managed;
@@ -990,6 +991,7 @@ component TvDetail inherits Rectangle {
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                accessible-label: system-row.label;
                                 nav-row: system-row.row-id;
                                 accessible-id: root.id-prefix + "system-profile";
                                 model: root.system-profiles;
@@ -1026,6 +1028,7 @@ component TvDetail inherits Rectangle {
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                accessible-label: user-row.label;
                                 nav-row: user-row.row-id;
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
@@ -1136,6 +1139,7 @@ component TvDetail inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 ThemedSwitch {
+                                    accessible-label: screen-row.label;
                                     nav-row: screen-row.row-id;
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
@@ -1168,6 +1172,7 @@ component TvDetail inherits Rectangle {
                         label: @tr("Mute");
                         key: "mute";
                         ThemedSwitch {
+                            accessible-label: mute-row.label;
                             nav-row: mute-row.row-id;
                             checked: root.tv.muted;
                             enabled: root.tv.connected;
@@ -1186,6 +1191,7 @@ component TvDetail inherits Rectangle {
                         key: "current-input";
                         help: @tr("Current input shown now; changing it switches the live input.");
                         ThemedSelect {
+                            accessible-label: current-input-row.label;
                             nav-row: current-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
@@ -1201,6 +1207,7 @@ component TvDetail inherits Rectangle {
                         key: "primary-input";
                         help: @tr("Primary input gating automation; E.g. input used for display.");
                         ThemedSelect {
+                            accessible-label: primary-input-row.label;
                             nav-row: primary-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;

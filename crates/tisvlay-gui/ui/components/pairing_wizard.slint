@@ -544,6 +544,7 @@ component StepDiscover {
                             }
                         }
                         if root.supported-vendors.length > 1: ThemedSelect {
+                            accessible-label: @tr("Vendor");
                             nav-row: root.manual-row;
                             model: root.supported-vendor-names;
                             // Clamp: the vendor set can shrink under a stale
@@ -737,6 +738,7 @@ component StepConfigure {
                 font-weight: 500;
             }
             ThemedSelect {
+                accessible-label: @tr("Initial system profile");
                 model: root.system-profiles;
                 current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;
