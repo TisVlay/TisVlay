@@ -629,6 +629,7 @@ component StepConfigure {
     /// TV's `vendor_data`). Empty schema → the field-renderer block
     /// disappears and the user just confirms name/profile/managed.
     in property <[PairingFieldRow]> schema-fields;
+    in property <string> schema-error;
     callback name-edited(string);
     callback field-value-edited(int, string);
 
@@ -709,9 +710,18 @@ component StepConfigure {
             }
         }
 
-        // Vendor pairing-form schema (dynamic — driven by
-        // `Manager1.GetPairingSchema`). Shared with the TVs-pane
-        // edit-mode form via the same `SchemaForm` component.
+        // The schema couldn't load: say why, since the form stays empty
+        // and Pair stays disabled.
+        if root.schema-error != "": Text {
+            text: @tr("Couldn't load the pairing form: {}", root.schema-error);
+            color: Theme.danger-text;
+            font-size: Design.font-helper;
+            wrap: word-wrap;
+        }
+
+        // Vendor pairing-form schema (dynamic — driven by the vendor's
+        // schema rpc). Shared with the TVs-pane edit-mode form via the
+        // same `SchemaForm` component.
         SchemaForm {
             schema-fields: root.schema-fields;
             value-edited(i, v) => { root.field-value-edited(i, v); }
@@ -1190,6 +1200,7 @@ export component PairingWizardPane inherits Rectangle {
                     managed <=> PairingWizard.managed;
                     system-profiles: root.system-profiles;
                     schema-fields: PairingWizard.schema-fields;
+                    schema-error: PairingWizard.schema-error;
                     name-edited(v) => { PairingWizard.name-edited(v); }
                     field-value-edited(i, v) => { PairingWizard.field-value-edited(i, v); }
                 }

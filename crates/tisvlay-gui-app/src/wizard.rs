@@ -224,6 +224,7 @@ pub(crate) fn reset_wizard(
     wizard.set_selected_hw_model(SharedString::default());
     wizard.set_discovery_streaming(false);
     wizard.set_discovery_error(SharedString::default());
+    wizard.set_schema_error(SharedString::default());
     wizard.set_manual_lookup_streaming(false);
     wizard.set_pair_phase(SharedString::default());
     wizard.set_pair_message(SharedString::default());
@@ -357,9 +358,8 @@ fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: &tisvlay::Error
 
 /// Fetch the vendor's pairing-form schema and publish autofilled
 /// rows into the wizard's `schema-fields` model. Failure leaves
-/// the model empty and surfaces the error in `discovery-error`
-/// (the closest existing inline-message slot — a dedicated
-/// `Errors.pairing` channel is on the roadmap).
+/// the model empty and says why in `schema-error`, which the
+/// configure step shows.
 ///
 /// `manual_entry: true` tells the helper-override logic that this
 /// schema fetch was triggered by the wizard's manual-add path
@@ -375,6 +375,10 @@ pub(crate) async fn fetch_and_publish_schema(
     entry: WizardEntry,
     manual_entry: bool,
 ) {
+    on_ui(&app_weak, |app| {
+        app.global::<PairingWizard>()
+            .set_schema_error(SharedString::default());
+    });
     match daemon.get_pairing_schema(&vendor).await {
         Ok(schema) => {
             let mut raw_rows = autofill_schema(&schema, &entry.vendor_data, &entry.address);
@@ -394,11 +398,11 @@ pub(crate) async fn fetch_and_publish_schema(
             });
         }
         Err(e) => {
-            warn!(vendor = %vendor, error = %e, "GetPairingSchema failed");
+            warn!(vendor = %vendor, error = %e, "pairing schema fetch failed");
             let msg = error_text(&e);
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
-                wizard.set_discovery_error(SharedString::from(msg));
+                wizard.set_schema_error(SharedString::from(msg));
             });
         }
     }

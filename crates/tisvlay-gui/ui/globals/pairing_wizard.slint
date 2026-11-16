@@ -116,6 +116,9 @@ export global PairingWizard {
     in-out property <[WizardDiscoveredTv]> discovered;
     in-out property <bool> discovery-streaming;
     in-out property <string> discovery-error;
+    /// Why the configure step's pairing form couldn't load; empty while
+    /// it loads or once it has.
+    in-out property <string> schema-error;
     /// True while a manual-entry MAC enrichment RPC is in flight
     /// (after the user clicks Add manually, before the wizard
     /// transitions to step 2). Drives a distinct loading state —
