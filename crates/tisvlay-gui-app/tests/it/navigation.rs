@@ -1758,7 +1758,7 @@ fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
     // Right to the row's "i", a ringed stop; Return pins its help.
     press(&app, Key::RightArrow);
     assert!(
-        ring_on(&app, "tv-detail-tv-1-help-Managed"),
+        ring_on(&app, "tv-detail-tv-1-help-managed"),
         "the \"i\" is a ringed stop"
     );
     press(&app, Key::Return);
@@ -1782,7 +1782,7 @@ fn return_on_an_i_pins_its_help_until_focus_leaves_the_row() {
     press(&app, Key::Escape);
     assert!(!help.get_shown(), "Escape closes");
     assert!(
-        ring_on(&app, "tv-detail-tv-1-help-Managed"),
+        ring_on(&app, "tv-detail-tv-1-help-managed"),
         "and leaves focus on the \"i\""
     );
 }
@@ -2117,7 +2117,7 @@ fn right_at_the_end_of_a_row_keeps_its_pinned_help() {
     // comes back, and the bubble must not notice.
     press(&app, Key::RightArrow);
     assert!(
-        ring_on(&app, "tv-detail-tv-1-help-Managed"),
+        ring_on(&app, "tv-detail-tv-1-help-managed"),
         "focus stayed on the \"i\""
     );
     assert!(help.get_shown(), "the probe hop didn't close the help");
