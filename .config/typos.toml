@@ -11,6 +11,9 @@ locale = "en-us"
 extend-ignore-re = [
     "netlink_packet_route::neighbour::",
     "\\.neighbours\\(\\)",
+    # LG IR codes in their 32-bit NEC form (address 0x04 as 20DF), which
+    # typos splits into words such as "BA".
+    "\\b20DF[0-9A-F]{4}\\b",
 ]
 
 [default.extend-identifiers]

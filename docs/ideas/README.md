@@ -32,6 +32,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [A longer lease on the Unix-socket links, so a sleep doesn't drop them](zenoh-link-lease.md)
 - [SDK methods for the rpcs the GUI can't reach (add-tv, discover, user effective)](sdk-cli-only-rpcs.md)
 - [A typed `update-config` request (settings fields + flattened vendor map)](typed-update-config.md)
+- [IR remote control (backend model with no read-back, who it's for, the first transport, the bench tests; research in docs/research/)](ir-remote-control.md)
 
 ## Operational
 

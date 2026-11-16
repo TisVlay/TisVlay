@@ -90,6 +90,7 @@ tisvlay/
 │   ├── lg/, cec/, watchers/,     # vendor + subsystem notes (transport-independent)
 │   │   streams/                  # stream detectors
 │   ├── ideas/, bugs/, concerns/  # one doc per item; each folder's README.md is its index
+│   ├── research/                 # dated surveys (IR); not maintained, re-check before use
 │   └── firewall.md, testing.md
 └── .claude/CLAUDE.md             # This file
 ```
