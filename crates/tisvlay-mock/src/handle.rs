@@ -220,11 +220,9 @@ impl MockHandle {
     /// the user presses Power on the remote, the TV's actual
     /// substate changes immediately (panel goes dark) but the
     /// subscription stream can stay quiet for several seconds before
-    /// pushing the new `PowerState`. The daemon's cached
-    /// `last_known_power_state` reads stale during that window.
-    /// Tests use this knob to verify pre-flight wake gates that
-    /// route through an authoritative live query rather than the
-    /// stale cached value.
+    /// pushing the new `PowerState`. The world's cached `State<Power>`
+    /// reads stale during that window, which tests use this knob to
+    /// model.
     ///
     /// No-op if no connection is currently open for that address.
     #[instrument(skip(self))]
@@ -436,8 +434,8 @@ impl MockHandle {
     /// remote-off: the daemon's `power_on` succeeds at the WS level
     /// (a new `MockConnection` is created) but the firmware reports
     /// a wake-preflight substate (`ActiveStandby` / `Standby`) that
-    /// never transitions to `Active`. Needed to drive the daemon's
-    /// `screen_off`-post-wake-settle graceful-fallback branch.
+    /// never transitions to `Active`: a TV that wakes into a wake-needy
+    /// substate, for the verify and escalation tests.
     #[instrument(skip(self))]
     pub fn set_initial_power_state_override(&self, address: &str, target: PowerState) {
         let mut state = self.state.lock();
@@ -657,7 +655,7 @@ mod tests {
 
     /// `disable_subscription = true` makes `subscribe_state` return
     /// `NotSupported` (modeling a poll-only backend) while `get_state`
-    /// still works — so the daemon's poll path has something to read.
+    /// still works — so the world's verify reads have something to read.
     /// The default (knob absent / false) keeps the push subscription,
     /// which the bulk of the mock-based tests rely on.
     #[tokio::test]

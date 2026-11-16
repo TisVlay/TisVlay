@@ -23,7 +23,7 @@ use crate::events::{
 /// Immutable, and its hooks keep [`TvIndex`] in step with the live TV
 /// entities: inserting it indexes the TV, and removing it (despawn
 /// included) unindexes it, deletes every key the TV published, and
-/// releases its route monitoring. No spawn or despawn path can forget
+/// releases its route and device monitoring. No spawn or despawn path can forget
 /// either. Hooks run when `Commands` flush, so within one system the
 /// index lags that system's own spawns and despawns.
 #[derive(Component, Debug)]
@@ -430,8 +430,8 @@ pub(crate) enum ProfileAction {
 pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool, bool)>);
 
 impl SystemProfile {
-    /// Stock mapping — parity with the root stack's hard-coded resolved
-    /// defaults: full power-off on sleep/shutdown, wake-on-LAN on resume,
+    /// Stock mapping, the floor `ResolvedSystemProfile::default` defines:
+    /// full power-off on sleep/shutdown, wake-on-LAN on resume,
     /// screen-blank mirroring for DPMS and the login greeter's idle timer.
     /// The session-start wakes restore the primary input (mirrors
     /// `ResolvedSystemProfile::default`).

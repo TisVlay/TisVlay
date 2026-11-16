@@ -141,7 +141,7 @@ pub(super) fn apply_backend_events(
                     if !capabilities.is_empty() {
                         enriched.capabilities = capabilities.clone();
                     }
-                    // Root parity: a blank friendly name defaults from
+                    // A blank friendly name defaults from
                     // the device's own model (CEC reads it as the TV's
                     // OSD name) — the manual-entry path's fallback.
                     if enriched.name.is_empty()
@@ -333,7 +333,7 @@ pub(super) fn apply_backend_events(
             }
             BackendEvent::ConnectFailed { reason } => {
                 // A freshly paired TV fails its pairing on the first
-                // dial failure — no retries, root parity: the terminal
+                // dial failure — no retries: the terminal
                 // carries the typed dial reason (permission code +
                 // node path), and a fresh enrollment rolls back so
                 // nothing unusable persists. Re-pairs keep the TV.
@@ -603,8 +603,8 @@ pub(super) fn apply_pairing_updates(
             PairingUpdate::State(state) => {
                 // The handshake's `complete` is NOT the pairing
                 // terminal: `complete` publishes only once the TV's
-                // first dial succeeds (root parity — the terminal
-                // never precedes a usable TV). Intermediate phases and
+                // first dial succeeds (the terminal never precedes a
+                // usable TV). Intermediate phases and
                 // handshake failures publish as they happen.
                 if !matches!(&**state, PairingState::Complete { .. })
                     && let Ok(session) = pairing.refs.get(entity)
@@ -705,8 +705,7 @@ pub(super) fn apply_pairing_updates(
     }
 }
 
-/// Park/unpark network-dependent connections on NIC carrier transitions —
-/// the same guarantee the old daemon's reconnecting-flag dance provided,
+/// Park/unpark network-dependent connections on NIC carrier transitions,
 /// expressed as components (no racing WoL loops: `PendingConnect` is the
 /// single dial gate). Events are scoped: only TVs whose route-resolved
 /// `MonitoredInterface` matches the transitioning NIC react — a wifi

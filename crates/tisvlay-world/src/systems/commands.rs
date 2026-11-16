@@ -134,7 +134,7 @@ pub(crate) fn add_tv(
 }
 
 /// Remove a TV. Despawning it unindexes it, deletes its keys, and
-/// releases its route monitoring (`TvId`'s hooks).
+/// releases its route and device monitoring (`TvId`'s hooks).
 pub(crate) fn remove_tv(
     In(id): In<Uuid>,
     mut commands: Commands,
@@ -443,7 +443,7 @@ pub(super) fn apply_managed(
             redial(&mut e, false);
         }
     } else {
-        // Managed gates automation, not connectivity (root parity):
+        // Managed gates automation, not connectivity:
         // the connection stays up so state remains live and manual
         // control keeps working; only profile-driven actions stop.
         commands.entity(entity).remove::<Managed>();

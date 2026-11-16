@@ -4,7 +4,8 @@
 //! tokio tasks; the bevy world mutates only at sync points inside
 //! `Reactor::step`. Inbound facts arrive as [`InEvent`] messages, systems
 //! react, and outbound work leaves as effects — wire effects
-//! ([`WireEffect`], destined for zenoh in M2) through the effects channel,
+//! ([`WireEffect`], for the daemon's zenoh bridge) through the effects
+//! channel,
 //! connection dials as spawned backend tasks.
 
 mod backend;

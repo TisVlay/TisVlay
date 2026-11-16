@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(session_action(EventAction::from(SessionAction::None)), None);
     }
 
-    /// The world's stock floor and the root stack's resolved defaults are
+    /// The world's stock floor and `ResolvedSystemProfile::default` are
     /// two hand-written tables that must agree event-for-event, including
     /// the `while_streaming` gate — a drift here silently diverges the
     /// daemon's DPMS gate from what the session and GUI resolve. Derive

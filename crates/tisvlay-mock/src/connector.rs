@@ -192,9 +192,8 @@ impl TvConnector for MockConnector {
         //   2. A prior call to `MockHandle::simulate_user_*`, which set
         //      an outcome on the state directly.
         //
-        // If both are set, the handle wins: it's stored directly and the
-        // shorthand's would-be-seeded value is overwritten only if no
-        // outcome is already present.
+        // If both are set, the handle-seeded outcome wins over the
+        // shorthand.
         let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         let address = config.address.clone();
 
@@ -283,8 +282,7 @@ impl TvConnector for MockConnector {
         // settings, so they don't appear here. `pairing` is the
         // exception — surfaced so the GUI can drive a manual pairing
         // flow without a real TV (and exercise the wizard's
-        // reject/timeout paths). Tests that prefer handle-driven
-        // pairing pass `pairing = "manual"` in their TOML config.
+        // reject/timeout paths).
         vec![
             PairingField {
                 name: "address".into(),

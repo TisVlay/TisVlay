@@ -152,8 +152,8 @@ pub enum InEvent {
     },
     /// A fact reported by a pairing task (or the reactor's pairing glue).
     PairingUpdate { id: Uuid, update: PairingUpdate },
-    /// A desktop/power event from an adapter (logind, DPMS, lock),
-    /// dispatched through the system profile to per-TV actions. A
+    /// A desktop/power event from an adapter (logind, DPMS, the greeter's
+    /// idle), dispatched through the system profile to per-TV actions. A
     /// `connector` scopes the event to the TV mirroring that DRM
     /// connector; TVs without a mapping treat every event as global.
     System {
@@ -455,10 +455,9 @@ pub enum StoreMsg {
 }
 
 /// A dial failure with its typed reason preserved across the task
-/// boundary. Root parity: `failure_reason` composed the pairing
-/// `failed` phase from the connect error's typed variant; carrying
-/// only a display string here is what lost `PermissionDenied { path }`
-/// on the way to clients.
+/// boundary: the pairing `failed` phase is composed from the connect
+/// error's typed variant, and a display string alone would lose
+/// `PermissionDenied { path }` on the way to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialFailure {
     /// The reason when the error carries one (a device-access failure);
@@ -644,7 +643,7 @@ pub enum BackendCmd {
     Drain(DrainToken),
 }
 
-/// The wake list: every TV's local device node with its system profile's
+/// The wake list: every managed TV's local device node with its system profile's
 /// `on_tv_power_on`, for the daemon to write where the wakeup unit reads it.
 pub type WakeList = std::collections::BTreeMap<std::path::PathBuf, tisvlay_core::SystemWakeAction>;
 

@@ -4,7 +4,7 @@ use super::*;
 
 /// Resolve the effective `automate_when` through the profile chain —
 /// the TV's assigned profile, then the editable default, then the
-/// `Always` floor. The gate is profile policy (root parity); there is
+/// `Always` floor. The gate is profile policy; there is
 /// no per-TV storage, and `meta.automate_when` is a read-only
 /// projection of this resolution.
 pub(super) fn resolve_automate_when(
@@ -28,7 +28,7 @@ pub(super) fn resolve_automate_when(
     .unwrap_or_default()
 }
 
-/// The root stack's `Automated` gate: managed AND the resolved
+/// The `Automated` gate: managed AND the resolved
 /// `automate_when` holds against the current input (unknowns get the
 /// benefit of the doubt — input can't be checked in standby).
 pub(super) fn is_automated(
