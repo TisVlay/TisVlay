@@ -59,8 +59,8 @@ jobs:
         with:
           tool: |
             cargo-about@0.9.1
-            cargo-auditable@0.7.6
-            cargo-cyclonedx@0.5.9
+            cargo-auditable@0.7.7
+            cargo-cyclonedx@0.5.10
             cargo-nfpm@0.1.3
             cargo-zigbuild@0.23.4
             just
