@@ -17,7 +17,7 @@ The daemon's WoL sends its magic packet to the IPv4 broadcast address (`tisvlay_
 `CAP_NET_RAW` is a real privilege escalation:
 
 - The daemon could craft arbitrary network packets (ARP injection, DHCP poisoning, raw TCP sequence manipulation). Far broader than "magic packets."
-- The NixOS hardened systemd unit has `CapabilityBoundingSet = [ "" ]` explicitly ([packaging/nix/module.nix:256-257](../../packaging/nix/module.nix#L256-L257)). Granting `CAP_NET_RAW` reverts a deliberate hardening decision.
+- The NixOS hardened systemd unit has `CapabilityBoundingSet = [ "" ]` explicitly (the daemon unit's `CapabilityBoundingSet` in [packaging/nix/module.nix](../../packaging/nix/module.nix)). Granting `CAP_NET_RAW` reverts a deliberate hardening decision.
 - For non-Nix distros, the equivalent is an `AmbientCapabilities=CAP_NET_RAW` drop-in for the daemon's unit — also a deliberate ops decision. Not `setcap` on the binary: the daemon is `tisvlay service daemon`, the same binary every user runs as the CLI, so a file capability would reach them all.
 - Most users on dual-stack home LANs work fine with classic v4 broadcast WoL. The narrow use case doesn't justify expanding privilege by default.
 

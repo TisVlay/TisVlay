@@ -1,6 +1,6 @@
 # Diagnostic log-tail ring buffer
 
-The About pane's diagnostic blob (schema reference in [`docs/diagnostics.md`](../diagnostics.md)) carries peer + runtime + build metadata after the planned enrichment, but no record of what the GUI was *doing* at capture time. A ring-buffer `tracing-subscriber` `Layer` keeping the last N events drained into the blob would make it trivial to see "what happened in the 30 seconds before this issue."
+The About pane's diagnostic blob (schema reference in [`docs/diagnostics.md`](../diagnostics.md)) carries peer, runtime and build metadata (schema v1), but no record of what the GUI was *doing* at capture time. A ring-buffer `tracing-subscriber` `Layer` keeping the last N events drained into the blob would make it trivial to see "what happened in the 30 seconds before this issue."
 
 Implementation sketch:
 
@@ -12,4 +12,4 @@ Implementation sketch:
 
 Industry convention: Sentry breadcrumbs default to 100 events, dmesg uses byte-bounded rings (16 KB–1 MB), browser DevTools caps at ~10K. 500 is a Sentry-x5 starting point because we paste rather than POST — bigger payload is fine.
 
-Tabled until the PR #1+#2 schema baseline ships so the embedding shape is clear.
+The schema v1 baseline it waited on has shipped; it's tabled until a field report needs the context.
