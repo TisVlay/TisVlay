@@ -55,7 +55,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 | `components.{daemon,session,tray}.version` | `about_components` model rows (each service's `info` rpc) |
 | `components.{daemon,session,tray}.connected` | `row.online` (the service's liveliness token) |
 | `components.{daemon,session,tray}.config` | `row.config_path != ""` — bool only; the path itself is PII |
-| `runtime.bus` | always `"user"`: the GUI passes a constant |
+| `runtime.bus` | `"system"` when the GUI dialed the packaged daemon socket, `"user"` for a per-user dev socket |
 | `runtime.desktop` | `std::env::var("XDG_CURRENT_DESKTOP")`, lowercased |
 | `runtime.session_type` | `std::env::var("XDG_SESSION_TYPE")` ("wayland" / "x11" / "tty") |
 | `runtime.locale` | `std::env::var("LANG")` |

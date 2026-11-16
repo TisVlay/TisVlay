@@ -678,9 +678,11 @@ pub fn run() -> Result<()> {
         Arc::new(std::sync::RwLock::new(Vec::new()));
     {
         let app_weak = app.as_weak();
-        // The zenoh stack has sockets, not buses; the diagnostic blob's
-        // runtime.bus field reads "user" for the per-user dev socket.
-        let user_bus = true;
+        // The zenoh stack has sockets, not buses: the diagnostic blob's
+        // runtime.bus reads "system" for the packaged daemon socket and
+        // "user" for a per-user dev one, the triage split it exists for.
+        let user_bus = endpoints().system_socket
+            != std::path::Path::new(tisvlay_protocol::bootstrap::SYSTEM_SOCKET_PATH);
         let vendors = supported_vendors_cache.clone();
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else {
