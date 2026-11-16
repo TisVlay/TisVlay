@@ -707,7 +707,7 @@ The per-user session service: user profiles, lock, idle and stream handling, on 
 
 ###### **Options:**
 
-* `--system-socket <SYSTEM_SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--system-socket <SYSTEM_SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--user-socket <USER_SOCKET>` — Per-user socket to listen on (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions
 
@@ -728,7 +728,7 @@ The system tray
 
 ###### **Options:**
 
-* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--user-socket <USER_SOCKET>` — Session-service user socket (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock). Missing socket just hides user profiles
 * `--site <SITE>` — Site chunk used in all key expressions
 
@@ -745,7 +745,7 @@ The login-screen idle client, run inside the greeter session
 
 ###### **Options:**
 
-* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--site <SITE>` — Site chunk used in all key expressions
 
   Default value: `main`

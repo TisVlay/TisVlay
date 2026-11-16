@@ -6,7 +6,8 @@ use std::path::PathBuf;
 /// The tray's flags, under `tisvlay service tray`.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
+    /// falling back to the packaged /run/tisvlay/zenoh.sock).
     #[arg(long)]
     socket: Option<PathBuf>,
 

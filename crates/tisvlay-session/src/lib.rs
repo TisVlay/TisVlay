@@ -2,11 +2,12 @@
 //! socket and a private per-user socket.
 //!
 //! Two zenoh sessions, no routing between them — that is the isolation
-//! design. Session A (client → system socket) mirrors TV meta, publishes
-//! session-event taps, and calls TV rpcs. Session B (peer listening on
-//! the user socket, 0700 runtime dir) owns everything under
-//! `tisvlay/<site>/user/**`: profile bodies, per-TV assignments, the rpc
-//! queryable, and the service's liveliness token. User-private keys
+//! design. Session A, a connect-only peer on the system socket, holds the
+//! daemon mirror, publishes the session-event taps and the cached
+//! `stream/state` mirror, and calls TV rpcs. Session B, a router listening
+//! on the user socket (0700 runtime dir), owns everything under
+//! `tisvlay/<site>/user/**`: profile bodies, per-TV assignments, the
+//! profile and stream rpc queryables, and the service's liveliness token. User-private keys
 //! physically never reach the system peer.
 
 mod detector;
@@ -19,6 +20,7 @@ mod store;
 mod stream;
 pub mod sunshine;
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -142,7 +144,7 @@ impl SessionClient {
 }
 
 /// Handle for injecting stream-source reports — the detector-report
-/// seam. Real detectors (spawned in `main.rs`) and the test Rig both
+/// seam. Real detectors (spawned by `service::run`) and the test Rig both
 /// report through it; the verb rpc served on the user socket feeds the
 /// same channel from inside the core.
 #[derive(Debug, Clone)]
@@ -174,16 +176,16 @@ pub struct SessionOptions {
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
-    /// Detector-report seam for stream sources — `main.rs`'s
-    /// (future) real detectors and the test Rig both report through it.
+    /// Detector-report seam for stream sources: the real detectors and
+    /// the test Rig both report through it.
     pub stream: StreamClient,
     /// Resolved user idle timeouts as `(locked, unlocked)` seconds —
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
     pub idle_timeouts: watch::Receiver<(u64, u64)>,
     /// Shared lock state: the lock watcher writes it (`LockedHint` seed +
-    /// edges), the idle adapter's lock-wake policy and the core's
-    /// drift re-assert read it.
+    /// edges), the idle adapter's lock-wake policy reads it, and the core
+    /// stamps it into the idle window when an idle action fires.
     pub is_locked: Arc<AtomicBool>,
     /// Shared foreground state: the lock watcher writes it (the session's
     /// `Active` seed + changes), the core's active-session arbitration gate
@@ -450,8 +452,8 @@ struct Core {
     /// For the `info` rpc (About pane row).
     state_path: String,
     idle_tx: watch::Sender<(u64, u64)>,
-    /// Shared with the adapters; the drift re-assert reads it to pick
-    /// the locked vs unlocked grace (a core-local flag would miss the
+    /// Shared with the adapters; stamped into the idle window when an idle
+    /// action fires, picking its grace (a core-local flag would miss the
     /// `LockedHint`-seeded auto-login lock, which arrives with no edge).
     is_locked: Arc<AtomicBool>,
     /// The session's foreground (`Active`) state, written by the lock
@@ -470,7 +472,8 @@ struct Core {
     /// idled unlocked and locked afterwards keeps the unlocked timeout
     /// instead of taking on a locked one that may be off.
     idle_fired: Option<bool>,
-    /// Mirrored `state/power` screen bit per TV.
+    /// Per TV: lit, meaning connected and reporting its screen on. A TV
+    /// nobody can see counts as dark.
     screen_on: HashMap<Uuid, bool>,
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
     /// from the drift; a deliberate remote press gets its window).
@@ -775,7 +778,7 @@ impl Core {
         }
     }
 
-    /// Publish the fact both ways: cached pub on the user socket, plain
+    /// Publish the fact both ways: cached pub on the user socket, cached
     /// mirror on the system socket. The `StreamState` is built once
     /// and reused for both puts.
     async fn publish_stream(&mut self) {
@@ -940,7 +943,7 @@ impl Core {
             return;
         }
         // A live Sunshine source reads fresh first: a stream that just
-        // started must still hold the lock back.
+        // ended must not hold the lock back.
         if self
             .stream_sources
             .has_kind(payload::StreamSourceKind::Sunshine)
@@ -1502,28 +1505,28 @@ impl Core {
     }
 
     async fn publish(&mut self, key: &str, payload: &Value) {
-        if !self.publishers.contains_key(key) {
-            let declared = self
-                .user
-                .declare_publisher(key.to_string())
-                .encoding(Encoding::APPLICATION_JSON)
-                .cache(CacheConfig::default().max_samples(1))
-                .sample_miss_detection(
-                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
-                )
-                .publisher_detection()
-                .await;
-            match declared {
-                Ok(publisher) => {
-                    self.publishers.insert(key.to_string(), publisher);
-                }
-                Err(e) => {
-                    warn!(%key, %e, "declare publisher failed, sample dropped");
-                    return;
+        let publisher = match self.publishers.entry(key.to_owned()) {
+            Entry::Occupied(declared) => declared.into_mut(),
+            Entry::Vacant(slot) => {
+                let declared = self
+                    .user
+                    .declare_publisher(key.to_string())
+                    .encoding(Encoding::APPLICATION_JSON)
+                    .cache(CacheConfig::default().max_samples(1))
+                    .sample_miss_detection(
+                        MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                    )
+                    .publisher_detection()
+                    .await;
+                match declared {
+                    Ok(publisher) => slot.insert(publisher),
+                    Err(e) => {
+                        warn!(%key, %e, "declare publisher failed, sample dropped");
+                        return;
+                    }
                 }
             }
-        }
-        let publisher = self.publishers.get(key).expect("just inserted");
+        };
         match serde_json::to_vec(payload) {
             Ok(bytes) => {
                 if let Err(e) = publisher.put(bytes).await {
@@ -1534,8 +1537,9 @@ impl Core {
         }
     }
 
-    /// Delete through the owning publisher so its cache records the
-    /// tombstone — late joiners see nothing.
+    /// Delete through the owning publisher, so live subscribers get the
+    /// DELETE on its sequence, then drop it with its cache: late joiners
+    /// see nothing.
     async fn delete_key(&mut self, key: &str) {
         match self.publishers.remove(key) {
             Some(publisher) => {

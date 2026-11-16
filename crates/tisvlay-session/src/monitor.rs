@@ -486,15 +486,16 @@ impl PortalTracker {
     /// One of `owner`'s sessions closed: decrement its count and clear the
     /// source only when the last one closes.
     pub(crate) fn closed(&mut self, owner: &str) -> Vec<StreamReport> {
-        let Some(state) = self.owners.get_mut(owner) else {
+        let std::collections::btree_map::Entry::Occupied(mut state) =
+            self.owners.entry(owner.to_owned())
+        else {
             return Vec::new();
         };
-        state.open = state.open.saturating_sub(1);
-        if state.open > 0 {
+        state.get_mut().open = state.get().open.saturating_sub(1);
+        if state.get().open > 0 {
             return Vec::new();
         }
-        let exe = self.owners.remove(owner).expect("just borrowed").exe;
-        vec![portal_report(exe, false, false)]
+        vec![portal_report(state.remove().exe, false, false)]
     }
 
     /// Tear down every tracked session (a monitor reconnect): clear each

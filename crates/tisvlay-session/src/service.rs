@@ -13,7 +13,8 @@ use crate::sunshine::{HostProbe, SunshineProbe};
 /// The session service's flags, under `tisvlay service session`.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
+    /// falling back to the packaged /run/tisvlay/zenoh.sock).
     #[arg(long)]
     system_socket: Option<PathBuf>,
 
@@ -97,7 +98,8 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
 
     // Lock state minted by the stack and shared three ways: the lock
     // watcher writes it (LockedHint seed + edges), the idle adapter's
-    // lock-wake policy and the core's drift re-assert read it.
+    // lock-wake policy reads it, and the core stamps it into the idle
+    // window when an idle action fires.
     let is_locked = stack.is_locked.clone();
     // Foreground (`Active`) state minted by the stack: the lock watcher
     // writes it, the core's active-session arbitration gate reads it.
