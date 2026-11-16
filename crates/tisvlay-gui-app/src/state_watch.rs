@@ -551,8 +551,8 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
                     })
                     .collect::<Vec<_>>(),
             )),
-            // Phase is purely GUI-side state. Refreshes reset it; any
-            // concurrent in-flight power-on task overwrites later.
+            // GUI-side state the power-on task owns: the merge below
+            // carries it over, since a wake's own state changes render.
             power_cycle_phase: SharedString::default(),
         })
         .collect();
@@ -560,6 +560,12 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     // in a pure-binding context, so the GUI's master-list header
     // reads this precomputed value.
     let connected_count = tvs.iter().filter(|t| t.connected).count() as i32;
+    // The list is sorted by name, so a rename, pair or removal can move
+    // the selected TV: the selection follows its id, not its index.
+    let selected = usize::try_from(app.get_selected_tv_index())
+        .ok()
+        .and_then(|i| app.get_tvs().row_data(i))
+        .map(|row| row.uuid);
     // A TV's nested lists keep their handles across refreshes: a new
     // handle would rebuild the rows they drive and destroy a focused
     // Copy button with them.
@@ -570,10 +576,16 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
             sync_nested(&old.available_input_ids, &mut new.available_input_ids);
             sync_nested(&old.vendor_config, &mut new.vendor_config);
             sync_nested(&old.vendor_info, &mut new.vendor_info);
+            if old.uuid == new.uuid {
+                new.power_cycle_phase = old.power_cycle_phase.clone();
+            }
             new
         },
         |m| app.set_tvs(m),
     );
+    if let Some(uuid) = selected {
+        app.set_selected_tv_index(crate::nav::resolve_tv_index(app, &uuid));
+    }
     app.set_tvs_connected_count(connected_count);
     sync_vec_model(&app.get_system_profiles(), snapshot.system_profiles, |m| {
         app.set_system_profiles(m);
@@ -766,6 +778,42 @@ mod focus_tests {
             system_profile_rows: vec![],
             user_profile_rows: vec![],
         }
+    }
+
+    /// A refresh that re-sorts the list (another TV renamed to sort
+    /// first) keeps the selection on the same TV, and a wake's phase,
+    /// which only the power-on task writes, survives the refresh its
+    /// own state changes cause.
+    #[test]
+    fn a_refresh_keeps_the_selected_tv_and_its_wake_phase() {
+        i_slint_backend_testing::init_no_event_loop();
+        let app = AppWindow::new().expect("AppWindow::new");
+        // Snapshots arrive sorted by name.
+        let before = || StateSnapshot {
+            tvs: vec![raw_tv("tv-1", "Den", true), raw_tv("tv-2", "Office", true)],
+            ..snapshot()
+        };
+        let renamed = || StateSnapshot {
+            tvs: vec![raw_tv("tv-2", "Attic", true), raw_tv("tv-1", "Den", true)],
+            ..snapshot()
+        };
+        push_snapshot(&app, before());
+        app.set_selected_tv_index(1);
+
+        push_snapshot(&app, renamed());
+        assert_eq!(
+            app.get_selected_tv_index(),
+            0,
+            "the selection follows the TV"
+        );
+
+        let tvs = app.get_tvs();
+        let mut row = tvs.row_data(0).expect("the selected TV");
+        row.power_cycle_phase = "connecting".into();
+        tvs.set_row_data(0, row);
+        push_snapshot(&app, renamed());
+        let row = app.get_tvs().row_data(0).expect("the selected TV");
+        assert_eq!(row.power_cycle_phase, "connecting");
     }
 
     fn press(app: &AppWindow, key: Key) {

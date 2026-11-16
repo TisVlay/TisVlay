@@ -310,7 +310,7 @@ pub(crate) fn wire(
 
 /// Index of `uuid` in the live TV model, or -1 when empty / not found
 /// (e.g. the TV was removed since the entry was recorded).
-fn resolve_tv_index(app: &AppWindow, uuid: &SharedString) -> i32 {
+pub(crate) fn resolve_tv_index(app: &AppWindow, uuid: &SharedString) -> i32 {
     if uuid.is_empty() {
         return -1;
     }
