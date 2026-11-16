@@ -172,6 +172,10 @@ linux-cec = { version = "0.2", default-features = false, features = ["async"] }
 # selects.
 libc = { version = "0.2", default-features = false }
 
+# Safe syscall wrappers: the wayland idle watch's poll and stop pipe, and
+# the GUI's uname for the diagnostics blob.
+rustix = "1.1"
+
 # ECS world engine (the daemon's state machines)
 bevy_ecs = "0.20"
 
