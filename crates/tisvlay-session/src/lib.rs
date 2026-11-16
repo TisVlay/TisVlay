@@ -394,7 +394,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         is_locked: is_locked.clone(),
         is_active: is_active.clone(),
         local_return_armed: local_return_armed.clone(),
-        idle_fired: false,
+        idle_fired: None,
         screen_on: HashMap::new(),
         drift_at: HashMap::new(),
         stream_sources: stream::StreamSources::default(),
@@ -464,8 +464,12 @@ struct Core {
     /// wakes the panel the disconnect left dark (`LocalReturn`).
     local_return_armed: Arc<AtomicBool>,
     /// An idle action fired and no activity has resumed since — the
-    /// window in which a self-lighting panel counts as drift.
-    idle_fired: bool,
+    /// window in which a self-lighting panel counts as drift. Holds
+    /// whether the desk was locked when it fired: that timer's timeout is
+    /// the window's grace for as long as it stays open, so a desk that
+    /// idled unlocked and locked afterwards keeps the unlocked timeout
+    /// instead of taking on a locked one that may be off.
+    idle_fired: Option<bool>,
     /// Mirrored `state/power` screen bit per TV.
     screen_on: HashMap<Uuid, bool>,
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
@@ -661,9 +665,13 @@ impl Core {
     /// press at the lock screen): give it one idle-timeout of grace,
     /// then re-assert the idle action. Gated exactly like the original
     /// dispatch — `automated` carries the automate_when/primary-input
-    /// policy — and only dark intents re-assert.
+    /// policy, a backgrounded session drives nothing, and a stream's gate
+    /// holds — and only dark intents re-assert.
     fn arm_drift(&mut self, tv: Uuid) {
-        if !self.idle_fired {
+        let Some(locked_when_idled) = self.idle_fired else {
+            return;
+        };
+        if !self.is_active.load(Ordering::SeqCst) {
             return;
         }
         if !self.tvs.get(&tv).is_some_and(|m| m.automated) {
@@ -676,7 +684,7 @@ impl Core {
         ) {
             return;
         }
-        let grace = if self.is_locked.load(Ordering::SeqCst) {
+        let grace = if locked_when_idled {
             resolved.locked_idle_timeout_seconds
         } else {
             resolved.unlocked_idle_timeout_seconds
@@ -701,13 +709,15 @@ impl Core {
             .collect();
         for tv in due {
             self.drift_at.remove(&tv);
-            if !self.idle_fired
+            if self.idle_fired.is_none()
+                || !self.is_active.load(Ordering::SeqCst)
                 || self.screen_on.get(&tv) != Some(&true)
                 || !self.tvs.get(&tv).is_some_and(|m| m.automated)
             {
                 continue;
             }
-            let action = self.resolve_for(&tv).on_idle_timeout;
+            // Through the stream gate, as the idle timeout itself goes.
+            let action = self.action_for(&tv, SessionEvent::IdleTimeout);
             debug!(%tv, ?action, "re-asserting idle action after screen drift");
             self.call_tv(tv, action);
         }
@@ -956,19 +966,22 @@ impl Core {
         // and any activity closes it (a fresh idle cycle will re-open it
         // through its own timer).
         match event {
-            SessionEvent::IdleTimeout => self.idle_fired = true,
+            SessionEvent::IdleTimeout => {
+                self.idle_fired = Some(self.is_locked.load(Ordering::SeqCst));
+            }
             // Stream start and end are orthogonal to the idle-drift
             // window — they neither open nor close it.
             _ if event.is_stream_edge() => {}
             // A lock isn't activity. A desk that idled and then locked on
-            // its own is as idle as before, and the locked idle timer
-            // won't say so again (it fires only for a desk already locked
-            // when it went idle), so the window stays as it is. A lock by
-            // hand follows activity, which closed it already.
+            // its own is as idle as before, so the window stays as it is,
+            // under the timeout that opened it. A lock from the keyboard
+            // follows activity, which closed it already; one with no
+            // input behind it (a remote lock, the TV's power key locking
+            // the PC) leaves a desk nobody is at.
             SessionEvent::Lock => {}
             // Anything else is someone at the desk.
             _ => {
-                self.idle_fired = false;
+                self.idle_fired = None;
                 self.drift_at.clear();
             }
         }

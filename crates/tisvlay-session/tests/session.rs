@@ -2145,7 +2145,8 @@ async fn an_idle_action_lost_with_the_link_goes_out_again_after_the_return() {
 /// The usual way a desk is left: it idles unlocked, the TV blanks, and
 /// then the screen locks on its own. The lock isn't activity, so the idle
 /// action still holds, and a TV that comes back lit goes dark again after
-/// the locked idle timeout.
+/// the timeout that blanked it: the unlocked one, with no locked timeout
+/// set at all.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_desk_that_idled_then_locked_still_reblanks_a_tv_back_lit() {
     let rig = rig().await;
@@ -2160,7 +2161,6 @@ async fn a_desk_that_idled_then_locked_still_reblanks_a_tv_back_lit() {
         tv,
         json!({
             "name": "Auto-lock",
-            "locked_idle_timeout_seconds": 1,
             "unlocked_idle_timeout_seconds": 1,
         }),
     )
@@ -2187,6 +2187,55 @@ async fn a_desk_that_idled_then_locked_still_reblanks_a_tv_back_lit() {
     .await;
     wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
         v["state"] == "screenoff"
+    })
+    .await;
+}
+
+/// The kept window belongs to its own desk. A user who idled, locked and
+/// was switched away from must not blank the TV the user now in front of
+/// it lights.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_backgrounded_sessions_idle_window_reblanks_nothing() {
+    let rig = rig().await;
+    let tv = add_tv(&rig, "Shared", "mock://switched-away").await;
+    let sub = history_sub(&rig.client, keys::tv_all(&rig.site)).await;
+    wait_tv_state(&sub, &rig.site, tv, "state/link", |v| {
+        v["connected"] == true
+    })
+    .await;
+    create_and_assign(
+        &rig,
+        tv,
+        json!({ "name": "Switched away", "unlocked_idle_timeout_seconds": 1 }),
+    )
+    .await;
+    drive_until(&rig, &sub, SessionEvent::IdleTimeout, tv, "screenoff").await;
+    rig.stack
+        .is_locked
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        rig.stack.client.send(SessionEvent::Lock),
+        "session core gone"
+    );
+    rig.stack
+        .is_active
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    // Let the daemon finish checking the lock's own screen-off, so what
+    // follows is a panel lit afterwards and not a blank that didn't land.
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    // The other user lights the TV.
+    rig.mock
+        .inject_power_state("mock://switched-away", tisvlay_core::PowerState::Active);
+    wait_tv_state(&sub, &rig.site, tv, "state/power", |v| {
+        v["state"] == "active"
+    })
+    .await;
+    assert_no_sample(&sub, Duration::from_millis(2500), |s| {
+        keys::parse_tv_path(&rig.site, s.key_expr().as_str())
+            .is_some_and(|(t, p)| t == tv && p == "state/power")
+            && payload_json(s)["state"] == "screenoff"
     })
     .await;
 }
