@@ -70,8 +70,8 @@ pub(crate) fn mark_edit_field_invalid(
 }
 
 /// Push a generic edit-mode error message onto the EditPane banner
-/// from a worker thread. Called when the prefetch flow (GetPairingSchema
-/// / GetConfig) fails before the form is even populated.
+/// from a worker thread. Called when the prefetch flow (the vendor's
+/// schema, the TV's config) fails before the form is even populated.
 pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: String) {
     on_ui(app_weak, move |app| {
         let edit_pane = app.global::<EditPane>();

@@ -12,24 +12,18 @@ fn main() {
 
 /// Sentinel emitted when git or rustc info isn't available
 /// (vendored tarball, Nix sandbox without `.git/`, parse failure).
-/// Kept on the same string contract `vergen-gix` previously
-/// produced so `diagnostic::maybe_git_sha` can collapse it to JSON
-/// `null` without changes.
-const IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
+/// `diagnostic::maybe_git_sha` collapses it to JSON `null`.
+const IDEMPOTENT_SENTINEL: &str = "TISVLAY_BUILD_UNKNOWN";
 
-/// Emit `VERGEN_CARGO_TARGET_TRIPLE`, `VERGEN_RUSTC_SEMVER`, and
-/// `VERGEN_GIT_SHA` (7-char short) for the diagnostic blob's
-/// `gui.{target, rustc, git_sha}` fields. Hand-rolled rather than
-/// pulled from `vergen-gix` because that crate's gitoxide backend
-/// drags 46 transitive crates and pins two `hashbrown` versions
-/// (`gix-tempfile` → `dashmap@6` → `hashbrown 0.14`; `gix-diff` →
-/// `imara-diff` → `hashbrown 0.15`). All three env vars are trivial
-/// to derive from cargo's own `TARGET`/`RUSTC` env vars and one
-/// `git rev-parse` shell-out.
+/// Emit `TISVLAY_BUILD_TARGET`, `TISVLAY_BUILD_RUSTC`, and
+/// `TISVLAY_BUILD_GIT_SHA` (7-char short) for the diagnostic blob's
+/// `gui.{target, rustc, git_sha}` fields, from cargo's own
+/// `TARGET`/`RUSTC` env vars and one `git rev-parse` shell-out
+/// (docs/build.md says why not a crate).
 fn emit_build_env_vars() {
     // Target triple — cargo always sets `TARGET` for build scripts.
     let target = std::env::var("TARGET").unwrap_or_else(|_| IDEMPOTENT_SENTINEL.to_string());
-    println!("cargo:rustc-env=VERGEN_CARGO_TARGET_TRIPLE={target}");
+    println!("cargo:rustc-env=TISVLAY_BUILD_TARGET={target}");
 
     // Rustc semver — parse `rustc -V` output, e.g.
     //     rustc 1.95.0 (59807616e 2026-04-14)
@@ -42,7 +36,7 @@ fn emit_build_env_vars() {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .and_then(|s| s.split_whitespace().nth(1).map(str::to_string))
         .unwrap_or_else(|| IDEMPOTENT_SENTINEL.to_string());
-    println!("cargo:rustc-env=VERGEN_RUSTC_SEMVER={rustc_v}");
+    println!("cargo:rustc-env=TISVLAY_BUILD_RUSTC={rustc_v}");
 
     // Git SHA. Watch `.git/HEAD` so a branch switch invalidates the
     // build script; per-commit invalidation needs the active ref's
@@ -66,13 +60,13 @@ fn emit_build_env_vars() {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| IDEMPOTENT_SENTINEL.to_string());
-    println!("cargo:rustc-env=VERGEN_GIT_SHA={git_sha}");
+    println!("cargo:rustc-env=TISVLAY_BUILD_GIT_SHA={git_sha}");
 }
 
 /// Generate `$OUT_DIR/THIRD-PARTY-LICENSES.html` for `include_str!`
 /// embedding into the GUI binary, consumed by the About pane's
 /// "View third-party notices" button via the browser-handoff path
-/// in `src/main.rs::open_notices_html`. See `docs/licensing.md` for
+/// in `about.rs`'s `open_notices_html`. See `docs/licensing.md` for
 /// the pipeline and `.claude/slint.md` "Slint text-rendering for
 /// large documents" for why we hand off rather than render in-app.
 ///

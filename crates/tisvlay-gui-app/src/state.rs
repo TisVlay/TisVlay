@@ -93,7 +93,7 @@ pub(crate) struct TvViewRaw {
     /// `Vec<(String, String)>` here so the snapshot crosses the
     /// tokio→Slint thread boundary as `Send`; the conversion to
     /// `[VendorInfoRow]` (a `ModelRc`-backed list) happens inside
-    /// the event-loop closure in `main.rs`.
+    /// the event-loop closure in `state_watch::push_snapshot`.
     pub vendor_config: Vec<(String, String)>,
     /// Backend-discovered diagnostic rows (`TvInfo::vendor_info`;
     /// LG: WebSocket scheme). Read-only; rendered in the INFO

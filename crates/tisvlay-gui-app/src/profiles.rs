@@ -2399,8 +2399,8 @@ pub(crate) async fn dispatch_select_after_create(
 
     // Push the selection. The detail-header materializes once
     // `selected-row.uuid` becomes non-empty; the master list pushes
-    // a fully populated row through `push_profiles` shortly after
-    // the `*ProfileAdded` signal handler runs. Until then the
+    // a fully populated row through `state_watch::push_snapshot` shortly
+    // after the new profile's key is published. Until then the
     // header reads name = empty, but the field-editor below is
     // populated correctly from the eager-fetched body.
     let uuid_str = SharedString::from(uuid.to_string());

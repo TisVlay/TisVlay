@@ -237,8 +237,8 @@ pub(crate) fn reset_wizard(
 /// Run a streaming discovery session against the daemon.
 ///
 /// Subscribes to the `discovery/*/found/*` keys first, then calls
-/// the `discover-start` rpc so the daemon loops M-SEARCH bursts
-/// at its configured `poll_interval` (default 8 s) until we stop it.
+/// the `discover-start` rpc so the daemon scans in bursts until we
+/// stop it.
 /// Each newly-seen TV is appended to `wizard_entries` and the Slint
 /// model is refreshed.
 ///

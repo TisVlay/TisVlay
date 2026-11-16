@@ -1,11 +1,10 @@
 //! tisvlay-gui — Slint-based settings + management window.
 //!
 //! Reads state from the daemon over the system zenoh socket and from
-//! `tisvlay-session` over the user socket. M2
-//! adds writable controls (volume, backlight, mute, screen toggle,
-//! input switcher, profile dropdowns, managed checkbox, remove,
-//! reload-config) plus staged power-on feedback via the per-TV
-//! `progress/power` key.
+//! `tisvlay-session` over the user socket, and drives both: per-TV
+//! controls (volume, backlight, mute, screen, input, profiles, managed,
+//! remove), pairing, the profile editors, reload, and staged power-on
+//! feedback through the per-TV `progress/power` key.
 
 mod about;
 mod accent;
@@ -401,7 +400,7 @@ pub fn run() -> Result<()> {
     info!("tisvlay-gui starting");
 
     // Slint's event loop owns the main thread once `run()` is called.
-    // A multi-thread tokio runtime backs all D-Bus work; spawned tasks
+    // A multi-thread tokio runtime backs all the async work; spawned tasks
     // live on its worker threads. We hold an `_enter` guard on the main
     // thread so any `tokio::spawn` invoked from a Slint callback finds
     // a runtime via `Handle::current()`.
@@ -495,11 +494,8 @@ pub fn run() -> Result<()> {
     // with `SingleMainWindow=true` in the .desktop) the taskbar /
     // app menu / KRunner can raise the existing window when the
     // user re-launches without going through our D-Bus Activate
-    // handler. PR slint-ui/slint#6851 (merged 2024-11) exposed
-    // this in slint::set_xdg_app_id; must be called before the
-    // AppWindow is shown — winit reads xdg_app_id when building
-    // WindowAttributes for the first show() (winitwindowadapter
-    // .rs:445).
+    // handler. Must be called before the AppWindow is shown: winit
+    // reads the app id when it builds the first window.
     slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
 
     let app = AppWindow::new()?;
@@ -1147,11 +1143,9 @@ fn register_callbacks(
     let wizard = app.global::<PairingWizard>();
     let edit_pane = app.global::<EditPane>();
     let errors_global = app.global::<Errors>();
-    // Inline-error action callback. v1 has no contextual actions
-    // wired — `kind`-based routing lands once the recovery flows
-    // do (e.g. "Edit MAC" once the edit-properties pane exists).
-    // Register a no-op so the Slint side has a handler bound; the
-    // close X is the only dismiss path users see today.
+    // Inline-error action callbacks: no error sets an action label
+    // yet, so the buttons never show and these never fire; the close
+    // X is the only dismiss path.
     errors_global.on_tvs_action(|| {});
     errors_global.on_pairing_action(|| {});
 
@@ -1213,7 +1207,7 @@ fn register_callbacks(
                             title: SharedString::from(gettext("Couldn't enable access")),
                             message: SharedString::from(
                                 gettext("Access wasn't granted: {0}")
-                                    .replace("{0}", &e.to_string()),
+                                    .replace("{0}", &error_text(&*e)),
                             ),
                             action_label: SharedString::from(gettext("Try again")),
                         }),
@@ -1859,10 +1853,8 @@ fn register_callbacks(
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
         // The ComboBox emits the display name; the daemon's
-        // `set-system-profile` rpc wants a UUID. Translate via a
-        // fresh catalog fetch (profile catalogs are small; an on-click
-        // round-trip is cheaper than threading a shared name->UUID
-        // cache through every callback). The match predicate goes
+        // `set-system-profile` rpc wants a UUID. Translate through the
+        // client's mirror of the profile catalog. The match predicate goes
         // through `display_profile_name` so the reserved-default
         // entry (which the ComboBox renders with a localized
         // "default" word + indicator glyph suffix) still resolves —
@@ -2364,7 +2356,7 @@ fn register_callbacks(
                 match result {
                     Ok(()) => wizard.set_mac_notice("saved".into()),
                     Err(e) => wizard.set_mac_error(SharedString::from(
-                        gettext("Couldn't update the MAC: {0}").replace("{0}", &e.to_string()),
+                        gettext("Couldn't update the MAC: {0}").replace("{0}", &error_text(&*e)),
                     )),
                 }
             });
@@ -2522,7 +2514,7 @@ fn register_callbacks(
             let schema = match d.get_pairing_schema(&vendor).await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(vendor = %vendor, error = %e, "EditPane.start: GetPairingSchema failed");
+                    warn!(vendor = %vendor, error = %e, "EditPane.start: pairing schema fetch failed");
                     publish_edit_error(&app_weak, error_text(&e));
                     return;
                 }
@@ -2531,7 +2523,7 @@ fn register_callbacks(
             let view = match with_id(&uuid_owned, |tv| d.get_tv_config(tv)).await {
                 Ok(view) => view,
                 Err(e) => {
-                    warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: GetConfig failed");
+                    warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: get-config failed");
                     publish_edit_error(&app_weak, error_text(&*e));
                     return;
                 }
@@ -2836,7 +2828,7 @@ fn register_callbacks(
             };
             let body = build_notification_update(&category, enabled);
             if let Err(e) = client.update_notification_settings(body).await {
-                warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+                warn!(category = %category, enabled, error = %e, "notification settings update failed");
             }
         });
     });
@@ -2851,7 +2843,7 @@ fn register_callbacks(
                 return;
             };
             if let Err(e) = client.send_test_notification().await {
-                warn!(error = %e, "SendTestNotification failed");
+                warn!(error = %e, "test notification failed");
             }
         });
     });
