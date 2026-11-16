@@ -273,8 +273,8 @@ async fn an_awake_tv_parked_by_a_carrier_loss_redials_past_the_budget() {
     ticks_dial_once_each(&mut effects, &client, &handle, "mock://parked", t0, 5).await;
 }
 
-/// The streak's pace: the first three failures wait the 3 s backoff, as
-/// a budgeted streak does, and from the fourth the wait doubles.
+/// The redial's pace: the first three failures wait the 3 s backoff, as
+/// a budgeted one's do, and from the fourth the wait doubles.
 #[tokio::test]
 async fn the_redial_backs_off_past_the_budget() {
     let (mut effects, client, handle) = spawn_reactor();

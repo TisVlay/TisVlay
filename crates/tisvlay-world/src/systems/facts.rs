@@ -36,7 +36,7 @@ pub(super) struct StateWrites<'w, 's> {
     traits: Query<'w, 's, &'static TransportTraits>,
     link: Query<'w, 's, &'static State<payload::Link>>,
     promptly: Query<'w, 's, (), With<RetryPromptly>>,
-    unreachable: Query<'w, 's, (), With<Unreachable>>,
+    in_outage: Query<'w, 's, (), With<Outage>>,
     parked: Query<'w, 's, (), With<Parked>>,
     live: Query<'w, 's, (), With<ConnectionHandle>>,
 }
@@ -106,7 +106,7 @@ pub(super) fn apply_backend_events(
                 tracing::debug!(%tv, "connected event applying");
                 let wake_dial = writes.pending.get(entity).is_ok_and(|p| p.wake);
                 let attempts = writes.pending.get(entity).map_or(0, |p| p.attempts);
-                if writes.unreachable.get(entity).is_ok() {
+                if writes.in_outage.get(entity).is_ok() {
                     tracing::info!(%tv, attempts, "link back after an outage");
                 } else if attempts > 1 {
                     tracing::info!(%tv, attempts, "connected after failed attempts");
@@ -125,7 +125,7 @@ pub(super) fn apply_backend_events(
                         PendingConnect,
                         RetryAt,
                         RetryPromptly,
-                        Unreachable,
+                        Outage,
                         Parked,
                     )>();
                 apply_state(&mut commands, entity, state, &mut writes);
@@ -263,7 +263,7 @@ pub(super) fn apply_backend_events(
                 // behind an outage (a park that raced the power-off) no
                 // longer holds.
                 if *after_power_off {
-                    e.remove::<Unreachable>();
+                    e.remove::<Outage>();
                 }
                 // A local-device connection doesn't go down because the TV
                 // slept (the bus survives standby), so a drop means the
@@ -287,7 +287,7 @@ pub(super) fn apply_backend_events(
                         tracing::info!(%tv, ?last, "network connection dropped with no standby announced, redialing until it is back");
                         // Nothing rides the outage: an input restore still
                         // pending would switch the TV whenever it ends.
-                        e.insert(Unreachable).remove::<DesiredInput>();
+                        e.insert(Outage).remove::<DesiredInput>();
                         redial(&mut e, false);
                     }
                 }
@@ -397,29 +397,29 @@ pub(super) fn apply_backend_events(
                 // dropped with no standby announced, and one that has now
                 // spent a whole budget unanswered, which may be just as on
                 // behind the same outage. A dial the TV answered and turned
-                // down isn't an outage: it ends such a streak, since asking
+                // down isn't an outage: it ends one under way, since asking
                 // again changes nothing (and an LG asked with a key it has
                 // forgotten prompts for pairing each time).
                 let local = writes.traits.get(entity).is_ok_and(|t| t.0.local_device);
-                let was_unreachable = writes.unreachable.get(entity).is_ok();
+                let was_in_outage = writes.in_outage.get(entity).is_ok();
                 let unanswered = reason.cause == DialFailureCause::NoAnswer;
                 let (enters_outage, ends_outage) =
-                    outage_change(unanswered, attempts, local, was_unreachable);
+                    outage_change(unanswered, attempts, local, was_in_outage);
                 if enters_outage {
                     tracing::info!(%tv, attempts, "no answer within the dial budget; redialing until the TV is back");
                     // Nothing is held through an outage: a screen request
                     // latched behind the budgeted dials goes with them.
                     commands
                         .entity(entity)
-                        .insert(Unreachable)
+                        .insert(Outage)
                         .remove::<(DispatchVerify, DesiredInput)>();
                 } else if ends_outage {
                     tracing::warn!(%tv, error = %reason.message, "the TV answered the redial and turned it down; no longer redialing");
-                    commands.entity(entity).remove::<Unreachable>();
+                    commands.entity(entity).remove::<Outage>();
                 }
                 let persistent = match reason.cause {
                     DialFailureCause::Device => local,
-                    DialFailureCause::NoAnswer => enters_outage || was_unreachable,
+                    DialFailureCause::NoAnswer => enters_outage || was_in_outage,
                     DialFailureCause::Refused => false,
                 };
                 if attempts == 1 {
@@ -461,7 +461,7 @@ pub(super) fn apply_backend_events(
                     }
                     tracing::warn!(%tv, attempts, "dialing gave up; `tisvlay reconnect` retries");
                 }
-                // The event reports a streak's budgeted attempts; the slow
+                // The event reports a redial's budgeted attempts; the slow
                 // retries beyond it only log at debug.
                 if attempts <= CONNECT_MAX_ATTEMPTS {
                     outbox.0.push(Effect::Wire(WireEffect::Publish {
@@ -727,7 +727,7 @@ pub(super) fn handle_carrier_events(
         Has<Parked>,
         Has<PendingConnect>,
         Option<&State<payload::Power>>,
-        Has<Unreachable>,
+        Has<Outage>,
     )>,
 ) {
     // A NIC can flap within one batch (down + up); only the latest
@@ -741,7 +741,7 @@ pub(super) fn handle_carrier_events(
         }
     }
     for (interface, up) in latest {
-        for (entity, id, traits, monitored, handle, parked, pending, power, unreachable) in &q {
+        for (entity, id, traits, monitored, handle, parked, pending, power, in_outage) in &q {
             if monitored.is_none_or(|m| m.0.as_deref() != Some(interface)) {
                 continue;
             }
@@ -753,7 +753,7 @@ pub(super) fn handle_carrier_events(
                     if !pending {
                         redial(&mut e, false);
                     }
-                } else if unreachable && pending {
+                } else if in_outage && pending {
                     // The path may be back with it: don't wait out the backoff.
                     commands.entity(entity).remove::<RetryAt>();
                 }
@@ -791,7 +791,7 @@ pub(super) fn apply_route_resolutions(
         Has<Parked>,
         Has<PendingConnect>,
         Option<&State<payload::Power>>,
-        Has<Unreachable>,
+        Has<Outage>,
     )>,
 ) {
     // Later resolutions in the same batch supersede earlier ones — the
@@ -807,7 +807,7 @@ pub(super) fn apply_route_resolutions(
         let Some(entity) = index.get(&tv) else {
             continue;
         };
-        let Ok((id, traits, monitored, connected, parked, pending, power, unreachable)) =
+        let Ok((id, traits, monitored, connected, parked, pending, power, in_outage)) =
             q.get(entity)
         else {
             continue;
@@ -840,7 +840,7 @@ pub(super) fn apply_route_resolutions(
                     redial(&mut e, false);
                 }
             }
-            (_, Some(_)) if unreachable && pending => {
+            (_, Some(_)) if in_outage && pending => {
                 // The path may be back with it: don't wait out the backoff.
                 e.remove::<RetryAt>();
             }
@@ -854,7 +854,7 @@ pub(super) fn apply_route_resolutions(
 /// standby is just off.
 fn mark_parked_awake(e: &mut EntityCommands, power: Option<&State<payload::Power>>) {
     if !power.is_some_and(|p| announces_standby(p.0.state)) {
-        e.insert(Unreachable).remove::<DesiredInput>();
+        e.insert(Outage).remove::<DesiredInput>();
     }
 }
 

@@ -164,7 +164,7 @@ pub(crate) struct LatestDial(pub u64);
 pub(crate) struct DialSeq(pub u64);
 
 /// A connect request is outstanding: reconcile dials until it succeeds or
-/// the attempt budget is spent, or without end for an [`Unreachable`] TV.
+/// the attempt budget is spent, or without end for a TV in an [`Outage`].
 /// Inserted by AddTv / Reconnect / a wake-path PowerOn, and by a drop the
 /// TV didn't announce; a TV that announced its standby stays down until
 /// asked.
@@ -177,11 +177,11 @@ pub(crate) struct PendingConnect {
 
 /// A network TV that may well be on and can't be reached: its link dropped
 /// with no standby announced, or it never answered a whole dial budget.
-/// Its dial streak has no budget, so it is redialed on the capped backoff
-/// until a dial connects. A marker of its own because `redial` replaces
-/// [`PendingConnect`], and the streak has to outlive that.
+/// Its redial has no budget: it goes on at the capped backoff until a
+/// dial connects. A marker of its own because `redial` replaces
+/// [`PendingConnect`], and the outage has to outlive that.
 #[derive(Component, Debug)]
-pub(crate) struct Unreachable;
+pub(crate) struct Outage;
 
 /// Backoff gate: no new dial before this instant.
 #[derive(Component, Debug)]

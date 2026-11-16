@@ -132,7 +132,7 @@ The kernel routing table is the source of truth — same approach as WireGuard a
 
 ### The path back lags the link
 
-A parked TV that was on when it was parked is marked `Unreachable`, like one whose own link dropped with no standby announced: the PC's link returning doesn't mean the path to the TV has (a router still booting). Its redial then has no budget, where a TV that had announced its standby keeps the three tries. A carrier or route returning during any such redial dials at once instead of waiting out the backoff ([architecture.md](../architecture.md) § The world).
+A parked TV that was on when it was parked is marked `Outage`, like one whose own link dropped with no standby announced: the PC's link returning doesn't mean the path to the TV has (a router still booting). Its redial then has no budget, where a TV that had announced its standby keeps the three tries. A carrier or route returning during any such redial dials at once instead of waiting out the backoff ([architecture.md](../architecture.md) § The world).
 
 ### Sleep/wake
 

@@ -175,7 +175,7 @@ pub(crate) fn reconnect(
     let entity = tv_entity(&index, id)?;
     let (handle, pending, _, _, _) = q.get(entity).unwrap_or((None, false, None, None, None));
     if handle.is_none() {
-        // A streak already under way keeps its attempt count; either way
+        // A redial already under way keeps its attempt count; either way
         // the next dial doesn't wait out a backoff.
         let mut e = commands.entity(entity);
         if !pending {
@@ -309,7 +309,7 @@ pub(crate) fn power_off(
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
     held: Query<&PendingConnect, Without<Reconnecting>>,
-    unreachable: Query<(), With<Unreachable>>,
+    in_outage: Query<(), With<Outage>>,
     mut outbox: ResMut<Outbox>,
 ) -> Result<(), WireError> {
     let entity = tv_entity(&index, id)?;
@@ -317,7 +317,7 @@ pub(crate) fn power_off(
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOff(reply)).is_ok() => Ok(()),
         // A TV behind an outage isn't off for having its wake cancelled:
         // the off couldn't reach it, and the caller is told so.
-        None if unreachable.get(entity).is_ok() => {
+        None if in_outage.get(entity).is_ok() => {
             drop_on_intent(&mut commands, entity);
             Err(WireError::not_connected(id))
         }
@@ -360,7 +360,7 @@ pub(crate) fn set_screen(
     clock: Res<Clock>,
     q: Query<LinkQuery>,
     metas: Query<&State<payload::Meta>>,
-    unreachable: Query<(), With<Unreachable>>,
+    in_outage: Query<(), With<Outage>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let row = q
@@ -371,13 +371,7 @@ pub(crate) fn set_screen(
     } else {
         None
     };
-    refuse_off_while_unreachable(
-        &mut commands,
-        entity,
-        id,
-        on,
-        unreachable.get(entity).is_ok(),
-    )?;
+    refuse_off_during_outage(&mut commands, entity, id, on, in_outage.get(entity).is_ok())?;
     dispatch_screen(&mut commands, &clock, entity, id, on, row, restore_to)?;
     Ok(Ack {})
 }
