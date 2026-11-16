@@ -150,7 +150,12 @@ async fn an_expired_wake_drops_its_input_restore() {
     let mut seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
     for barrier in 2..=4 {
         client.tick(t0 + Duration::from_secs(70 + 5 * barrier));
-        settle(&mut effects, &client, barrier).await;
+        client.command(Command::SetVolume {
+            id: Uuid::new_v4(),
+            level: 0,
+            reply: Some(Reply::new(barrier)),
+        });
+        seen.extend(collect_until(&mut effects, |e| reply_to(e, barrier)).await);
     }
     let restored =
         |e: &WireEffect| is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1");
