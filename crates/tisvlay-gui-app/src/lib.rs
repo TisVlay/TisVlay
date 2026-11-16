@@ -640,18 +640,6 @@ pub fn run() -> Result<()> {
         });
     }
 
-    // Toast.show is the public Slint-side trigger for the top-center
-    // notification surface. Rust handlers can either invoke this
-    // callback (e.g., from `Daemon.on_*` paths via the AppWindow
-    // global) or call `show_toast` directly — both feed the same
-    // property + auto-clear flow.
-    {
-        let app_weak = app.as_weak();
-        app.global::<Toast>().on_show(move |message| {
-            show_toast(app_weak.clone(), message.as_str());
-        });
-    }
-
     // About-pane wiring: GUI version (compile-time) + the three
     // top-row callbacks (View source / Report issue / Copy diagnostic).
     // The COMPONENTS array is pushed lazily once the daemon/session
@@ -1143,11 +1131,10 @@ fn register_callbacks(
     let wizard = app.global::<PairingWizard>();
     let edit_pane = app.global::<EditPane>();
     let errors_global = app.global::<Errors>();
-    // Inline-error action callbacks: no error sets an action label
-    // yet, so the buttons never show and these never fire; the close
-    // X is the only dismiss path.
+    // Inline-error action callback: no TVs-pane error sets an action
+    // label yet, so the button never shows and this never fires; the
+    // close X is the only dismiss path.
     errors_global.on_tvs_action(|| {});
-    errors_global.on_pairing_action(|| {});
 
     // App-level access banner. When the user can't reach the daemon
     // socket the resilient link never connects (the socket is 0660,
@@ -3155,8 +3142,8 @@ mod tests {
         let vendors = Arc::new(std::sync::RwLock::new(Vec::new()));
         let app = AppWindow::new().unwrap();
         app.set_daemon_available(true);
-        app.set_session_available(true);
-        app.set_tray_available(true);
+        app.global::<Profiles>().set_session_available(true);
+        app.global::<Tray>().set_available(true);
         let watcher = tokio::spawn(state_watch::watch(
             daemon.clone(),
             session.clone(),
@@ -3167,7 +3154,9 @@ mod tests {
             editor.clone(),
         ));
         wait_for_ui(&app, |app| {
-            !app.get_daemon_available() && !app.get_session_available() && !app.get_tray_available()
+            !app.get_daemon_available()
+                && !app.global::<Profiles>().get_session_available()
+                && !app.global::<Tray>().get_available()
         });
         let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
         let stack = tisvlay_daemon::serve(
@@ -3274,9 +3263,7 @@ mod tests {
         })
         .await
         .unwrap();
-        wait_for_ui(&app, |app| {
-            app.get_session_available() && app.global::<Profiles>().get_session_available()
-        });
+        wait_for_ui(&app, |app| app.global::<Profiles>().get_session_available());
         let user_profile = session_client
             .create_user_profile("Watcher personal")
             .await
@@ -3340,9 +3327,7 @@ mod tests {
             tray_path.clone(),
             notifier,
         ));
-        wait_for_ui(&app, |app| {
-            app.get_tray_available() && app.global::<Tray>().get_available()
-        });
+        wait_for_ui(&app, |app| app.global::<Tray>().get_available());
         tray_client
             .update_notification_settings(NotificationSettingsPatch {
                 tv_wake: Some(false),
@@ -3356,9 +3341,7 @@ mod tests {
         assert!(app.global::<Tray>().get_notifications().tv_pairing);
         tray_service.abort();
         assert!(tray_service.await.unwrap_err().is_cancelled());
-        wait_for_ui(&app, |app| {
-            !app.get_tray_available() && !app.global::<Tray>().get_available()
-        });
+        wait_for_ui(&app, |app| !app.global::<Tray>().get_available());
         let link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
             .await
             .unwrap();
@@ -3372,7 +3355,8 @@ mod tests {
             notifier,
         ));
         wait_for_ui(&app, |app| {
-            app.get_tray_available() && !app.global::<Tray>().get_notifications().tv_wake
+            app.global::<Tray>().get_available()
+                && !app.global::<Tray>().get_notifications().tv_wake
         });
         tray_client
             .update_notification_settings(NotificationSettingsPatch {
@@ -3386,10 +3370,10 @@ mod tests {
         });
         tray_restarted.abort();
         assert!(tray_restarted.await.unwrap_err().is_cancelled());
-        wait_for_ui(&app, |app| !app.get_tray_available());
+        wait_for_ui(&app, |app| !app.global::<Tray>().get_available());
         drop(session_stack);
         wait_for_ui(&app, |app| {
-            !app.get_session_available() && !app.global::<Profiles>().get_session_available()
+            !app.global::<Profiles>().get_session_available()
         });
         daemon.remove_tv(tv).await.unwrap();
         wait_for_ui(&app, |app| {

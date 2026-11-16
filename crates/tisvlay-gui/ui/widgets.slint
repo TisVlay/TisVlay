@@ -674,13 +674,11 @@ export component ProfileTile inherits Rectangle {
 // DangerBtn — destructive-action button (accent fill, white text).
 // =============================================================================
 //
-// Originally used `Theme.danger` (red) to signal "this is
-// destructive", but Plasma users now expect their DE-chosen accent
-// to drive filled buttons consistently — a red button next to
-// otherwise-accent-tinted UI looks alien. We rely on placement
-// (right side, after a Cancel) and explicit wording to convey
-// destructive intent, matching the std-widgets `Button { primary }`
-// look. Kept as a separate component so call sites are
+// Accent fill, not danger red: Plasma users expect their DE-chosen
+// accent on filled buttons, and a red one next to accent-tinted UI
+// looks alien. Placement
+// (right side, after a Cancel) and explicit wording carry the
+// destructive intent, matching `ThemedButton { primary }`'s look. Kept as a separate component so call sites are
 // self-documenting (`DangerBtn { text: "Remove TV" }` reads
 // destructive-by-name, even though the rendering matches a primary
 // button).
@@ -1611,8 +1609,7 @@ export component OptimisticSlider {
 // `Theme.*` binding path and dims its chrome on unfocused windows —
 // so it can't be retinted, only replaced. Chrome mirrors `ThemedSelect`
 // (surface2 fill, accent focus ring, `size-input` height); width
-// behavior mirrors the old SpinBox (`min-width: 0` + stretch), so the
-// swap is width-neutral.
+// behavior is `min-width: 0` + stretch, as the std one's.
 //
 // Value model (mirrors `OptimisticSlider` above):
 //   - `value` is the gated authoritative value pushed by Rust (bound to
@@ -1952,11 +1949,8 @@ export component Group {
 // SpinnerArc — track ring + rotating top-quarter arc (`tv-spin`).
 // =============================================================================
 //
-// Mirrors the design handoff's `Spinner` (CSS: full neutral border,
-// `border-top-color: accent`, `tv-spin 0.9s linear infinite`). Visual:
-// a still grey ring with one accent-colored quarter at the top,
-// rotating 360° every 0.9s linearly. See
-// `.claude/ui/pairing-wizard-motion.md` § 2 (`tv-spin`).
+// A still gray ring with one accent-colored quarter at the top,
+// rotating 360° every 0.9s linearly.
 //
 // Slint's std-widgets `Spinner` uses a Material-style growing/
 // shrinking arc with two simultaneous animations — visually busier
@@ -2004,14 +1998,10 @@ export component SpinnerArc inherits Rectangle {
 // PulseDot — radar-ping liveness indicator (10×10).
 // =============================================================================
 //
-// Mirrors the design handoff's `PulseDot` component
-// (`.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`)
-// and `tv-pulse` keyframe: a solid 6×6 dot in front of an animated
+// A solid 6×6 dot in front of an animated
 // 10×10 disc that scales 0.6 → 2.4 while fading 0.7 → 0 on a 1.4s
 // ease-out loop. Communicates ambient liveness ("the system is
-// listening") without consuming attention. See
-// `.claude/ui/pairing-wizard-motion.md` § 1 for the canonical motion
-// values.
+// listening") without consuming attention.
 
 export component PulseDot inherits Rectangle {
     width: 10px;
@@ -2052,12 +2042,8 @@ export component PulseDot inherits Rectangle {
 // =============================================================================
 //
 // 2px-tall track with a 40%-wide accent gradient that sweeps left to
-// right on a 1.6s ease-in-out loop. Matches the design handoff's
-// `tv-scan` CSS keyframe (`left: -40% → 100%`) — see
-// `.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`
-// `ScanLine` and the `@keyframes tv-scan` block in `Pairing
-// Wizard.html`. Used during discovery scanning and the pair-step
-// "registering" phase.
+// right on a 1.6s ease-in-out loop (`left: -40% → 100%`). Used during
+// discovery scanning and the pair-step "registering" phase.
 
 export component ScanLine inherits Rectangle {
     height: 2px;

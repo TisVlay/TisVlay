@@ -62,8 +62,7 @@ export struct AboutComponentRow {
 //
 // `show-divider` draws a 1px hairline above the row using
 // `Theme.border` — the parent for-loop sets it on every entry except
-// the first, restoring the inter-row separators the old CONNECTIONS
-// group used to render via interleaved `Rectangle`s.
+// the first, so the rows read as separated.
 //
 // `open-config-folder(path)` fires when the title-row IconBtn is
 // clicked. AboutPane re-emits it; main.rs lands it on the
@@ -249,7 +248,7 @@ export component AboutPane inherits Rectangle {
             alignment: start;
 
             // -- Header row: clickable [logo · title + tagline] (opens
-            // repo URL — same target as the old "View source" button)
+            // repo URL)
             // and a right-aligned column with version chip stacked
             // over the action buttons. `padding-right: pad-card`
             // matches the body padding inside the Groups below, so

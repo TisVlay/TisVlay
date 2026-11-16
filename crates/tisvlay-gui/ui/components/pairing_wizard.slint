@@ -331,7 +331,7 @@ component StepDiscover {
         // step heading — the stepper above already names the step, so a
         // static title plus separate status line would say the same
         // thing twice. Radar PulseDot while scanning, still dot at rest
-        // (`tv-pulse` keyframe — `.claude/ui/pairing-wizard-motion.md` § 1).
+        // (the `PulseDot` motion in widgets.slint).
         HorizontalLayout {
             spacing: Design.gap-stack;
             alignment: start;
@@ -388,8 +388,8 @@ component StepDiscover {
         }
         // Discovered list / empty-state. A single region with a stable
         // `min-height` so the layout doesn't shift the moment the first
-        // TV arrives — that shift previously pushed the manual-entry
-        // panel off-screen at minimum window sizes. The branch swap
+        // TV arrives, which would push the manual-entry panel
+        // off-screen at minimum window sizes. The branch swap
         // (empty placeholder ↔ populated list) happens *inside* the
         // region, so the wizard's overall height stays constant.
         // `vertical-stretch: 1` is set as forward-compat for a future
@@ -805,9 +805,8 @@ component StepPair {
             alignment: center;
 
             // Status icon. Terminal phases (complete / failed) render
-            // as still ✓ / ✕ in a soft-tinted circle — per
-            // `.claude/ui/pairing-wizard-motion.md`, *"stillness on
-            // resolution states is its own design choice"*. Anything
+            // as still ✓ / ✕ in a soft-tinted circle: stillness marks a
+            // resolved state. Anything
             // else is in-flight and gets the std-widgets `Spinner`
             // (the `tv-spin` indeterminate-progress role).
             HorizontalLayout {
@@ -1130,12 +1129,6 @@ export component PairingWizardPane inherits Rectangle {
     }
 
     background: Theme.surface-alt;
-
-    // Currently-selected discovered TV (or empty struct).
-    property <WizardDiscoveredTv> selected-tv:
-        PairingWizard.selected-index >= 0 && PairingWizard.selected-index < PairingWizard.discovered.length
-            ? PairingWizard.discovered[PairingWizard.selected-index]
-            : { id: "", name: "", vendor: "", address: "", hw-model: "" };
 
     // Whether the primary action button is enabled at the current step.
     property <bool> next-enabled:

@@ -10,10 +10,9 @@
 //     (`tisvlay_runtime::client::ReconcilerMap`); Slint stays a thin view.
 //   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
 //     `ScanLine`) and the per-call-site `animate background { ... }`
-//     hover transitions, all aligned with
-//     `.claude/ui/pairing-wizard-motion.md`.
+//     hover transitions.
 
-import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Focusable, InlineError } from "widgets.slint";
@@ -364,8 +363,6 @@ export component AppWindow inherits Window {
     in property <bool> daemon-available: false;
     // Up, but its TVs and profiles haven't all arrived yet.
     in property <bool> daemon-loading: false;
-    in property <bool> session-available: false;
-    in property <bool> tray-available: false;
     // Presence plus release compatibility, for the footer dots (and the
     // TVs pane's empty state). The `*-available` flags above stay
     // presence only.
@@ -430,11 +427,6 @@ export component AppWindow inherits Window {
     // `about-icon` so the sidebar's About row keeps a distinct
     // info-style glyph (`help-about`).
     in property <image> app-logo;
-
-    // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
-    // Wizard callbacks + state moved to `PairingWizard` global
-    // (globals/pairing_wizard.slint). Appearance follows
-    // `Palette.color-scheme` directly — no app-level setting.
 
     nav-scope := FocusScope {
         width: 100%;

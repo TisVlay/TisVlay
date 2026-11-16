@@ -201,8 +201,7 @@ export global PairingWizard {
     // `supported-vendor-names[manual-vendor-index]` and writes picks
     // back here via its `selected-index` callback; Rust at `manual-add`
     // time reads `supported-vendors[manual-vendor-index]` to recover the
-    // id + display name. Single source of truth replaces the prior
-    // `manual-vendor` (id) + `manual-vendor-name` (display) pair.
+    // id + display name, so the index is the one source of truth.
     in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;
 

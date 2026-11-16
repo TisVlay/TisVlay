@@ -316,8 +316,6 @@ impl View {
             app.set_daemon_loading(daemon_loading);
             app.global::<Profiles>().set_system_loading(daemon_loading);
             app.global::<Profiles>().set_user_loading(session_loading);
-            app.set_session_available(session_up);
-            app.set_tray_available(tray_up);
             app.global::<Tray>().set_available(tray_up);
             app.global::<Profiles>().set_session_available(session_up);
             app.set_daemon_health(daemon_health);

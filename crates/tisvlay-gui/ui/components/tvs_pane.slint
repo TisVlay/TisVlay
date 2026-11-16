@@ -1,14 +1,10 @@
-// TVs pane — master/detail layout.
-//
-// Implements the design at
-//   .claude/ui/design_handoff_tisvlay_gui/tvs-pane.jsx
-// using the global Theme tokens from ../theme.slint. Stick to stock
-// std-widgets (Button, Switch, Slider, ComboBox, ScrollView, ListView)
-// plus a handful of bespoke primitives — shared ones (Chip,
-// VendorTile, Group, …) come from ../widgets.slint; pane-local
-// helpers like `FormRow` and `LabeledRow` live further down.
+// TVs pane — master/detail layout, on the global Theme tokens from
+// ../theme.slint. Controls are the themed widgets (ThemedButton,
+// ThemedSwitch, ThemedSelect, OptimisticSlider); shared primitives
+// (Chip, VendorTile, Group, …) come from ../widgets.slint, and
+// pane-local helpers like `FormRow` and `LabeledRow` live further down.
 
-import { ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";

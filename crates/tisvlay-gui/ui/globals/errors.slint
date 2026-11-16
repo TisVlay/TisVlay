@@ -28,11 +28,6 @@ export global Errors {
     /// `Daemon.X(...)` callback that returns an error
     /// (power_on/off, set_volume, set_managed, remove_tv, ...).
     in-out property <ErrorState> tvs;
-    /// Pairing wizard — reserved for non-step-3 wizard errors
-    /// (the wizard's step 3 has its own retry / back-to-discovery
-    /// surface; field-level errors land inline via
-    /// `PairingFieldRow.error`). Empty by default.
-    in-out property <ErrorState> pairing;
     /// App-level access banner — unlike the per-pane slots above,
     /// this renders above every pane. Set by Rust when the user
     /// isn't in the daemon's socket group (so nothing can reach the
@@ -54,6 +49,5 @@ export global Errors {
     /// this and routes per-kind. Empty action-label hides the
     /// button entirely; the callback never fires in that case.
     callback tvs-action();
-    callback pairing-action();
     callback access-action();
 }
