@@ -34,7 +34,7 @@ use tisvlay_protocol::endpoint::{user_profile, user_stream};
 use tisvlay_protocol::error::WireError;
 use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::{keys, payload, rpc};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use zenoh::Session;
@@ -200,6 +200,30 @@ pub struct SessionStack {
     /// asked: the service hands them to [`spawn_locker`], which locks this
     /// user's seat session through logind.
     pub lock_requests: mpsc::UnboundedReceiver<Uuid>,
+    /// The core and the store writer, for an orderly stop.
+    pub tasks: SessionTasks,
+}
+
+/// The session's core task and its store writer.
+#[derive(Debug)]
+pub struct SessionTasks {
+    shutdown: Arc<Notify>,
+    core: tokio::task::JoinHandle<()>,
+    store: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SessionTasks {
+    /// Stop the core, then wait for the store writer to flush what it
+    /// holds: the core's exit closes the writer's channel, which writes a
+    /// snapshot still waiting out its debounce. Without this, a stop
+    /// (logout's SIGTERM) loses an edit made just before it.
+    pub async fn stop(self) {
+        self.shutdown.notify_one();
+        let _ = self.core.await;
+        if let Some(store) = self.store {
+            let _ = store.await;
+        }
+    }
 }
 
 /// Boot the session service: open both sessions, replay the store, and
@@ -258,19 +282,19 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             record.body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
         }
     }
-    let (persist, reloads) = match &options.store {
+    let (persist, reloads, store_task) = match &options.store {
         Some(path) => {
             let (persist_tx, persist_rx) = mpsc::unbounded_channel();
             let (reload_tx, reload_rx) = mpsc::unbounded_channel();
-            tokio::spawn(store::store_task(
+            let task = tokio::spawn(store::store_task(
                 path.clone(),
                 loaded,
                 persist_rx,
                 reload_rx,
             ));
-            (Some(persist_tx), Some(reload_tx))
+            (Some(persist_tx), Some(reload_tx), Some(task))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     // RPC queries land in the core loop through a channel, like the
@@ -407,12 +431,15 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         _alive: alive,
         _alive_system: alive_system,
     };
-    tokio::spawn(async move {
+    let shutdown = Arc::new(Notify::new());
+    let core_shutdown = Arc::clone(&shutdown);
+    let core_task = tokio::spawn(async move {
         core.run(
             events,
             reports,
             queries,
             stream_queries,
+            core_shutdown,
             FleetSubs {
                 daemon: daemon_events,
                 tv_off: tv_off_sub,
@@ -432,6 +459,11 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         is_locked,
         is_active,
         local_return_armed,
+        tasks: SessionTasks {
+            shutdown,
+            core: core_task,
+            store: store_task,
+        },
     })
 }
 
@@ -525,6 +557,7 @@ impl Core {
         mut reports: mpsc::UnboundedReceiver<StreamReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
         mut stream_queries: mpsc::UnboundedReceiver<Query>,
+        shutdown: Arc<Notify>,
         fleet: FleetSubs,
     ) {
         let FleetSubs {
@@ -583,9 +616,10 @@ impl Core {
                     Ok(sample) => self.apply_going_off(&sample, GoingOff::RemotePower).await,
                 },
                 () = drift_deadline(next_drift) => self.reassert_due(),
+                () = shutdown.notified() => break 'run,
             }
         }
-        // Clean exit (a channel closed on logout/restart): the
+        // Clean exit (a stop, or a channel closed on logout/restart): the
         // `_alive_system` token, dropped with `Core` immediately after,
         // sends a DELETE to the daemon's `session_alive` subscriber, which
         // clears the armed set. A crash that skips this path departs the same

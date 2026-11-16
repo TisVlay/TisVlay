@@ -165,7 +165,14 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     // and the zero-config fallback. Runs for the session lifetime.
     crate::spawn_sunshine_detector(stack.stream.clone(), sunshine);
 
-    tokio::signal::ctrl_c().await?;
+    // SIGTERM is how systemd stops the unit at logout; ctrl-c a dev run.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| anyhow::anyhow!("install the SIGTERM handler: {e}"))?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {}
+    }
     tracing::info!("shutting down");
+    stack.tasks.stop().await;
     Ok(())
 }
