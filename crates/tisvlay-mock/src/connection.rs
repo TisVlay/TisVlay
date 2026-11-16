@@ -35,8 +35,13 @@ pub struct MockConnection {
     connected: bool,
     /// Sender for pushing state updates to subscribers. Cloned into
     /// each state-mutating method so subscribers see cumulative state
-    /// after every operation — matching LG's push model.
-    subscription_tx: Option<mpsc::UnboundedSender<TvState>>,
+    /// after every operation — matching LG's push model. Weak: the
+    /// strong sender lives in `shared.subscription_txs`, so
+    /// `MockHandle::cut_link` can end the stream from outside.
+    subscription_tx: Option<mpsc::WeakUnboundedSender<TvState>>,
+    /// This connection's event sender, weak for the same reason: the
+    /// strong one lives in `shared.event_txs`.
+    event_tx: Option<mpsc::WeakUnboundedSender<TvEvent>>,
     /// Pre-seeded hardware identity applied at connect time. Returned
     /// from [`TvConnection::hardware_id`]; `None` when no test has
     /// seeded one via `MockHandle::set_hardware_id`.
@@ -123,6 +128,7 @@ impl MockConnection {
             address: config.address.clone(),
             connected: true,
             subscription_tx: None,
+            event_tx: None,
             hardware_id,
             backlight_ramp_intermediates: config.backlight_ramp_intermediates.clone(),
             backlight_ramp_step_delay: std::time::Duration::from_millis(
@@ -145,10 +151,10 @@ impl MockConnection {
 }
 
 impl Drop for MockConnection {
-    /// Remove our shared-state registrations so the subscription
-    /// channel's senders all drop together.
+    /// Remove this connection's shared-state registrations, so its
+    /// subscription stream ends with it.
     ///
-    /// Without this, the cloned sender registered in
+    /// Without this, the sender registered in
     /// `shared.subscription_txs` during `subscribe_state` would
     /// outlive the connection and keep the channel alive forever —
     /// the subscription receiver would never return `None`, so the
@@ -156,11 +162,36 @@ impl Drop for MockConnection {
     /// `Disconnected` event. Tests that assert the `state/link`
     /// payload reads `connected == false` after `power_off` would
     /// hang or see the wrong value.
+    ///
+    /// Only its own: a redial may already have registered the next
+    /// connection to the same address, whose stream must stay open.
     fn drop(&mut self) {
         let mut shared = self.shared.lock();
-        shared.live_states.remove(&self.address);
-        shared.subscription_txs.remove(&self.address);
-        shared.event_txs.remove(&self.address);
+        if shared
+            .live_states
+            .get(&self.address)
+            .is_some_and(|live| Arc::ptr_eq(live, &self.state))
+        {
+            shared.live_states.remove(&self.address);
+        }
+        let own = self
+            .subscription_tx
+            .as_ref()
+            .and_then(mpsc::WeakUnboundedSender::upgrade);
+        if let Some(own) = own
+            && let Some(txs) = shared.subscription_txs.get_mut(&self.address)
+        {
+            txs.retain(|tx| !tx.same_channel(&own));
+        }
+        let own = self
+            .event_tx
+            .as_ref()
+            .and_then(mpsc::WeakUnboundedSender::upgrade);
+        if let Some(own) = own
+            && let Some(txs) = shared.event_txs.get_mut(&self.address)
+        {
+            txs.retain(|tx| !tx.same_channel(&own));
+        }
     }
 }
 
@@ -169,7 +200,7 @@ impl Drop for MockConnection {
 /// `&MockConnection` directly).
 fn push_state(
     state: &Arc<Mutex<TvState>>,
-    subscription_tx: &Option<mpsc::UnboundedSender<TvState>>,
+    subscription_tx: &Option<mpsc::WeakUnboundedSender<TvState>>,
     f: impl FnOnce(&mut TvState),
 ) {
     let snapshot = {
@@ -177,7 +208,10 @@ fn push_state(
         f(&mut state);
         state.clone()
     };
-    if let Some(tx) = subscription_tx {
+    if let Some(tx) = subscription_tx
+        .as_ref()
+        .and_then(mpsc::WeakUnboundedSender::upgrade)
+    {
         let _ = tx.send(snapshot);
     }
 }
@@ -236,9 +270,18 @@ impl TvConnection for MockConnection {
         if !self.power_off_delay.is_zero() {
             tokio::time::sleep(self.power_off_delay).await;
         }
-        self.mutate_and_push(|s| {
-            s.update_power(PowerState::Standby);
-        });
+        // A TV that goes off without saying so leaves the last report
+        // as it was; the link still closes below.
+        if !self
+            .shared
+            .lock()
+            .power_off_unreported
+            .contains(&self.address)
+        {
+            self.mutate_and_push(|s| {
+                s.update_power(PowerState::Standby);
+            });
+        }
         // Network backends close the transport after power_off; a
         // reachable-in-standby (CEC-style) bus stays live — mirror the
         // backend the config asks us to model, matching CecConnection.
@@ -328,6 +371,12 @@ impl TvConnection for MockConnection {
             (state.screen_off_noop.contains(&self.address), counter)
         };
         counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The link turns out dead under the command, as a network TV's
+        // does when an outage is first noticed by a send.
+        if self.shared.lock().screen_off_closes.contains(&self.address) {
+            self.connected = false;
+            return Err(Error::ConnectionClosed);
+        }
         // Parallel knob for `screen_off`: tests opt in via
         // `set_screen_off_noop` to model firmware that returns Ok
         // but doesn't blank the panel. Mirrors `screen_on_noop`.
@@ -380,6 +429,11 @@ impl TvConnection for MockConnection {
                 crate::VENDOR_ID,
                 format!("unknown input: {input_id}"),
             ));
+        }
+        // A TV that takes the switch and doesn't act on it, so the
+        // daemon's restore stays pending across its retries.
+        if self.shared.lock().switch_input_noop.contains(&self.address) {
+            return Ok(());
         }
         let id = input_id.to_string();
         self.mutate_and_push(|s| s.current_input = Some(id));
@@ -458,14 +512,15 @@ impl TvConnection for MockConnection {
         let snapshot = self.state.lock().clone();
         let _ = tx.send(snapshot);
         // Register the sender in shared state so `MockHandle::inject_*`
-        // can push state changes to this connection's subscriber.
+        // can push state changes to this connection's subscriber. It is
+        // the only strong one: dropping it there ends the stream.
+        self.subscription_tx = Some(tx.downgrade());
         self.shared
             .lock()
             .subscription_txs
             .entry(self.address.clone())
             .or_default()
-            .push(tx.clone());
-        self.subscription_tx = Some(tx);
+            .push(tx);
         Ok(rx)
     }
 
@@ -479,6 +534,7 @@ impl TvConnection for MockConnection {
 
     async fn subscribe_events(&mut self) -> Result<mpsc::UnboundedReceiver<TvEvent>> {
         let (tx, rx) = mpsc::unbounded_channel();
+        self.event_tx = Some(tx.downgrade());
         self.shared
             .lock()
             .event_txs

@@ -12,6 +12,7 @@ mod carrier;
 mod device;
 mod dispatch;
 mod held_wake;
+mod link_recovery;
 mod pairing_profiles;
 mod power_edge;
 mod reload;

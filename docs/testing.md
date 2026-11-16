@@ -224,6 +224,12 @@ mock.simulate_user_accept("mock://lr");
 - `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the world publishes the new state on the wire the same way it would for a real backend-initiated change.
 - `inject_power_state_silent(address, PowerState)` — same mutation, no subscription push — simulates a TV whose state drifted without telling us
 - `set_screen_on_noop(address, bool)` / `set_screen_off_noop(address, bool)` — make screen commands accept-but-do-nothing, for the retry/escalation dispatch tests
+- `cut_link(address)` — end a live connection's stream without a power change, as a network outage does to a TV that stays on
+- `set_unreachable(address, bool)` — fail dials with `NetworkUnreachable`, as during that outage
+- `set_key_rejected(address, bool)` — make the TV answer dials and turn them down with `NotRegistered`, which is a refusal and not an outage
+- `set_screen_off_closes(address, bool)` — make a `screen_off` find the link dead, the way a send is often the first to notice an outage
+- `set_switch_input_noop(address, bool)` — make `switch_input` accept the switch without acting on it, so an input restore stays pending
+- `set_power_off_unreported(address, bool)` — make `power_off` close the link without a standby report first
 - `set_initial_power_state_override(address, PowerState)` — power state the next connect reports (e.g., connect straight into standby, CEC-style)
 - `screen_on_call_count(address)` / `screen_off_call_count(address)` / `connect_call_count(address)` — assert how many times the backend was actually driven
 
@@ -416,7 +422,7 @@ async fn wire() -> Wire {
 
 ### Test inventory
 
-- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `device.rs`, `held_wake.rs`, `pairing_profiles.rs`, `power_edge.rs`, `reload.rs`, `remote_keys.rs`, `store.rs`, `wake_list.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `device.rs`, `held_wake.rs`, `link_recovery.rs`, `pairing_profiles.rs`, `power_edge.rs`, `reload.rs`, `remote_keys.rs`, `store.rs`, `wake_list.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
 - `tisvlay-daemon/tests/it/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
 - `tisvlay-daemon/tests/it/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
 - `tisvlay-daemon/tests/it/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
@@ -503,6 +509,8 @@ The testing backend has no event loop and no public key helper, but `slint::Wind
 `i-slint-backend-testing` is pinned exactly to the Slint version in `tisvlay-gui-app`'s Cargo.toml because the crate's README warns "preliminary API, no semver" — it moves test helpers between modules across minors (e.g. [slint-ui/slint#11516](https://github.com/slint-ui/slint/pull/11516)), so upstream bumps are treated as breaking and re-pinned deliberately.
 
 ## Test observability
+
+The world suite captures the reactor's own log lines with `spawn_reactor_capturing_logs()` (`tests/it/support/mod.rs`): a subscriber scoped to the reactor's task, returned as a `Logs` handle to assert on with `logs.contain("…")`. Scoped, so it works under plain `cargo test` too, where a process-wide subscriber is first come, first served.
 
 ### #[traced_test] — per-test log capture
 

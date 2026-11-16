@@ -34,6 +34,8 @@ pub(crate) enum RegistrationOutcome {
     Accept { client_key: String },
     /// Single-phase accept: Registered immediately (returning client).
     AcceptImmediate { client_key: String },
+    /// The prompt is shown (Response) and nobody accepts it: no Registered.
+    PromptUnaccepted,
     /// Reject with an error response.
     Reject,
 }
@@ -279,6 +281,16 @@ impl FakeSsapServer {
                             "type": "registered",
                             "payload": {
                                 "client-key": client_key
+                            }
+                        })]
+                    }
+                    RegistrationOutcome::PromptUnaccepted => {
+                        vec![json!({
+                            "id": id,
+                            "type": "response",
+                            "payload": {
+                                "pairingType": "PROMPT",
+                                "returnValue": true
                             }
                         })]
                     }

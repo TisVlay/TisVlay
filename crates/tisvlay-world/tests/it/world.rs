@@ -143,9 +143,9 @@ async fn remove_tv_is_boring() {
     );
 }
 
-/// A disconnect (power_off on a network-style transport) stays down — no
-/// auto-redial fighting a TV the user turned off. `Reconnect` brings it
-/// back on request.
+/// A link that closes behind the daemon's own power-off (a network-style
+/// transport) stays down — no auto-redial fighting a TV the user turned
+/// off. `Reconnect` brings it back on request.
 #[tokio::test]
 async fn disconnect_stays_down_until_reconnect_command() {
     let (mut effects, client, handle) = spawn_reactor();

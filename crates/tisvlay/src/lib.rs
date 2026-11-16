@@ -743,12 +743,13 @@ impl DaemonClient {
             .await
     }
 
-    /// Blank the panel without powering the TV off. A disconnected TV
+    /// Blank the panel without powering the TV off. A TV that went off
     /// already counts as dark, so that succeeds without doing anything.
     /// The ack comes once the action is sent; the daemon then checks the
     /// power state and retries on its own. Rpc, refused with
     /// [`ErrorCode::TvNotFound`], or [`ErrorCode::NotConnected`] when the
-    /// connection drops as the action is sent.
+    /// connection drops as the action is sent or the TV, on when last
+    /// seen, can't be reached: nothing is kept to send later.
     pub async fn screen_off(&self, tv: Uuid) -> Result<()> {
         self.tv_call::<tv::SetScreen>(tv, &rpc::SetScreen::manual(false))
             .await

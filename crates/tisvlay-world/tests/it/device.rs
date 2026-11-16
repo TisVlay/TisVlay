@@ -179,7 +179,9 @@ async fn a_dropped_connection_redials_after_one_backoff() {
     client.send(InEvent::Backend {
         tv: id,
         dial: 1,
-        event: BackendEvent::Disconnected,
+        event: BackendEvent::Disconnected {
+            after_power_off: false,
+        },
     });
     collect_until(&mut effects, |e| link_connected(e, false)).await;
     assert_quiet(&mut effects, Duration::from_millis(200), |e| {
@@ -284,19 +286,6 @@ async fn removal_forgets_the_device() {
     let forgot = std::iter::from_fn(|| requests.try_recv().ok())
         .any(|request| request == DeviceRequest::Forget { tv: id });
     assert!(forgot, "the watcher is told to forget a removed TV");
-}
-
-/// Wait until the mock has seen `n` connect calls for `address`.
-async fn wait_for_dials(handle: &tisvlay_mock::MockHandle, address: &str, n: usize) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while handle.connect_call_count(address) < n {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "timed out waiting for dial {n} (saw {})",
-            handle.connect_call_count(address)
-        );
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
 }
 
 /// A device that can't be opened keeps the TV retrying past its budget,

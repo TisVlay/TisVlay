@@ -30,15 +30,16 @@ use uuid::Uuid;
 use crate::components::{
     AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceNode,
     DeviceWatch, DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
-    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
-    PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
-    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteKeysSent,
-    RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile, TransportTraits,
-    TvId, TvIndex, VendorRef, WakingInPlace, dependency_absent,
+    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outage,
+    Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked,
+    PendingConnect, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
+    RemoteKeysSent, RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile,
+    TransportTraits, TvId, TvIndex, VendorRef, WakingInPlace, dependency_absent,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
-    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, DialFailureCause, InEvent, PairingUpdate,
+    ProfileRecord, SleepMode, SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList,
+    WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.

@@ -130,6 +130,14 @@ The kernel routing table is the source of truth — same approach as WireGuard a
 
 **Without continuity** (gap between NICs): carrier lost → disconnect → new NIC comes up → route available → reconnect.
 
+### An outage the PC can't see
+
+Carrier and route describe the PC's own network. A router rebooting elsewhere, or the TV's Wi-Fi dropping, changes neither: the PC's link stays up and its route to the TV stays in the table, so nothing here fires. That outage is seen only as the TV's connection closing, and recovered by the world's redial of a drop the TV didn't announce, not by anything in this watcher ([the incident](../bugs/network-tv-not-redialed-after-outage.md)).
+
+### The path back lags the link
+
+A parked TV that was on when it was parked is marked `Outage`, like one whose own link dropped with no standby announced: the PC's link returning doesn't mean the path to the TV has (a router still booting). Its redial then has no budget, where a TV that had announced its standby keeps the three tries. A carrier or route returning during any such redial dials at once instead of waiting out the backoff ([architecture.md](../architecture.md) § The world).
+
 ### Sleep/wake
 
 Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-flight dial (`Reconnecting`) fails and retries on its own schedule, so WoL retry loops during system resume are never fought. Route resolution also gates dial *spawning*, not just parking: a `MonitoredInterface` reading `Some(None)` defers any pending dial (attempt budget reset, `AwaitingDependency` marker, `awaiting_network` phase for wakes) until a route returns — the resume/boot wake can no longer spend its budget into a NIC that has not come up yet. A held wake is bounded, though: after 60 s it expires into a plain reconnect, and a newer power-off cancels it, so a network back much later doesn't turn the TV on ([architecture.md](../architecture.md) § The world). The gate keys on route *absence* (`Some(None)`), not route *quality*: a present-but-non-carrying route (a captive-portal roam, say) still dials, burns budget, and fails loudly — deferral is only for "no path exists yet", not "the path may be bad". Component absence never defers: monitoring is requested by the dial spawn itself, so first dials dial as always. Local-device transports (CEC) have no route; they gate on their device node instead ([devices.md](devices.md)).
@@ -154,3 +162,4 @@ Carrier/route parking only acts on live connections (`ConnectionHandle`); an in-
 | Wired disconnect (failover) | Instant disconnect + reconnect via Wi-Fi | Carrier + route + `survives_source_ip_change` |
 | Wired reconnect (failback) | NIC change → reconnect via wired | Route change + `survives_source_ip_change` |
 | Sleep/wake | Unchanged | the `Reconnecting` component prevents racing |
+| Outage beyond the PC (router reboot, TV-side Wi-Fi) | Link back about 40 s after the path, on the next dial | Neither group fires: the drop is the TV's connection closing, read as unannounced and redialed (`Outage`) |

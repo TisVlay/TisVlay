@@ -11,6 +11,7 @@
 
 ## Closed
 
+- [A network TV that stays on through an outage is never reconnected](network-tv-not-redialed-after-outage.md) — a drop the TV didn't announce is redialed until it answers, nothing is held for it meanwhile, and the session re-blanks a TV that comes back lit
 - [A power-on sent to a closing connection is lost behind an OK reply](power-on-lost-to-a-closing-connection.md) — re-armed as a wake dial through `BackendEvent::PowerOnLost`
 - [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md) — all three clients key on the shared `PowerState::is_awake`
 - [GUI power-state gate misses the wire's new power-state spellings](power-state-vocabulary-drift.md) — gate now delegates to `PowerState::is_on` via `parse`

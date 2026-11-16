@@ -108,7 +108,7 @@ impl TvConnector for MockConnector {
         // pick up any test-seeded hardware identity keyed by address, and bump
         // the per-address connect counter so tests can assert an idempotent
         // `power_on` skipped the teardown/reconnect.
-        let (delay, hardware_id, connect_counter) = {
+        let (delay, hardware_id, connect_counter, unreachable, key_rejected) = {
             let mut state = self.state.lock();
             let counter = state
                 .connect_calls
@@ -119,6 +119,8 @@ impl TvConnector for MockConnector {
                 state.connect_delay,
                 state.hardware_ids.get(&config.address).cloned(),
                 counter,
+                state.unreachable.contains(&config.address),
+                state.key_rejected.contains(&config.address),
             )
         };
         connect_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -127,6 +129,12 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if unreachable {
+            return Err(Error::Io(std::io::ErrorKind::NetworkUnreachable.into()));
+        }
+        if key_rejected {
+            return Err(Error::NotRegistered);
+        }
         if config.device_unavailable {
             return Err(Error::DeviceUnavailable {
                 path: config
