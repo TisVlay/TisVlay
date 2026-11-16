@@ -46,7 +46,7 @@ A network TV drops its connection when it goes to standby, and the service leave
 <details>
 <summary>From a terminal</summary>
 
-If a command fails with "not connected", the TV is off or can't be reached: power it on first (`tisvlay power <id> on`) and retry, or wait for the network if it is behind an outage. `tisvlay reconnect <id>` asks a downed TV to redial, and `tisvlay list` shows each TV's connection state.
+If a command fails with "not connected", the TV is off or can't be reached: power it on first (`tisvlay power <id> on`) and retry, or wait for the network if it is behind an outage. `tisvlay reconnect <id>` asks a downed TV to redial, and `tisvlay list` shows each TV's connection state. The daemon's journal says which kind of drop it was: "closed with the TV going off; staying down" for a TV that turned off, "dropped with no standby announced, redialing until it is back" for one behind an outage, and "link back after an outage" when it returns.
 
 </details>
 

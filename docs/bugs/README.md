@@ -2,7 +2,6 @@
 
 ## Open
 
-- [A network TV that stays on through an outage is never reconnected](network-tv-not-redialed-after-outage.md) — fixed on `fix/network-link-recovery`; open until the checks on the TV are run
 - [Upstream: linux-cec re-claim drops the OSD name](upstream-linux-cec-reclaim-drops-osd-name.md) — draft for linux-cec, not filed; held until our workaround (`8f764d5`) soaks
 - [Upstream: linux-cec can't set the log-address flags](upstream-linux-cec-log-addr-flags.md) — draft merge request for linux-cec (our fork's `rc-passthru` setter), not filed; held until the TV-controls-the-PC soak
 - [Upstream: linux-cec fails to read a claim in progress](upstream-linux-cec-unclaimed-slots.md) — draft merge request for linux-cec (our fork's `rc-passthru` fix, its own MR), not filed; files with the setter's
@@ -12,6 +11,7 @@
 
 ## Closed
 
+- [A network TV that stays on through an outage is never reconnected](network-tv-not-redialed-after-outage.md) — a drop the TV didn't announce is redialed until it answers, nothing is held for it meanwhile, and the session re-blanks a TV that comes back lit
 - [A power-on sent to a closing connection is lost behind an OK reply](power-on-lost-to-a-closing-connection.md) — re-armed as a wake dial through `BackendEvent::PowerOnLost`
 - [GUI and tray show a remote-off LG TV as powered on](power-switch-active-standby.md) — all three clients key on the shared `PowerState::is_awake`
 - [GUI power-state gate misses the wire's new power-state spellings](power-state-vocabulary-drift.md) — gate now delegates to `PowerState::is_on` via `parse`
