@@ -28,6 +28,35 @@ pub(crate) struct TvRow {
     pub vendor: Option<payload::VendorRows>,
 }
 
+impl TvRow {
+    /// Forget the payload at `path`.
+    fn clear(&mut self, path: &str) {
+        match path {
+            p if p == payload::Power::PATH => self.power = None,
+            p if p == payload::Volume::PATH => self.volume = None,
+            p if p == payload::Link::PATH => self.link = None,
+            p if p == payload::Input::PATH => self.input = None,
+            p if p == payload::Backlight::PATH => self.backlight = None,
+            p if p == payload::Identity::PATH => self.identity = None,
+            p if p == payload::Meta::PATH => self.meta = None,
+            p if p == payload::VendorRows::PATH => self.vendor = None,
+            _ => {}
+        }
+    }
+
+    /// Whether no payload is left.
+    fn is_empty(&self) -> bool {
+        self.power.is_none()
+            && self.volume.is_none()
+            && self.link.is_none()
+            && self.input.is_none()
+            && self.backlight.is_none()
+            && self.identity.is_none()
+            && self.meta.is_none()
+            && self.vendor.is_none()
+    }
+}
+
 /// The daemon's TVs and system profiles. A TV's keys arrive in no
 /// particular order, so a row collects them as they come, and shows only
 /// once its identity has arrived: a TV without one isn't a TV yet.
@@ -71,8 +100,18 @@ impl Mirror for SystemMirror {
         let key = sample.key_expr().as_str();
         if let Some((tv, path)) = keys::parse_tv_path(site, key) {
             if sample.kind() == SampleKind::Delete {
+                // A removal deletes every key, in no cross-key order, so a
+                // put that was in flight (an identity, just connected) can
+                // land after the meta delete and recreate the row. Each
+                // delete clears its own slot, and an emptied row goes, so
+                // that late put's own delete still removes it.
                 if path == payload::Meta::PATH {
                     self.tvs.remove(&tv);
+                } else if let Some(row) = self.tvs.get_mut(&tv) {
+                    row.clear(path);
+                    if row.is_empty() {
+                        self.tvs.remove(&tv);
+                    }
                 }
                 return Some(StateEvent::DaemonStateChanged(crate::TvStateChange {
                     key: key.to_string(),
@@ -272,6 +311,28 @@ mod tests {
         assert_eq!(shown(&mirror), Vec::<Uuid>::new());
         mirror.apply("t", &tv_key(tv, &payload::Identity::new("Den", "mock")));
         assert_eq!(shown(&mirror), [tv]);
+    }
+
+    /// A removal deletes every key in no cross-key order: an identity put
+    /// that lands after the meta delete recreates the row, and its own
+    /// delete, which follows it, removes the row again.
+    #[test]
+    fn a_late_put_during_removal_leaves_no_ghost() {
+        let tv = Uuid::from_u128(1);
+        let identity = payload::Identity::new("Den", "mock");
+        let delete = |path: &str| -> Sample {
+            let key = KeyExpr::try_from(keys::tv_path("t", &tv, path))
+                .expect("a TV key is a valid key expression");
+            SampleBuilder::delete(key).into()
+        };
+        let mut mirror = SystemMirror::default();
+        mirror.apply("t", &tv_key(tv, &payload::Meta::new(false)));
+        mirror.apply("t", &delete(payload::Meta::PATH));
+        mirror.apply("t", &tv_key(tv, &identity));
+        assert_eq!(shown(&mirror), [tv], "the late put shows for now");
+        mirror.apply("t", &delete(payload::Identity::PATH));
+        assert_eq!(shown(&mirror), Vec::<Uuid>::new());
+        assert!(mirror.tvs.is_empty(), "no hidden row is left either");
     }
 
     /// Clearing drops everything, with an event for each TV and profile
