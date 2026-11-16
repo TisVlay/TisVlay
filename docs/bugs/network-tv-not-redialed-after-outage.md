@@ -158,4 +158,8 @@ The TV came back reporting screen off, as it had been: over a three-and-a-half-m
 
 A second network TV in the same store, off since before the daemon started, showed the other rule at work: three dials answered with `Connection closed`, then `no answer within the dial budget; redialing until the TV is back`, and a dial every 60 s after that. What those dials do to a TV that is off is pass B's question.
 
+**Pass B on the branch (2026-11-15, 20:26, LG C3 with a Pulse-Eight CEC adapter).** The dials didn't wake the TV, and it reconnected by itself when turned on. The outage began at 20:27:10 and the drop was redialed as in pass A. The TV was turned off over CEC at 20:27:21 (its CEC entry read standby from then on) and the table removed at 20:28:11. With the path back and the TV off, four dials went out a minute apart (20:28:50 to 20:31:51), each ending in `Connection closed`: the TV's network side accepts the connection and drops it. The CEC entry stayed at standby throughout, with no report between the off and the on. The TV was turned on over CEC at 20:32:15, and the next dial, at 20:32:51, registered and connected: `link back after an outage`, 36 s after the TV came on, with nothing asking for it.
+
+This pass also exercised the session's rule on the TV, which pass A couldn't: the TV came back lit while the session was still idle, the session logged `screen drift while idle; re-assert armed` on the reconnect and, one idle timeout later (20 s under the test profile), `re-asserting idle action after screen drift`, and the TV went to screen off at 20:33:11.
+
 The block's background helpers kept its output pipe open for up to 50 s after `DONE`, which delayed the profile's restore that long; the blocks now end their helpers' children first.
