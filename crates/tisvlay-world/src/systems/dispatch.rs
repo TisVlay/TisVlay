@@ -190,8 +190,10 @@ pub(super) fn dispatch_screen(
         }
         if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
-        } else if pending {
-            // Screen off is power off here: it cancels a held wake.
+        } else {
+            // Screen off is power off here: it cancels a held wake. The
+            // cancel checks for one when it applies, so an on earlier in
+            // this batch (whose dial the query can't see yet) counts.
             cancel_held_wake(commands, entity);
         }
         // Otherwise a satisfied no-op: a dark, unreachable TV already is
@@ -551,9 +553,9 @@ pub(super) fn dispatch_system_events(
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
                         Ok(())
                     } else {
-                        if pending {
-                            cancel_held_wake(&mut commands, entity);
-                        }
+                        // The cancel checks for a held wake when it applies,
+                        // so an on earlier in this batch counts too.
+                        cancel_held_wake(&mut commands, entity);
                         // An off TV is off; one behind an outage isn't,
                         // and this couldn't reach it.
                         if in_outage {
