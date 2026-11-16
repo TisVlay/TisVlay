@@ -531,6 +531,37 @@ async fn next_matching(
     .expect("the event never arrived")
 }
 
+/// Dropping every copy of a client releases its session: its link, and
+/// the tasks that follow the service, don't outlive it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_client_closes_its_link() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let stub = FakeService::start(&socket, Family::Daemon, tisvlay_protocol::VERSION).await;
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let copy = daemon.clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !daemon.is_hydrated().await || stub.peers().await == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the client never linked"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    drop(daemon);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(stub.peers().await, 1, "a remaining copy keeps the link");
+    drop(copy);
+    while stub.peers().await != 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped client's link stayed up"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A daemon on another release line is refused, gated reads included,
 /// until it restarts on a matching release.
 #[tokio::test(flavor = "multi_thread")]
