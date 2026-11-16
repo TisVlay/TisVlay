@@ -2491,6 +2491,10 @@ fn register_callbacks(
     // the draft.
     let app_weak = app.as_weak();
     let d = daemon.clone();
+    // Counts starts, so only the latest load lands: starting TV B's edit
+    // before TV A's load returns would otherwise leave A's fields under
+    // B's name, and Save would rename A.
+    let loads = Arc::new(std::sync::atomic::AtomicU64::new(0));
     edit_pane.on_start(move |uuid| {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -2514,11 +2518,13 @@ fn register_callbacks(
         edit_pane.set_error(SharedString::default());
         edit_pane.set_saving(false);
         edit_pane.set_dirty(false);
-        edit_pane.set_name(SharedString::from(name.as_str()));
 
         let app_weak = app.as_weak();
         let d = d.clone();
         let uuid_owned = uuid.to_string();
+        let loads = Arc::clone(&loads);
+        let load = loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let current = move || loads.load(std::sync::atomic::Ordering::SeqCst) == load;
         tokio::spawn(async move {
             // Pairing schema is the `UserInput` projection of
             // `config_schema()` — exactly the editable subset we want.
@@ -2526,7 +2532,9 @@ fn register_callbacks(
                 Ok(s) => s,
                 Err(e) => {
                     warn!(vendor = %vendor, error = %e, "EditPane.start: pairing schema fetch failed");
-                    publish_edit_error(&app_weak, error_text(&e));
+                    if current() {
+                        publish_edit_error(&app_weak, error_text(&e));
+                    }
                     return;
                 }
             };
@@ -2535,14 +2543,20 @@ fn register_callbacks(
                 Ok(view) => view,
                 Err(e) => {
                     warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: get-config failed");
-                    publish_edit_error(&app_weak, error_text(&*e));
+                    if current() {
+                        publish_edit_error(&app_weak, error_text(&*e));
+                    }
                     return;
                 }
             };
 
             let raw_rows = prefill_schema_from_config(&schema, &view.config);
             on_ui(&app_weak, move |app| {
+                if !current() {
+                    return;
+                }
                 let edit_pane = app.global::<EditPane>();
+                edit_pane.set_name(SharedString::from(name.as_str()));
                 let rows: Vec<PairingFieldRow> = raw_rows
                     .into_iter()
                     .map(AutofilledRow::into_slint)
