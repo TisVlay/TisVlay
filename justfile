@@ -213,9 +213,8 @@ licenses-html:
 # per-locale `.po`, marking new entries fuzzy and obsoleting
 # removed ones.
 #
-# `.mo` files are generated at compile time by `slint_build`, so
-# there's no separate compile recipe. `cargo build` after editing
-# a `.po` is enough to refresh runtime catalogs.
+# Nothing compiles the `.po` files to `.mo` yet: only English ships.
+# docs/i18n.md says what the first translation needs.
 gui_lang_dir := "crates/tisvlay-gui/lang"
 gui_pot := gui_lang_dir + "/tisvlay-gui.pot"
 

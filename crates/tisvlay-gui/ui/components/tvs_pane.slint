@@ -426,7 +426,7 @@ component TvList inherits Rectangle {
                         // `tvs-connected-count` plumb on AppWindow,
                         // since Slint can't aggregate `tv.connected`
                         // across the model in a pure-binding context.
-                        text: root.connected-count + "/" + root.tvs.length + " CONNECTED";
+                        text: @tr("{}/{} CONNECTED", root.connected-count, root.tvs.length);
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;

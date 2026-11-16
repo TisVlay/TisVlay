@@ -2105,7 +2105,7 @@ export component CopyBtn inherits Focusable {
     /// Spell out the action when the visible content is just a
     /// glyph. Caller-supplied `label` (the noun being copied) plus
     /// the universal verb makes for a useful screen-reader phrase.
-    accessible-label: root.label != "" ? "Copy " + root.label : "Copy";
+    accessible-label: root.label != "" ? @tr("Copy {}", root.label) : @tr("Copy");
     activated => {
         Clipboard.copy(root.value, root.label);
     }

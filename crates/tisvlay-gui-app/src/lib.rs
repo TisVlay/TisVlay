@@ -378,12 +378,13 @@ pub fn run() -> Result<()> {
     )?;
 
     // Localization: one `tisvlay-gui` gettext catalog serves Slint's
-    // `@tr()` and our Rust-side `gettextrs::gettext()` calls; installed
-    // binaries fall back to
-    // `/usr/share/locale/<locale>/LC_MESSAGES/tisvlay-gui.mo`. v1 ships
-    // English only — every `@tr("…")` and `gettext("…")` returns the
-    // literal in the absence of a matching catalog.
+    // `@tr()` and our Rust-side `gettextrs::gettext()` calls, which read
+    // the process's default domain. Only English ships: every `@tr("…")`
+    // and `gettext("…")` returns the literal without a matching catalog.
     init_translations();
+    if let Err(e) = gettextrs::textdomain(GETTEXT_DOMAIN) {
+        warn!(%e, "couldn't select the gettext domain; strings stay untranslated");
+    }
 
     let args = Args::parse();
     let _ = ENDPOINTS.set(Endpoints {

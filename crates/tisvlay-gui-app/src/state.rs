@@ -489,7 +489,10 @@ where
 /// emoji-aware). Synthesis at this layer keeps the wire clean.
 pub(crate) fn display_profile_name(uuid: Uuid, name: &str, default_uuid: Uuid) -> String {
     if uuid == default_uuid {
-        format!("{}\u{00A0}\u{2713}", gettext(name))
+        // The reserved default's name is always "default" on disk, so
+        // the literal is its msgid; a variable msgid never reaches the
+        // catalog.
+        format!("{}\u{00A0}\u{2713}", gettext("default"))
     } else {
         name.to_owned()
     }

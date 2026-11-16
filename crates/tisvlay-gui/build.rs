@@ -1,6 +1,5 @@
 //! Compiles the Slint UI; `slint::include_modules!()` in `src/lib.rs` reads
-//! the generated code. With the `gettext` feature this also builds the
-//! `lang/` catalogs' `.mo` files.
+//! the generated code.
 
 fn main() {
     // Element ids in the generated code, which `i-slint-backend-testing`'s
