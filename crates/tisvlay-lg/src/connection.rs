@@ -25,8 +25,8 @@ pub(crate) struct LgConnection {
     config: LgVendorConfig,
     capabilities: Capabilities,
     /// Cached hardware identity. Seeded by the connector at construction
-    /// time (after the initial `getSystemInfo` call) and refreshed on
-    /// each fresh reconnect. Returned from [`hardware_id`](Self::hardware_id)
+    /// time (after the initial `getSystemInfo` call), or fetched once by
+    /// the first reconnect that finds none cached. Returned from [`hardware_id`](Self::hardware_id)
     /// without blocking.
     hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
     /// Test override for where a reconnect dials — the fake SSAP server's
@@ -105,8 +105,8 @@ impl LgConnection {
             let client = self.dial().await?;
             self.client = Some(client);
 
-            // Best-effort identity refresh on fresh connect. Runs once
-            // per reconnect (the values don't change for a given TV).
+            // Best-effort identity fetch, only while none is cached: the
+            // values don't change for a given TV.
             if self.hardware_id.read().map(|g| g.is_none()).unwrap_or(true) {
                 self.refresh_hardware_id().await;
             }

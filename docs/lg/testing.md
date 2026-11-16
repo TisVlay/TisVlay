@@ -17,7 +17,8 @@ let mut client = WebOsClient::connect_url(&server.ws_url(), None).await?;
 ```
 
 **FakeSsapHandle methods:**
-- `set_registration_outcome(Accept | AcceptImmediate | Reject)` — control pairing flow
+- `set_registration_outcome(Accept | AcceptImmediate | Reject | PromptUnaccepted)` — control pairing flow
+- `set_command_error(uri, error)` / `set_command_payload(uri, payload)` — script a command's refusal or reply
 - `push_subscription_update(request_id, payload)` — inject state pushes
 - `send_raw_text(text)` — inject malformed messages (fault injection)
 - `drop_connection()` — close the WebSocket (reconnection testing)
@@ -41,8 +42,7 @@ TLS is skipped in tests — the `InsecureCertVerifier` accepts any cert, so ther
 
 ## Known limitations
 
-- **with_retry full reconnection**: `LgConnection::ensure_connected()` reconnects via `WebOsClient::connect(ip)` which hardcodes ports 3000/3001. Full end-to-end reconnect testing requires making the path URL-configurable.
-- **Timeout paths**: `set_response_delay` not yet implemented on the server.
+- **Command timeouts**: the server can't delay a reply yet, so a command's own timeout path is untested (an unaccepted pairing prompt's timeout is covered).
 - **Partial handshake**: server closing during pairing phase 1 not yet tested.
 
 These are diminishing-returns items — add them if a real bug surfaces in those paths.

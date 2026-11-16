@@ -10,8 +10,7 @@
 //! Each node is then *probed*, best-effort: the scanner opens it and queries
 //! the TV's OSD name + vendor over the bus, so the wizard's list shows the
 //! real set (`OLED42C3PU` / LG) and its name field prefills. A node that
-//! doesn't answer (or can't be opened — e.g. already held by an active
-//! connection) falls back to the bare `HDMI CEC (/dev/cecN)` entry. The
+//! doesn't answer (or can't be opened — e.g. busy) falls back to the bare `HDMI CEC (/dev/cecN)` entry. The
 //! identity queries are bounded (see [`crate::link`]) so a silent TV can't
 //! stall the scan.
 
