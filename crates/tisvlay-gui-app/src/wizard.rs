@@ -17,7 +17,7 @@ use tisvlay::{
 };
 use tisvlay::{FailureCode, PairingPhase};
 use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::edit_pane::extract_invalid_vendor_config;
 use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid};
@@ -446,15 +446,16 @@ pub(crate) async fn run_wizard_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
+    captured_gen: u64,
     name: String,
     vendor: String,
     config: serde_json::Map<String, serde_json::Value>,
     managed: bool,
     system_profile: String,
 ) {
-    // Capture the generation at task start. Every callback below
-    // re-reads the live gen and skips if it has drifted.
-    let captured_gen = wizard_gen.load(Ordering::SeqCst);
+    // `captured_gen` is the generation when Pair was clicked: every
+    // callback below re-reads the live gen and skips if it has drifted,
+    // so a Cancel that lands before this task runs still counts.
 
     // Subscribe BEFORE the pair rpc so we don't miss any phase
     // updates (the daemon may publish `awaiting_tv` within
@@ -496,6 +497,14 @@ pub(crate) async fn run_wizard_pair(
                 return;
             }
         };
+    // Cancelled while the rpc ran: the Cancel had no tv_id to route, so
+    // end the daemon's session here rather than let it enroll the TV.
+    if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+        if let Err(e) = daemon.cancel_pair(tv_id).await {
+            debug!(%tv_id, error = %e, "cancel after an abandoned pair rpc failed");
+        }
+        return;
+    }
 
     // Set tv_id on the wizard so the Cancel button can route the
     // `cancel-pair` rpc. The same pair_tv_id is consumed

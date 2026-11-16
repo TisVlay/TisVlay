@@ -2236,9 +2236,21 @@ fn register_callbacks(
 
                 let d = ctx.daemon.clone();
                 let wg = ctx.generation.clone();
+                let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
                 let app_weak = app.as_weak();
                 tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, wg, name, vendor, config, managed, profile).await;
+                    run_wizard_pair(
+                        d,
+                        app_weak,
+                        wg,
+                        captured_gen,
+                        name,
+                        vendor,
+                        config,
+                        managed,
+                        profile,
+                    )
+                    .await;
                 });
             }
             // Pair → Done. Only allowed once pairing completed.
@@ -2308,9 +2320,21 @@ fn register_callbacks(
 
         let d = ctx.daemon.clone();
         let wg = ctx.generation.clone();
+        let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
         let app_weak = app.as_weak();
         tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, wg, name, vendor, config, managed, profile).await;
+            run_wizard_pair(
+                d,
+                app_weak,
+                wg,
+                captured_gen,
+                name,
+                vendor,
+                config,
+                managed,
+                profile,
+            )
+            .await;
         });
     });
 
