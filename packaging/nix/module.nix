@@ -73,11 +73,11 @@ in
       description = ''
         User accounts granted control of the daemon. The zenoh socket
         in /run/tisvlay/ is mode 0660 owned by `user`:`group`, so
-        socket permission IS the authorization model (replacing the
-        old D-Bus policy that let any local user call the daemon).
-        Every listed account is added to the daemon group. Desktop
-        users running tisvlay-session / tisvlay-tray / the GUI need
-        to be listed here.
+        socket permission is the authorization model. Every listed
+        account is added to the daemon group: the durable grant, which
+        also covers SSH, remote and headless use. The person at the
+        console gets access without being listed while `seatAccess`
+        is on.
       '';
     };
 
@@ -424,8 +424,8 @@ in
     # Make the CLI available system-wide. The GUI .desktop entry
     # and D-Bus session activation file ship with the package
     # (see package.nix): the .desktop via makeDesktopItem +
-    # copyDesktopItems (the 622-package nixpkgs idiom), the
-    # .service via postInstall + substituteInPlace.
+    # copyDesktopItems, the .service via postInstall +
+    # substituteInPlace.
     environment.systemPackages = [ cfg.package ];
 
     # Firewall: gated by both openFirewall (opt-in) and bindPort
@@ -575,7 +575,8 @@ in
           "AF_NETLINK"
         ];
 
-        # No child processes, no mmap+x, no realtime scheduling, no setuid.
+        # No personality changes, no mmap+x, no realtime scheduling, no
+        # setuid, no new namespaces.
         LockPersonality = true;
         MemoryDenyWriteExecute = true;
         RestrictRealtime = true;
@@ -694,8 +695,8 @@ in
     # can't be WantedBy= the user-scoped greeter target and wouldn't inherit
     # the compositor's XDG_RUNTIME_DIR/WAYLAND_DISPLAY. It attaches to the
     # DM's greeter-only session target so it never starts in a real user
-    # session; the greeter account(s) join the daemon group below for socket
-    # access.
+    # session. It reaches the socket through the daemon's --greeter-group
+    # ACL, not group membership.
     systemd.user.services.tisvlay-greeter = lib.mkIf cfg.greeter.enable (
       lib.mkMerge [
         {
