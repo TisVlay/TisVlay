@@ -23,6 +23,7 @@ mod schema_form;
 mod state;
 mod state_watch;
 mod toast;
+mod token;
 mod wizard;
 
 use about::{

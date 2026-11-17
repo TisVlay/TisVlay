@@ -22,6 +22,7 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{PairingField, PairingFieldType};
 
 use crate::PairingFieldRow;
+use crate::token::parse_token;
 
 /// Plain-data carrier for an autofilled schema row.
 ///
@@ -79,23 +80,11 @@ impl AutofilledRow {
     }
 }
 
-/// Resolve a kebab-case `field-type` wire string back to its typed
-/// [`PairingFieldType`]. Falls back to `String` for unknown values
-/// — keeps the form rendering through a forward-compat schema that
-/// introduces a new variant before we've taught the GUI about it.
-/// The validator just treats it as plain text.
+/// Resolve a row's `field-type` back to its typed [`PairingFieldType`].
+/// Rows only get theirs from [`PairingFieldType::as_str`], the type's
+/// serde name.
 pub(crate) fn parse_field_type(s: &str) -> PairingFieldType {
-    match s {
-        "password" => PairingFieldType::Password,
-        "ip" => PairingFieldType::Ip,
-        "mac" => PairingFieldType::Mac,
-        "port" => PairingFieldType::Port,
-        "int" => PairingFieldType::Int,
-        "bool" => PairingFieldType::Bool,
-        "select" => PairingFieldType::Select,
-        "path" => PairingFieldType::Path,
-        _ => PairingFieldType::String,
-    }
+    parse_token(s).expect("a row's field type is written by PairingFieldType::as_str")
 }
 
 /// Compute `(state, error)` for one row's `value` by reusing the
@@ -420,27 +409,20 @@ mod tests {
     // ---------- parse_field_type ----------
 
     #[test]
-    fn parse_field_type_maps_known_kebab_strings() {
-        for (input, expected) in [
-            ("password", PairingFieldType::Password),
-            ("ip", PairingFieldType::Ip),
-            ("mac", PairingFieldType::Mac),
-            ("port", PairingFieldType::Port),
-            ("int", PairingFieldType::Int),
-            ("bool", PairingFieldType::Bool),
-            ("select", PairingFieldType::Select),
-            ("path", PairingFieldType::Path),
+    fn parse_field_type_reads_back_every_as_str() {
+        for ty in [
+            PairingFieldType::String,
+            PairingFieldType::Password,
+            PairingFieldType::Ip,
+            PairingFieldType::Mac,
+            PairingFieldType::Port,
+            PairingFieldType::Int,
+            PairingFieldType::Bool,
+            PairingFieldType::Select,
+            PairingFieldType::Path,
         ] {
-            assert_eq!(parse_field_type(input), expected, "input={input}");
+            assert_eq!(parse_field_type(ty.as_str()), ty, "{}", ty.as_str());
         }
-    }
-
-    #[test]
-    fn parse_field_type_falls_back_to_string_for_unknown() {
-        // Forward-compat: a future schema variant the GUI hasn't
-        // learned about yet still renders, treated as plain text.
-        assert_eq!(parse_field_type("future-field"), PairingFieldType::String);
-        assert_eq!(parse_field_type(""), PairingFieldType::String);
     }
 
     // ---------- revalidate_row / mark_row_invalid ----------
