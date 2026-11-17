@@ -240,8 +240,13 @@ impl AutomateWhen {
     }
 }
 
+/// A string that names no [`AutomateWhen`] variant.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown automate_when: {0}")]
+pub struct UnknownAutomateWhen(pub String);
+
 impl std::str::FromStr for AutomateWhen {
-    type Err = String;
+    type Err = UnknownAutomateWhen;
 
     /// Inverse of [`Display`](Self#impl-Display-for-AutomateWhen); the
     /// round-trip test below pins both against the serde shape.
@@ -250,7 +255,7 @@ impl std::str::FromStr for AutomateWhen {
             "always" => Ok(Self::Always),
             "on_primary" => Ok(Self::OnPrimary),
             "off_primary" => Ok(Self::OffPrimary),
-            other => Err(format!("unknown automate_when: {other}")),
+            other => Err(UnknownAutomateWhen(other.to_owned())),
         }
     }
 }

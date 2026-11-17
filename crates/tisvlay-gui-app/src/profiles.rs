@@ -16,7 +16,7 @@
 //! The selection's editor model is rebuilt on every refresh — a select
 //! call, a `*ProfileChanged` signal whose UUID matches the current
 //! selection, or a fresh default-body fetch. Stale-callback protection
-//! lives on the [`ProfileEditorState::system_gen`] / `user_gen`
+//! lives on the [`ProfileEditorState::system    Ok(token.parse()?)gen`] / `user_gen`
 //! counters, bumped on every selection change. Async refresh tasks
 //! capture the value at start and no-op the post-fetch model push when
 //! the counter has drifted.
