@@ -120,6 +120,7 @@ pub struct TvStateChange {
 /// the tray settings service's events (liveliness and settings
 /// republish).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum StateEvent {
     /// A TV's published state changed in the daemon mirror: a TV
     /// appeared, one of its state keys updated, or it was removed (also

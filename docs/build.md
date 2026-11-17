@@ -199,10 +199,11 @@ The published crates release in lockstep on the shared workspace version, and at
 - **`#[non_exhaustive]`** goes on:
   - error enums and their code enums (core's `Error`, `ConfigError`, `PairingErrorCode` and `DeviceErrorCode`; the protocol's `RpcError`);
   - `PowerState`, which grows as TVs report new states;
+  - the SDK's `StateEvent`, which grows with each new mirror and lifecycle signal, and whose consumers already treat any event as a cue to re-read;
   - options structs (the SDK's `StateWatcherConfig`), which callers build from `default()` and then set fields on;
   - records vendors build through constructors rather than struct literals (`TvState::new()`, `Credentials::new()`), so a new field doesn't break them.
 
-  It stays off enums whose every arm matters to a caller (`AutomateWhen`, `SessionAction`, `EventAction`, `PairingState`, `PairingCommand`, `Transport`): there, the compiler demanding a new arm is worth more than additive evolution. It also stays off the structs callers build with literals, such as the records vendors construct (`InputInfo`, `DiscoveredTv`, `PairingField`). There a new field is a lockstep minor bump, and the attribute would forbid that construction outright. A workspace match on a non-exhaustive enum from another crate needs a fallback arm, and the arm says what an unknown variant means.
+  It stays off enums whose every arm matters to a caller (`AutomateWhen`, `SessionAction`, `EventAction`, `PairingState`, `PairingCommand`, `Transport`, and the SDK's `PairTerminal` and `NotificationCategory`): there, the compiler demanding a new arm is worth more than additive evolution. It also stays off the structs callers build with literals, such as the records vendors construct (`InputInfo`, `DiscoveredTv`, `PairingField`). There a new field is a lockstep minor bump, and the attribute would forbid that construction outright. A workspace match on a non-exhaustive enum from another crate needs a fallback arm, and the arm says what an unknown variant means.
 - **Public dependencies** are the crates whose types appear in a published API, so their major-version bumps are breaking for us too. Each crate's README lists its own under "Public dependencies" and names the items that expose them. Today those are:
   - core: tokio, uuid, bitflags, serde, toml, serde_json and async-trait;
   - the protocol: zenoh, core, serde, serde_json and uuid;

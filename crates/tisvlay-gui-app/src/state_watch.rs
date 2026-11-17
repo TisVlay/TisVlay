@@ -229,6 +229,9 @@ async fn apply(
         | StateEvent::Hydrated(_)
         | StateEvent::VersionMismatch { .. }
         | StateEvent::FallbackPoll => {}
+        // An event this build doesn't know changes nothing but what the
+        // render re-reads from the mirrors after every burst.
+        _ => {}
     }
 }
 
