@@ -371,6 +371,10 @@ export component AppWindow inherits Window {
     in property <ServiceHealth> tray-health: ServiceHealth.offline;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    // Each list's profile UUIDs, index for index: a pick sends the UUID,
+    // since two profiles may share a name.
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
     in property <string> gui-version;
     in property <[AboutComponentRow]> about-components;
     callback view-notices-clicked();
@@ -767,6 +771,8 @@ export component AppWindow inherits Window {
                         daemon-health: root.daemon-health;
                         system-profiles: root.system-profiles;
                         user-profiles: root.user-profiles;
+                        system-profile-ids: root.system-profile-ids;
+                        user-profile-ids: root.user-profile-ids;
                     }
                     if root.active-pane == Pane.profiles: ProfilesPane {
                         width: 100%;

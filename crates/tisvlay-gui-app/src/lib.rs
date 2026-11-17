@@ -69,7 +69,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{
     DaemonClient, NotificationCategory, NotificationSettingsPatch, SessionClient, TrayClient,
 };
-use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
+use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -1836,38 +1836,20 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
-        // The ComboBox emits the display name; the daemon's
-        // `set-system-profile` rpc wants a UUID. Translate through the
-        // client's mirror of the profile catalog. The match predicate goes
-        // through `display_profile_name` so the reserved-default
-        // entry (which the ComboBox renders with a localized
-        // "default" word + indicator glyph suffix) still resolves —
-        // matching against bare `body.name` would miss it.
+        // The ComboBox sends the picked entry's UUID, from the list
+        // beside its names: two profiles may share a name. A profile
+        // removed since the list was drawn is the daemon's refusal.
         let d = d.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let picked_name = profile.to_string();
+        let Ok(uuid) = profile.parse::<uuid::Uuid>() else {
+            warn!(tv_id = %tv_id, profile = %profile, "set_system_profile: not a profile id");
+            return;
+        };
         tokio::spawn(async move {
-            let bodies = d.list_system_profile_bodies();
-            let Some(uuid) = bodies
-                .iter()
-                .find(|(u, b)| {
-                    state::display_profile_name(**u, &b.name, DEFAULT_SYSTEM_PROFILE_UUID)
-                        == picked_name
-                })
-                .map(|(u, _)| *u)
-            else {
-                warn!(tv_id = %tv_id, name = %picked_name, "set_system_profile: name not in catalog");
-                push_tvs_error(
-                    &app_weak,
-                    gettext("Couldn't change system profile"),
-                    gettext("Selected profile is no longer in the catalog."),
-                );
-                return;
-            };
             if let Err(e) = with_id(&tv_id, |tv| d.set_tv_system_profile(tv, Some(uuid))).await {
                 let msg = error_text(&*e);
-                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_system_profile failed");
+                warn!(tv_id = %tv_id, uuid = %uuid, error = %msg, "set_system_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
             }
         });
@@ -1876,12 +1858,15 @@ fn register_callbacks(
     let s = session.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
-        // Same translation as `on_set_system_profile`, but the
-        // user-profile catalog lives with the session service.
+        // As `on_set_system_profile`, but the user-profile catalog lives
+        // with the session service.
         let s = s.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let picked_name = profile.to_string();
+        let Ok(uuid) = profile.parse::<uuid::Uuid>() else {
+            warn!(tv_id = %tv_id, profile = %profile, "set_user_profile: not a profile id");
+            return;
+        };
         tokio::spawn(async move {
             let session_ref = s.read().await;
             let Some(client) = session_ref.as_ref() else {
@@ -1889,30 +1874,15 @@ fn register_callbacks(
                 push_tvs_error(
                     &app_weak,
                     gettext("Session service unavailable"),
-                    gettext("User-profile assignments require the per-user tisvlay-session service."),
-                );
-                return;
-            };
-            let bodies = client.list_user_profile_bodies();
-            let Some(uuid) = bodies
-                .iter()
-                .find(|(u, b)| {
-                    state::display_profile_name(**u, &b.name, DEFAULT_USER_PROFILE_UUID)
-                        == picked_name
-                })
-                .map(|(u, _)| *u)
-            else {
-                warn!(tv_id = %tv_id, name = %picked_name, "set_user_profile: name not in catalog");
-                push_tvs_error(
-                    &app_weak,
-                    gettext("Couldn't change user profile"),
-                    gettext("Selected profile is no longer in the catalog."),
+                    gettext(
+                        "User-profile assignments require the per-user tisvlay-session service.",
+                    ),
                 );
                 return;
             };
             if let Err(e) = with_id(&tv_id, |tv| client.set_tv_user_profile(tv, Some(uuid))).await {
                 let msg = error_text(&*e);
-                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_user_profile failed");
+                warn!(tv_id = %tv_id, uuid = %uuid, error = %msg, "set_user_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
             }
         });
@@ -2225,7 +2195,7 @@ fn register_callbacks(
                 let config =
                     build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
                 let managed = wizard.get_managed();
-                let profile = wizard.get_system_profile().to_string();
+                let profile = wizard.get_system_profile_id().parse::<uuid::Uuid>().ok();
 
                 wizard.set_step(3);
                 wizard.set_pair_phase(SharedString::default());
@@ -2310,7 +2280,7 @@ fn register_callbacks(
         let vendor = wizard.get_selected_vendor().to_string();
         let config = build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
         let managed = wizard.get_managed();
-        let profile = wizard.get_system_profile().to_string();
+        let profile = wizard.get_system_profile_id().parse::<uuid::Uuid>().ok();
 
         wizard.set_pair_phase(SharedString::default());
         wizard.set_pair_message(SharedString::default());
@@ -3802,7 +3772,7 @@ mod tests {
             daemon.list_system_profile_bodies()[&original_id].name,
             "Work"
         );
-        controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
+        controls.invoke_set_system_profile(tv.to_string().into(), original_id.to_string().into());
         wait_for_tvs(&daemon, |tvs| {
             tvs.iter()
                 .any(|info| info.uuid == tv && info.system_profile == Some(original_id))
@@ -3817,11 +3787,17 @@ mod tests {
         profiles.invoke_open_tv(tv.to_string().into());
         assert_eq!(app.get_active_pane(), Pane::Tvs);
         assert_eq!(app.get_selected_tv_index(), 0);
-        controls.invoke_set_user_profile(tv.to_string().into(), "Personal".into());
+        controls.invoke_set_user_profile(
+            tv.to_string().into(),
+            uuid::Uuid::new_v4().to_string().into(),
+        );
         wait_for_ui(&app, |app| {
             app.global::<Errors>().get_tvs().title == "Session service unavailable"
         });
-        controls.invoke_set_system_profile(tv.to_string().into(), "Deleted profile".into());
+        controls.invoke_set_system_profile(
+            tv.to_string().into(),
+            uuid::Uuid::new_v4().to_string().into(),
+        );
         wait_for_ui(&app, |app| {
             app.global::<Errors>().get_tvs().title == "Couldn't change system profile"
         });
@@ -3927,7 +3903,7 @@ mod tests {
                 && body["screencast_arms"].is_null()
         })
         .await;
-        controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
+        controls.invoke_set_user_profile(tv.to_string().into(), user_id.to_string().into());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while client.get_tv_user_profile(tv) != Some(user_id) {
                 watcher.next().await.unwrap();
@@ -4234,12 +4210,22 @@ mod tests {
         );
         expect_tv_error(
             &app,
-            || controls.invoke_set_system_profile(missing.clone(), "Work".into()),
+            || {
+                controls.invoke_set_system_profile(
+                    missing.clone(),
+                    DEFAULT_SYSTEM_PROFILE_UUID.to_string().into(),
+                );
+            },
             "Couldn't change system profile",
         );
         expect_tv_error(
             &app,
-            || controls.invoke_set_user_profile(tv.to_string().into(), "Missing profile".into()),
+            || {
+                controls.invoke_set_user_profile(
+                    tv.to_string().into(),
+                    uuid::Uuid::new_v4().to_string().into(),
+                );
+            },
             "Couldn't change user profile",
         );
         tray_service.abort();

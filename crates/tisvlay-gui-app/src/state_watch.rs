@@ -591,6 +591,20 @@ fn push_snapshot(app: &AppWindow, snapshot: StateSnapshot) {
     sync_vec_model(&app.get_user_profiles(), snapshot.user_profiles, |m| {
         app.set_user_profiles(m);
     });
+    sync_vec_model(
+        &app.get_system_profile_ids(),
+        snapshot.system_profile_ids,
+        |m| {
+            app.set_system_profile_ids(m);
+        },
+    );
+    sync_vec_model(
+        &app.get_user_profile_ids(),
+        snapshot.user_profile_ids,
+        |m| {
+            app.set_user_profile_ids(m);
+        },
+    );
 
     // Profiles pane master lists. ProfileRow is generated from
     // `ui/globals/profiles.slint` and exported through `main.slint`;
@@ -771,8 +785,10 @@ mod focus_tests {
     fn snapshot() -> StateSnapshot {
         StateSnapshot {
             tvs: vec![raw_tv("tv-1", "Living room", true)],
-            system_profiles: vec![],
-            user_profiles: vec![],
+            system_profiles: Vec::new(),
+            system_profile_ids: Vec::new(),
+            user_profiles: Vec::new(),
+            user_profile_ids: Vec::new(),
             system_profile_rows: vec![],
             user_profile_rows: vec![],
         }
@@ -979,7 +995,9 @@ mod version_banner_tests {
             StateSnapshot {
                 tvs: Vec::new(),
                 system_profiles: Vec::new(),
+                system_profile_ids: Vec::new(),
                 user_profiles: Vec::new(),
+                user_profile_ids: Vec::new(),
                 system_profile_rows: Vec::new(),
                 user_profile_rows: Vec::new(),
             },
@@ -1017,7 +1035,13 @@ mod version_banner_tests {
             StateSnapshot {
                 tvs: Vec::new(),
                 system_profiles: vec![SharedString::from("Default")],
+                system_profile_ids: vec![SharedString::from(
+                    tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID.to_string(),
+                )],
                 user_profiles: vec![SharedString::from("Personal")],
+                user_profile_ids: vec![SharedString::from(
+                    tisvlay_core::DEFAULT_USER_PROFILE_UUID.to_string(),
+                )],
                 system_profile_rows: vec![ProfileRowRaw {
                     uuid: SharedString::from("system-profile"),
                     name: SharedString::from("Work"),
@@ -1074,7 +1098,9 @@ mod version_banner_tests {
             StateSnapshot {
                 tvs: Vec::new(),
                 system_profiles: Vec::new(),
+                system_profile_ids: Vec::new(),
                 user_profiles: Vec::new(),
+                user_profile_ids: Vec::new(),
                 system_profile_rows: Vec::new(),
                 user_profile_rows: vec![ProfileRowRaw {
                     uuid: SharedString::from("user-profile"),
@@ -1097,7 +1123,9 @@ mod version_banner_tests {
             StateSnapshot {
                 tvs: Vec::new(),
                 system_profiles: Vec::new(),
+                system_profile_ids: Vec::new(),
                 user_profiles: Vec::new(),
+                user_profile_ids: Vec::new(),
                 system_profile_rows: Vec::new(),
                 user_profile_rows: Vec::new(),
             },
@@ -1119,7 +1147,9 @@ mod version_banner_tests {
                     raw_tv("tv-2", "Bedroom", false),
                 ],
                 system_profiles: Vec::new(),
+                system_profile_ids: Vec::new(),
                 user_profiles: Vec::new(),
+                user_profile_ids: Vec::new(),
                 system_profile_rows: Vec::new(),
                 user_profile_rows: Vec::new(),
             },

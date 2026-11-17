@@ -211,6 +211,7 @@ pub(crate) fn reset_wizard(
     wizard.set_mac_configured(SharedString::default());
     wizard.set_mac_error(SharedString::default());
     wizard.set_system_profile(SharedString::default());
+    wizard.set_system_profile_id(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
     // is sorted by display name in `state_watch::fetch_and_publish_vendors`.
@@ -451,7 +452,7 @@ pub(crate) async fn run_wizard_pair(
     vendor: String,
     config: serde_json::Map<String, serde_json::Value>,
     managed: bool,
-    system_profile: String,
+    system_profile: Option<uuid::Uuid>,
 ) {
     // `captured_gen` is the generation when Pair was clicked: every
     // callback below re-reads the live gen and skips if it has drifted,
@@ -529,7 +530,7 @@ pub(crate) async fn run_wizard_pair(
 
     let result = terminal_to_result(outcome);
     if result.is_ok() {
-        assign_initial_profile(&daemon, tv_id, &system_profile).await;
+        assign_initial_profile(&daemon, tv_id, system_profile).await;
     }
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
 }
@@ -540,25 +541,10 @@ pub(crate) async fn run_wizard_pair(
 /// default, so picking it needs no write. A failure leaves the TV on the
 /// default, which the TVs pane can change, and is only logged: the pair
 /// itself succeeded.
-async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: &str) {
-    if picked.is_empty() {
-        return;
-    }
-    let bodies = daemon.list_system_profile_bodies().await;
-    let Some(profile) = bodies
-        .iter()
-        .find(|(id, body)| {
-            crate::state::display_profile_name(**id, &body.name, DEFAULT_SYSTEM_PROFILE_UUID)
-                == picked
-        })
-        .map(|(id, _)| *id)
-    else {
-        warn!(%tv, picked, "the picked system profile is no longer in the catalog");
+async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: Option<uuid::Uuid>) {
+    let Some(profile) = picked.filter(|profile| *profile != DEFAULT_SYSTEM_PROFILE_UUID) else {
         return;
     };
-    if profile == DEFAULT_SYSTEM_PROFILE_UUID {
-        return;
-    }
     if let Err(e) = daemon.set_tv_system_profile(tv, Some(profile)).await {
         warn!(%tv, %profile, error = %error_text(&e), "couldn't assign the picked system profile");
     }

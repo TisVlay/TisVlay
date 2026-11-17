@@ -193,6 +193,8 @@ export global PairingWizard {
     // the previous TV's name.
     in-out property <string> tv-name-autofilled;
     in-out property <string> system-profile;
+    // The picked profile's UUID; empty is the default profile.
+    in-out property <string> system-profile-id;
     in-out property <bool> managed: true;
     // Index into `supported-vendors` for the vendor the user picked
     // in the manual-add path's vendor select. Default 0 = first

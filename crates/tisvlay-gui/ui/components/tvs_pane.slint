@@ -795,6 +795,8 @@ component TvDetail inherits Rectangle {
     property <string> id-prefix: "tv-detail-" + root.tv.uuid + "-";
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
 
     /// True when the INFO group should render the edit form for
     /// this specific TV. Tracks `EditPane.tv-uuid` against this
@@ -998,7 +1000,7 @@ component TvDetail inherits Rectangle {
                                 model: root.system-profiles;
                                 current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
                                 enabled: root.system-profiles.length > 0;
-                                selected(v) => { Daemon.set-system-profile(root.tv.uuid, v); }
+                                selected-index(i) => { Daemon.set-system-profile(root.tv.uuid, root.system-profile-ids[i]); }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -1034,7 +1036,7 @@ component TvDetail inherits Rectangle {
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
                                 enabled: root.user-profiles.length > 0;
-                                selected(v) => { Daemon.set-user-profile(root.tv.uuid, v); }
+                                selected-index(i) => { Daemon.set-user-profile(root.tv.uuid, root.user-profile-ids[i]); }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -1474,6 +1476,8 @@ export component TvsPane {
     in property <ServiceHealth> daemon-health;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
     in-out property <int> selected-index: -1;
 
     // Wizard state and callbacks live on the `PairingWizard` global
@@ -1539,6 +1543,7 @@ export component TvsPane {
         width: 100%;
         height: 100%;
         system-profiles: root.system-profiles;
+        system-profile-ids: root.system-profile-ids;
     }
 
     if !PairingWizard.active: VerticalLayout {
@@ -1605,6 +1610,8 @@ export component TvsPane {
                     tv: tv;
                     system-profiles: root.system-profiles;
                     user-profiles: root.user-profiles;
+                    system-profile-ids: root.system-profile-ids;
+                    user-profile-ids: root.user-profile-ids;
                     focus-tick: root.focus-detail-tick;
 
                     request-remove => {

@@ -624,8 +624,10 @@ component StepConfigure {
     in property <string> selected-hw-model;
     in-out property <string> tv-name;
     in-out property <string> system-profile;
+    in-out property <string> system-profile-id;
     in-out property <bool> managed;
     in property <[string]> system-profiles;
+    in property <[string]> system-profile-ids;
     /// Vendor's pairing-form schema rows (driven by Rust through
     /// the vendor's schema rpc, autofilled from the selected
     /// TV's `vendor_data`). Empty schema → the field-renderer block
@@ -745,6 +747,7 @@ component StepConfigure {
                 current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;
                 selected(v) => { root.system-profile = v; }
+                selected-index(i) => { root.system-profile-id = root.system-profile-ids[i]; }
             }
             Text {
                 text: @tr("Drives boot/shutdown/sleep behavior. You can change this later.");
@@ -1092,6 +1095,7 @@ export component PairingWizardPane inherits Rectangle {
     /// TvDetail's profile dropdown. Not wizard-specific, so kept as
     /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
+    in property <[string]> system-profile-ids;
     // The footer's buttons are a row for the arrows.
     property <int> footer-row;
     init => {
@@ -1194,8 +1198,10 @@ export component PairingWizardPane inherits Rectangle {
                     selected-hw-model: PairingWizard.selected-hw-model;
                     tv-name <=> PairingWizard.tv-name;
                     system-profile <=> PairingWizard.system-profile;
+                    system-profile-id <=> PairingWizard.system-profile-id;
                     managed <=> PairingWizard.managed;
                     system-profiles: root.system-profiles;
+                    system-profile-ids: root.system-profile-ids;
                     schema-fields: PairingWizard.schema-fields;
                     schema-error: PairingWizard.schema-error;
                     name-edited(v) => { PairingWizard.name-edited(v); }
