@@ -303,6 +303,41 @@ fn current_selection(app_weak: &slint::Weak<AppWindow>) -> Option<(EditorKind, u
     uuid::Uuid::parse_str(&uuid_str).ok().map(|u| (kind, u))
 }
 
+/// What a profile edit runs against: the editor cache and both clients.
+#[derive(Clone)]
+struct ProfileEditCtx {
+    editor: ProfileEditor,
+    daemon: Arc<DaemonClient>,
+    session: Arc<RwLock<Option<SessionClient>>>,
+}
+
+impl ProfileEditCtx {
+    /// Run `run` on the profile selected when the edit fired, off the UI
+    /// thread. A failure is logged as `edit` and toasted through `failed`,
+    /// a translated "…: {0}" format the error text fills.
+    fn spawn<Fut>(
+        &self,
+        app_weak: &slint::Weak<AppWindow>,
+        edit: &'static str,
+        failed: String,
+        run: impl FnOnce(Self, EditorKind, uuid::Uuid) -> Fut,
+    ) where
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let Some((kind, uuid)) = current_selection(app_weak) else {
+            return;
+        };
+        let task = run(self.clone(), kind, uuid);
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            if let Err(e) = task.await {
+                warn!(edit, error = %e, "profile edit failed");
+                show_toast(app_weak, &failed.replace("{0}", &error_text(&*e)));
+            }
+        });
+    }
+}
+
 /// Per-(tv_id, property) reconciler maps for ramping TV-state values.
 /// User input dispatches through `volume.dispatch` / `backlight.dispatch`
 /// before the daemon write; the refresh path observes every fetched
@@ -1444,236 +1479,144 @@ fn register_callbacks(
         });
     }
 
-    // value-edited / value-edited-number / reset-field / reset-all
-    // all read the current selection on the UI thread and route to
-    // the matching dispatch helper. Failures land on the toast
-    // surface — every field edit is naturally retryable so the user
-    // can pick the value again.
+    // The profile edits act on the selection the UI shows when they fire,
+    // off the UI thread. A failure toasts; every edit is retryable by
+    // picking the value again.
+    let edits = ProfileEditCtx {
+        editor,
+        daemon: daemon.clone(),
+        session: session.clone(),
+    };
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
-            let field = field.to_string();
-            let value = value.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    dispatch_value_edit(&ed, &d, &s, editor_kind, uuid, &field, &value).await
-                {
-                    warn!(field = %field, value = %value, error = %e, "value_edited failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            let (field, value) = (field.to_string(), value.to_string());
+            edits.spawn(
+                &app_weak,
+                "value_edited",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_value_edit(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, &value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_restore_edited(move |field, checked| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    profiles::dispatch_restore_edit(&ed, &d, &s, editor_kind, uuid, &field, checked)
-                        .await
-                {
-                    warn!(field = %field, checked, error = %e, "restore_edited failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "restore_edited",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_restore_edit(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, checked,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_stream_gated(move |field, fires_while_streaming| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = profiles::dispatch_stream_gate_edit(
-                    &ed,
-                    &d,
-                    &s,
-                    editor_kind,
-                    uuid,
-                    &field,
-                    fires_while_streaming,
-                )
-                .await
-                {
-                    warn!(field = %field, fires_while_streaming, error = %e, "stream_gated failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "stream_gated",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_stream_gate_edit(
+                        &c.editor,
+                        &c.daemon,
+                        &c.session,
+                        kind,
+                        uuid,
+                        &field,
+                        fires_while_streaming,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited_number(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    dispatch_value_edit_number(&ed, &d, &s, editor_kind, uuid, &field, value).await
-                {
-                    warn!(field = %field, value, error = %e, "value_edited_number failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "value_edited_number",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_value_edit_number(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited_bool(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = profiles::dispatch_value_edit_bool(
-                    &ed,
-                    &d,
-                    &s,
-                    editor_kind,
-                    uuid,
-                    &field,
-                    value,
-                )
-                .await
-                {
-                    warn!(field = %field, value, error = %e, "value_edited_bool failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "value_edited_bool",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_value_edit_bool(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_reset_field(move |field| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_reset_field(&ed, &d, &s, editor_kind, uuid, &field).await {
-                    warn!(field = %field, error = %e, "reset_field failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Reset field failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "reset_field",
+                gettext("Reset field failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_reset_field(&c.editor, &c.daemon, &c.session, kind, uuid, &field).await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_reset_all(move || {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_reset_all(&ed, &d, &s, editor_kind, uuid).await {
-                    warn!(error = %e, "reset_all failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Reset all failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "reset_all",
+                gettext("Reset all failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_reset_all(&c.editor, &c.daemon, &c.session, kind, uuid).await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor;
         let app_weak = app.as_weak();
         profiles_global.on_rename_selected(move |new_name| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let new_name = new_name.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_rename(&ed, &d, &s, editor_kind, uuid, &new_name).await {
-                    warn!(name = %new_name, error = %e, "rename_selected failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Rename failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "rename_selected",
+                gettext("Rename failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_rename(&c.editor, &c.daemon, &c.session, kind, uuid, &new_name).await
+                },
+            );
         });
     }
 
