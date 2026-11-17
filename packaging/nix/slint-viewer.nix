@@ -13,6 +13,7 @@
   libGL,
   pkg-config,
   qt6,
+  rust-jemalloc-sys,
 }:
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "slint-viewer";
@@ -30,6 +31,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     qt6.qtsvg
     fontconfig
     libGL
+    # nixpkgs' cargo setup hook points tikv-jemalloc-sys at the system
+    # jemalloc, which this provides (as nixpkgs' own recipe does).
+    rust-jemalloc-sys
   ];
 
   nativeBuildInputs = [
