@@ -44,7 +44,7 @@ use profiles::{
 };
 use toast::show_toast;
 use wizard::{
-    WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
+    PairForm, WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
     WizardManualLookupCancel, cancel_wizard_discovery, cancel_wizard_manual_lookup,
     fetch_and_publish_schema, fill_picked_tv_name, publish_wizard_entries, reset_wizard,
     run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
@@ -2150,20 +2150,14 @@ fn register_callbacks(
                 let wg = ctx.generation.clone();
                 let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
                 let app_weak = app.as_weak();
-                tokio::spawn(async move {
-                    run_wizard_pair(
-                        d,
-                        app_weak,
-                        wg,
-                        captured_gen,
-                        name,
-                        vendor,
-                        config,
-                        managed,
-                        profile,
-                    )
-                    .await;
-                });
+                let form = PairForm {
+                    name,
+                    vendor,
+                    config,
+                    managed,
+                    system_profile: profile,
+                };
+                tokio::spawn(run_wizard_pair(d, app_weak, wg, captured_gen, form));
             }
             // Pair → Done. Only allowed once pairing completed.
             3 if wizard.get_pair_phase() == tisvlay::PairingPhase::Complete.as_str() => {
@@ -2234,20 +2228,14 @@ fn register_callbacks(
         let wg = ctx.generation.clone();
         let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
         let app_weak = app.as_weak();
-        tokio::spawn(async move {
-            run_wizard_pair(
-                d,
-                app_weak,
-                wg,
-                captured_gen,
-                name,
-                vendor,
-                config,
-                managed,
-                profile,
-            )
-            .await;
-        });
+        let form = PairForm {
+            name,
+            vendor,
+            config,
+            managed,
+            system_profile: profile,
+        };
+        tokio::spawn(run_wizard_pair(d, app_weak, wg, captured_gen, form));
     });
 
     // Done step: adopt the MAC the TV reported. An ordinary config write —

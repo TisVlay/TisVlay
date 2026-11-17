@@ -423,6 +423,16 @@ fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
     }
 }
 
+/// What the wizard asks the daemon to pair: the configure step's picks.
+pub(crate) struct PairForm {
+    pub(crate) name: String,
+    pub(crate) vendor: String,
+    pub(crate) config: serde_json::Map<String, serde_json::Value>,
+    pub(crate) managed: bool,
+    /// The system profile to assign once the pair completes.
+    pub(crate) system_profile: Option<uuid::Uuid>,
+}
+
 /// Run a `pair` rpc flow against the daemon's async-spawn
 /// contract:
 ///
@@ -439,20 +449,12 @@ fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
 ///   the live `wizard_gen`. A user who clicks Cancel + reopens the
 ///   wizard before this task finishes won't get stale phase
 ///   messages bleeding into the new session.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a spawned task: the client handles plus the pair request's fields, each moved in once from the caller"
-)]
 pub(crate) async fn run_wizard_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,
-    name: String,
-    vendor: String,
-    config: serde_json::Map<String, serde_json::Value>,
-    managed: bool,
-    system_profile: Option<uuid::Uuid>,
+    form: PairForm,
 ) {
     // `captured_gen` is the generation when Pair was clicked: every
     // callback below re-reads the live gen and skips if it has drifted,
@@ -465,20 +467,17 @@ pub(crate) async fn run_wizard_pair(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less pair");
-            run_pair_no_progress(
-                daemon,
-                app_weak,
-                wizard_gen,
-                captured_gen,
-                name,
-                vendor,
-                config,
-                managed,
-            )
-            .await;
+            run_pair_no_progress(daemon, app_weak, wizard_gen, captured_gen, form).await;
             return;
         }
     };
+    let PairForm {
+        name,
+        vendor,
+        config,
+        managed,
+        system_profile,
+    } = form;
 
     // `pair_tv` is sync-validation-only — it returns the reserved
     // tv_id immediately. Errors here are unknown-vendor /
@@ -560,21 +559,17 @@ async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: O
 /// a pair that may still be in flight or fail. Sync-validation
 /// errors (unknown vendor, an invalid field) still
 /// route through their normal field-mapping path.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a spawned task: the client handles plus the pair request's fields, each moved in once from the caller"
-)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,
-    name: String,
-    vendor: String,
-    config: serde_json::Map<String, serde_json::Value>,
-    managed: bool,
+    form: PairForm,
 ) {
-    let result = match daemon.pair_tv(&name, &vendor, config, managed).await {
+    let result = match daemon
+        .pair_tv(&form.name, &form.vendor, form.config, form.managed)
+        .await
+    {
         Err(e) => Err(PairError::Rpc(e)),
         Ok(_) => {
             let msg = gettext(
