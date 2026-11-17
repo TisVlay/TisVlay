@@ -59,10 +59,7 @@ fn retire_tv(mut world: DeferredWorld, ctx: HookContext) {
     world.resource_mut::<PowerEdges>().0.remove(&id);
     let site = world.resource::<Site>().0.clone();
     let mut outbox = world.resource_mut::<Outbox>();
-    for path in payload::TV_PATHS
-        .iter()
-        .chain(payload::TV_EXTRA_PATHS.iter())
-    {
+    for path in payload::TV_PATHS {
         outbox.0.push(Effect::Wire(WireEffect::Delete {
             key: keys::tv_path(&site, &id, path),
         }));

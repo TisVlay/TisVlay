@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use tisvlay_protocol::payload::{self, PairingPhase};
+use tisvlay_protocol::payload::{self, PairingPhase, StatePayload as _};
 use tisvlay_protocol::{bootstrap, keys};
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::mpsc;
@@ -595,7 +595,7 @@ async fn spawn_power_cycle_toasts(
     notifier: notify::Notifier,
 ) -> Result<()> {
     let sub = system
-        .declare_subscriber(keys::tv_path_wild(site, "progress/power"))
+        .declare_subscriber(keys::tv_path_wild(site, payload::PowerProgress::PATH))
         .await
         .map_err(|e| anyhow!("subscribe power progress: {e}"))?;
     let site = site.to_string();

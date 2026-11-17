@@ -23,6 +23,7 @@ use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{
     Unary, manager, profile, tv, user_profile, user_stream, user_tray, vendors,
 };
+use tisvlay_protocol::payload::StatePayload as _;
 use tisvlay_protocol::{bootstrap, keys, rpc};
 
 pub use desktop::DesktopMapping;
@@ -637,7 +638,11 @@ impl DaemonClient {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
-            .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
+            .declare_subscriber(keys::tv_path(
+                &self.site,
+                &tv,
+                tisvlay_protocol::payload::PowerProgress::PATH,
+            ))
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
         let samples = (*sub).clone().into_stream();

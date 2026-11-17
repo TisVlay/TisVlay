@@ -264,7 +264,7 @@ impl StatePayload for Meta {
 }
 
 /// Every per-TV cached-state key tail — the DELETE sweep on TV removal.
-pub const TV_PATHS: [&str; 8] = [
+pub const TV_PATHS: [&str; 9] = [
     Power::PATH,
     Volume::PATH,
     Link::PATH,
@@ -273,10 +273,8 @@ pub const TV_PATHS: [&str; 8] = [
     Identity::PATH,
     Meta::PATH,
     VendorRows::PATH,
+    PowerProgress::PATH,
 ];
-
-/// Non-payload per-TV keys included in the removal sweep.
-pub const TV_EXTRA_PATHS: [&str; 1] = ["progress/power"];
 
 /// Pairing progress on `tisvlay/<site>/pairing/<uuid>/progress` — the
 /// redacted projection of the core pairing state: credentials never
@@ -344,6 +342,10 @@ pub enum LinkMacOutcome {
 pub struct PowerProgress {
     /// The step the flow just reached.
     pub phase: PowerPhase,
+}
+
+impl StatePayload for PowerProgress {
+    const PATH: &'static str = "progress/power";
 }
 
 /// The TV powered off by itself or from its own remote, at

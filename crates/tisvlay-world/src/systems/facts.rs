@@ -1,6 +1,7 @@
 //! Fact ingest: backend events, pairing progress, transport facts, carrier and route changes, connector matches, the stream mirror, and connection reconciliation.
 
 use super::*;
+use tisvlay_protocol::payload::StatePayload as _;
 
 /// Write a payload component through change detection, inserting on
 /// first sight — `set_if_neq` gates the publish either way.
@@ -505,7 +506,7 @@ pub(super) fn publish_power_phase(
     phase: payload::PowerPhase,
 ) {
     outbox.0.push(Effect::Wire(WireEffect::Publish {
-        key: keys::tv_path(&site.0, tv, "progress/power"),
+        key: keys::tv_path(&site.0, tv, payload::PowerProgress::PATH),
         payload: json!(payload::PowerProgress { phase }),
     }));
 }
