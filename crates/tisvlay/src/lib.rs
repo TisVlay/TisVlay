@@ -578,24 +578,10 @@ impl DaemonClient {
     /// `tv`, reporting its non-terminal phases through `on_progress`.
     /// Other attempts' samples — earlier sessions replayed from the deep
     /// cache — are skipped, so a stale terminal can't end the drain.
+    /// A caller that keeps the stream past the drain passes `&mut` to a
+    /// pinned one.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
-        tv: Uuid,
-        attempt: Uuid,
-        on_progress: impl FnMut(PairingPhase, &str),
-    ) -> Result<PairTerminal>
-    where
-        S: futures_core::Stream<Item = (Uuid, PairingProgress)>,
-    {
-        let mut stream = std::pin::pin!(stream);
-        Self::drain_pair_to_terminal_pinned(stream.as_mut(), tv, attempt, on_progress).await
-    }
-
-    /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
-    /// for callers that keep the stream alive across operations (wait
-    /// for `awaiting_tv`, cancel, then drain the remainder).
-    pub async fn drain_pair_to_terminal_pinned<S>(
-        mut stream: std::pin::Pin<&mut S>,
         tv: Uuid,
         attempt: Uuid,
         mut on_progress: impl FnMut(PairingPhase, &str),
@@ -604,6 +590,7 @@ impl DaemonClient {
         S: futures_core::Stream<Item = (Uuid, PairingProgress)>,
     {
         use futures_util::StreamExt;
+        let mut stream = std::pin::pin!(stream);
         while let Some((sample_tv, progress)) = stream.as_mut().next().await {
             if sample_tv != tv || progress.attempt != attempt {
                 continue;
