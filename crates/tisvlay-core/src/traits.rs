@@ -45,6 +45,13 @@ use crate::{
 };
 use async_trait::async_trait;
 use std::net::IpAddr;
+use std::time::Duration;
+
+/// How long a client waits on an in-place wake ([`TvConnection::power_on`])
+/// before it takes the silence as the wake having landed: a TV reachable in
+/// standby reports only a failure. The bound `power_on` is held to, its
+/// read-back included.
+pub const IN_PLACE_WAKE_GRACE: Duration = Duration::from_secs(8);
 
 /// Communication transport used by a backend to connect to a device.
 ///
@@ -144,7 +151,7 @@ pub trait TvBackend: Send + Sync + 'static {
 pub struct RetryConfig {
     /// Wall-clock delay after a state-change command before the
     /// daemon reads cached PowerState back to verify the transition.
-    pub verify_delay: std::time::Duration,
+    pub verify_delay: Duration,
     /// Max attempts before the daemon escalates to `power_on`
     /// (for the wake-side `screen_on` path) or gives up (for the
     /// already-reachable `screen_off` retry path).
@@ -154,7 +161,7 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            verify_delay: std::time::Duration::from_millis(300),
+            verify_delay: Duration::from_millis(300),
             max_attempts: 2,
         }
     }
@@ -302,7 +309,8 @@ pub trait TvConnection: Send + Sync {
     ///
     /// - **Return within a few seconds**, the read-back included: other
     ///   commands to the TV wait behind it, and clients waiting to hear of
-    ///   a failure give an in-place wake 8 s before they assume it landed.
+    ///   a failure give an in-place wake [`IN_PLACE_WAKE_GRACE`] before
+    ///   they assume it landed.
     /// - **Be cancel-safe:** an off-going command dropped onto the TV
     ///   mid-wake abandons it, by dropping this future at any await point.
     ///
@@ -765,10 +773,8 @@ fn field_as_string(config: &VendorConfig, name: &str) -> Option<String> {
 pub trait TvDiscovery: Send + Sync {
     /// Discover the TVs this backend can reach (on the network, on the
     /// CEC bus) and return what it learns about each.
-    fn discover(
-        &self,
-        timeout: std::time::Duration,
-    ) -> impl Future<Output = Result<Vec<DiscoveredTv>>> + Send;
+    fn discover(&self, timeout: Duration)
+    -> impl Future<Output = Result<Vec<DiscoveredTv>>> + Send;
 }
 
 #[cfg(test)]

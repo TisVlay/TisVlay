@@ -23,7 +23,8 @@ pub mod wol;
 
 // Traits
 pub use traits::{
-    LocalDevice, RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery,
+    IN_PLACE_WAKE_GRACE, LocalDevice, RetryConfig, Transport, TvBackend, TvConnection, TvConnector,
+    TvDiscovery,
 };
 
 // Capabilities

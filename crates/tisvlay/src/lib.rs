@@ -713,7 +713,9 @@ impl DaemonClient {
     /// wake with [`Self::power_cycle_progress_stream`]. A power-on over a
     /// live link (a TV reachable in standby) publishes only `failed`, when
     /// the TV stays off, and nothing when an off interrupts it, so a
-    /// follower that hears nothing for 8 seconds has its answer. Rpc, refused
+    /// follower that hears nothing for
+    /// [`IN_PLACE_WAKE_GRACE`](tisvlay_core::IN_PLACE_WAKE_GRACE) has its
+    /// answer. Rpc, refused
     /// with [`ErrorCode::TvNotFound`], [`ErrorCode::NotConnected`] or
     /// [`ErrorCode::WakeNotSupported`] (disconnected, and the transport
     /// can't wake it; see [`TvInfo::supports_wake`]).
