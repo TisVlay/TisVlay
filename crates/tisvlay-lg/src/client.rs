@@ -260,6 +260,12 @@ impl WebOsClient {
     }
 
     /// Generate the next request ID.
+    /// Shorten the request timeout, for tests that wait one out.
+    #[cfg(test)]
+    pub(crate) fn set_request_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
     fn next_id(&mut self) -> String {
         let id = self.request_id;
         self.request_id = self.request_id.wrapping_add(1);

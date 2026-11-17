@@ -56,6 +56,9 @@ enum ServerCommand {
     RawText(String),
     /// Drop the active WebSocket connection.
     DropConnection,
+    /// Stop answering on the active connection, keeping it open: a link
+    /// gone stale without a close.
+    Stall,
 }
 
 /// Shared state between the server task and the test handle.
@@ -68,6 +71,8 @@ struct ServerState {
     /// screen_on `-102 not in screen-off substate` discrimination.
     command_errors: std::collections::HashMap<String, String>,
     command_payloads: std::collections::HashMap<String, Value>,
+    /// Requests answered, per URI. A stalled connection answers none.
+    answered: std::collections::HashMap<String, usize>,
 }
 
 /// Test control surface for the fake SSAP server.
@@ -138,6 +143,17 @@ impl FakeSsapHandle {
     pub(crate) fn drop_connection(&self) {
         let _ = self.cmd_tx.send(ServerCommand::DropConnection);
     }
+
+    /// How many `uri` requests the server has answered.
+    pub(crate) fn answered(&self, uri: &str) -> usize {
+        self.state.lock().answered.get(uri).copied().unwrap_or(0)
+    }
+
+    /// Stop answering on the active connection without closing it, as a
+    /// TV does when an idle link goes stale. The next connection answers.
+    pub(crate) fn stall(&self) {
+        let _ = self.cmd_tx.send(ServerCommand::Stall);
+    }
 }
 
 /// The fake SSAP server.
@@ -155,6 +171,7 @@ impl FakeSsapServer {
             registration: RegistrationOutcome::default(),
             command_errors: std::collections::HashMap::new(),
             command_payloads: std::collections::HashMap::new(),
+            answered: std::collections::HashMap::new(),
         }));
 
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -188,6 +205,7 @@ impl FakeSsapServer {
             };
 
             let (mut sink, mut stream) = ws.split();
+            let mut stalled = false;
 
             loop {
                 tokio::select! {
@@ -203,6 +221,9 @@ impl FakeSsapServer {
                             _ => continue,
                         };
 
+                        if stalled {
+                            continue;
+                        }
                         let request: Request = match serde_json::from_str(&msg) {
                             Ok(r) => r,
                             Err(_) => continue,
@@ -240,6 +261,7 @@ impl FakeSsapServer {
                                 let _ = sink.send(Message::Close(None)).await;
                                 break;
                             }
+                            ServerCommand::Stall => stalled = true,
                         }
                     }
                 }
@@ -310,7 +332,11 @@ impl FakeSsapServer {
                 // future pushes with this request ID will be delivered as
                 // subscription updates.
                 let uri = request.uri.as_deref().unwrap_or("");
-                let payload = Self::initial_subscribe_payload(uri, &request.payload);
+                // A scripted payload answers the subscription too, as the
+                // TV's first answer is its current value.
+                let scripted = state.lock().command_payloads.get(uri).cloned();
+                let payload = scripted
+                    .unwrap_or_else(|| Self::initial_subscribe_payload(uri, &request.payload));
                 vec![json!({
                     "id": id,
                     "type": "response",
@@ -320,6 +346,7 @@ impl FakeSsapServer {
 
             RequestType::Request => {
                 let uri = request.uri.as_deref().unwrap_or("");
+                *state.lock().answered.entry(uri.to_string()).or_default() += 1;
                 // Check for a test-injected error response for this URI first.
                 if let Some(error) = state.lock().command_errors.get(uri).cloned() {
                     return vec![json!({
