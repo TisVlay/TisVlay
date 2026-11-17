@@ -509,6 +509,26 @@ impl WebOsClient {
             .collect())
     }
 
+    /// The current input: the foreground app, mapped to its physical input
+    /// ID through the input list. LG names an input's app
+    /// `com.webos.app.hdmi1` but the input itself `HDMI_1`; a non-input app
+    /// (a streaming app) reads as its app ID.
+    pub(crate) async fn get_current_input(&mut self) -> Result<Option<String>> {
+        let mut state = TvState::new();
+        self.read_inputs(&mut state).await?;
+        Ok(state.current_input)
+    }
+
+    /// Read the input list, then the foreground app, into `state` through
+    /// the subscription parser, which maps the app to its input.
+    async fn read_inputs(&mut self, state: &mut TvState) -> Result<()> {
+        for uri in [input::GET_EXTERNAL_INPUT_LIST, input::GET_CURRENT_INPUT] {
+            let response = self.command(uri, json!({})).await?;
+            crate::connection::update_state_from_subscription(state, uri, &response.payload);
+        }
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Audio Control
     // -------------------------------------------------------------------------
@@ -736,10 +756,8 @@ impl WebOsClient {
             Err(e) => tracing::debug!(error = %e, "get_state: mute failed"),
         }
 
-        // Get inputs
-        match self.get_inputs().await {
-            Ok(inputs) => state.inputs = inputs,
-            Err(e) => tracing::debug!(error = %e, "get_state: inputs failed"),
+        if let Err(e) = self.read_inputs(&mut state).await {
+            tracing::debug!(error = %e, "get_state: inputs failed");
         }
 
         // Get backlight
@@ -921,6 +939,19 @@ mod tests {
         assert_eq!(inputs[1].id, "HDMI_2");
     }
 
+    /// The foreground app (`com.webos.app.hdmi2` in the fake's one-shot
+    /// reply) reads as its physical input.
+    #[tokio::test]
+    async fn get_current_input_maps_the_foreground_app() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let current = client.get_current_input().await.unwrap();
+        assert_eq!(current.as_deref(), Some("HDMI_2"));
+    }
+
     #[tokio::test]
     async fn switch_input() {
         let server = FakeSsapServer::start().await;
@@ -1036,6 +1067,7 @@ mod tests {
         assert_eq!(state.muted, Some(false));
         assert_eq!(state.backlight, Some(80));
         assert!(!state.inputs.is_empty());
+        assert_eq!(state.current_input.as_deref(), Some("HDMI_2"));
     }
 
     #[tokio::test]

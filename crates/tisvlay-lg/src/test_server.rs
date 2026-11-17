@@ -433,6 +433,10 @@ impl FakeSsapServer {
                     { "id": "HDMI_2", "label": "HDMI 2", "connected": true, "appId": "com.webos.app.hdmi2" },
                 ]
             }),
+            input::GET_CURRENT_INPUT => json!({
+                "returnValue": true,
+                "appId": "com.webos.app.hdmi2"
+            }),
             picture::GET_SYSTEM_SETTINGS => json!({
                 "returnValue": true,
                 "category": "picture",

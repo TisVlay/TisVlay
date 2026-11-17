@@ -306,8 +306,7 @@ impl TvConnection for LgConnection {
     }
 
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        let state = self.with_retry(|c| Box::pin(c.get_state())).await?;
-        Ok(state.current_input)
+        self.with_retry(|c| Box::pin(c.get_current_input())).await
     }
 
     async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
@@ -521,7 +520,11 @@ pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
 /// Update a cached [`TvState`] from an SSAP subscription response.
 ///
 /// Returns `true` if the state was actually modified.
-fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
+pub(crate) fn update_state_from_subscription(
+    state: &mut TvState,
+    uri: &str,
+    payload: &Value,
+) -> bool {
     if uri.contains("getPowerState") {
         let parsed = parse_power_state_payload(payload);
         // The raw report alongside its reading: which fields flip when LG
