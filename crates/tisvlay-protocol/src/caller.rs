@@ -97,6 +97,10 @@ impl std::error::Error for RpcError {
 /// Matching-gated rpc caller over one zenoh session, addressing one
 /// site. Queriers are cached per key, so repeat calls skip
 /// declaration and their matching status is already resolved.
+///
+/// The cache is never evicted: a long-lived client keeps a querier for
+/// each verb of each TV it has called, removed TVs included. That's a few
+/// dozen at the fleet sizes TisVlay runs, each cheap.
 #[derive(Debug)]
 pub struct Caller {
     session: Session,
