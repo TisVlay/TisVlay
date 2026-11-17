@@ -17,7 +17,7 @@ use tisvlay_protocol::endpoint::Rpc;
 use tisvlay_protocol::endpoint::{manager, profile, tv, vendors};
 use tisvlay_protocol::serve::{ParkedReply, Responder};
 use tisvlay_protocol::{keys, rpc};
-use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
+use tisvlay_world::{AnyReply, Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -312,14 +312,17 @@ impl Bridge {
                 // The store writer reads the file and hands the world the
                 // edit; the world answers.
                 match self.reloads.clone() {
-                    // A writer that's gone (the daemon shutting down)
-                    // would never answer a filed reply, so refuse at once.
-                    Some(reloads) if reloads.is_closed() => {
-                        responder.err(&WireError::daemon_shutting_down()).await;
-                    }
                     Some(reloads) => {
                         let reply = self.file(responder);
-                        let _ = reloads.send(ReloadRequest { reply });
+                        // A writer that's gone (the daemon shutting down)
+                        // would never answer the filed reply: refuse it.
+                        if let Err(mpsc::error::SendError(ReloadRequest { reply: Some(reply) })) =
+                            reloads.send(ReloadRequest { reply })
+                        {
+                            let refusal =
+                                AnyReply::from(reply).err(WireError::daemon_shutting_down());
+                            self.handle_effect(refusal).await;
+                        }
                     }
                     None => responder.err(&WireError::no_store()).await,
                 }
