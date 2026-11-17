@@ -15,4 +15,4 @@ The CLI's `power` getter and `power --toggle` use the daemon's wake check instea
 
 Move the GUI and tray to the same rule, so all three clients agree. Either share one helper (a `PowerState` method naming "awake", used by all three) or change what `state/power.is_on` means; the latter is a wire-visible change (a `feat`, not a `fix`, per the commit rules) and touches every consumer of the payload, so the shared helper is the narrower route. Whichever way, extend the existing table test in `tisvlay-core`'s `state.rs` so each `PowerState` variant's verdict is pinned.
 
-History: [power-state-vocabulary-drift.md](power-state-vocabulary-drift.md) closed an earlier version of this, where `"activestandby"` read as on because of a stale string blocklist; the fix delegated to `PowerState::is_on`, which keeps `ActiveStandby` on.
+History: an earlier version of this, where `"activestandby"` read as on because of a stale string blocklist, was fixed by delegating to `PowerState::is_on`, which keeps `ActiveStandby` on.
