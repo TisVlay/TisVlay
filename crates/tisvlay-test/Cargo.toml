@@ -24,10 +24,7 @@ parking_lot = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 futures-util = { workspace = true }
-tisvlay-core = { workspace = true }
-tisvlay-mock = { workspace = true }
 tracing-test = { workspace = true }
-tracing-mock = { workspace = true }
 
 [lints]
 workspace = true

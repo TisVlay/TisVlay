@@ -6766,6 +6766,7 @@ dependencies = [
  "tisvlay-core",
  "tokio",
  "tracing",
+ "tracing-mock",
 ]
 
 [[package]]
@@ -6861,11 +6862,8 @@ dependencies = [
  "libc",
  "parking_lot",
  "tempfile",
- "tisvlay-core",
- "tisvlay-mock",
  "tokio",
  "tracing",
- "tracing-mock",
  "tracing-test",
  "zbus",
 ]

@@ -21,5 +21,8 @@ tracing = { workspace = true }
 # Sync mutex without poisoning for the in-memory state map.
 parking_lot = { workspace = true }
 
+[dev-dependencies]
+tracing-mock = { workspace = true }
+
 [lints]
 workspace = true

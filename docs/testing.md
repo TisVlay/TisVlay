@@ -366,10 +366,6 @@ relay.cut();
 relay.restore();
 ```
 
-### Tracing re-exports
-
-`tisvlay-test` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
-
 ## Wire-level integration tests
 
 Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tisvlay_test::socket_tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
@@ -534,10 +530,10 @@ The `no-env-filter` feature is pinned so events from dependency crates (tisvlay-
 
 ### tracing-mock — observability regression tests
 
-Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation.
+Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation. They live next to the code they pin (the mock's in `tisvlay-mock/tests/it/tracing_regressions.rs`), with `tracing-mock` as that crate's dev-dependency.
 
 ```rust
-use tisvlay_test::tracing_mock::{expect, subscriber};
+use tracing_mock::{expect, subscriber};
 use tracing::subscriber::set_default;
 
 #[test]
@@ -560,7 +556,7 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/it/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps.
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 
