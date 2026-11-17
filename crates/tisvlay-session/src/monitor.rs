@@ -76,8 +76,8 @@ const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 const CREATE_SESSION: &str = "CreateSession";
 /// The `CreateSession` option naming the session object's last path
-/// segment. The portal aborts on a call without it, so a live session
-/// always has one.
+/// segment. A call without it opens no session, so a live session always
+/// has one.
 const SESSION_HANDLE_TOKEN: &str = "session_handle_token";
 const CLOSE: &str = "Close";
 const CLOSED: &str = "Closed";
@@ -715,8 +715,8 @@ mod tests {
 
     #[test]
     fn a_create_session_the_portal_refuses_is_ignored() {
-        // No token: the portal aborts. A token outside [A-Za-z0-9_] or an
-        // empty one: the call fails. Neither opens a session.
+        // No token, a token outside [A-Za-z0-9_], or an empty one: the
+        // call opens no session.
         assert_eq!(
             classify(&call(SCREENCAST_IFACE, CREATE_SESSION, OWNER)),
             None
