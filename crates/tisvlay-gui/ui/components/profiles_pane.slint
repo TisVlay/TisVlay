@@ -568,8 +568,8 @@ component ProfileRowTrailing inherits HorizontalLayout {
     // between them) reserved on every row kind, so the reset glyph lands
     // at one x throughout and, crucially, every field row's value column
     // resolves to the same width. That is what makes the number rows'
-    // ThemedSpinBox and the enum rows' ComboBox render one width for real
-    // — not by the old coincidence of the unit label's width happening to
+    // ThemedSpinBox and the enum rows' ComboBox render one width, by
+    // construction rather than because the unit label's width happens to
     // cancel the toggle-slot delta. It holds the two action toggles
     // (action rows), the number field's unit label (number rows), or
     // nothing (bool rows / unitless numbers).
@@ -725,6 +725,7 @@ component ProfileFieldRowEnum inherits ProfileFieldRow {
                 horizontal-stretch: 1;
                 alignment: center;
                 enum-control := ThemedSelect {
+                    accessible-label: root.entry.label;
                     nav-row: root.row-id;
                     accessible-id: "profiles-field-" + root.entry.field-name;
                     model: root.entry.options;
@@ -791,14 +792,14 @@ component ProfileFieldRowNumber inherits ProfileFieldRow {
             // label is NOT here: it lives in the trailing modifier region
             // (ProfileRowTrailing), sized to the same width as the action
             // rows' toggle slots, which is what makes this value column
-            // equal the enum row's (rather than the old coincidence where
-            // the unit's width happened to cancel the toggle-slot delta).
+            // equal the enum row's.
             // The deferred-commit-on-blur logic now lives inside
             // ThemedSpinBox (see widgets.slint).
             VerticalLayout {
                 horizontal-stretch: 1;
                 alignment: center;
                 number-control := ThemedSpinBox {
+                    accessible-label: root.entry.label;
                     nav-row: root.row-id;
                     accessible-id: "profiles-field-" + root.entry.field-name;
                     value: root.entry.number-value;
@@ -937,8 +938,8 @@ component ProfileDetailHeader inherits Rectangle {
     // the pencil flips this header into edit mode, swapping the Text
     // for a LineEditField and the pencil + Duplicate / Delete buttons
     // for ✓ / ✗. Commits ride a `name`-only body patch through
-    // `UpdateSystemProfile` / `UpdateUserProfile`; the echoed
-    // `SystemProfileChanged` / `UserProfileChanged` signal redraws
+    // the profile update rpc; the profile key's published update
+    // redraws
     // `root.name` automatically.
     //
     // The pencil is only rendered while a profile is selected (the
@@ -1067,6 +1068,7 @@ component ProfileDetailHeader inherits Rectangle {
                         }
 
                         LineEditField {
+                            accessible-label: @tr("Profile name");
                             nav-row: root.title-row;
                             placeholder-text: @tr("Profile name");
                             text <=> root.pending-name;
@@ -1816,8 +1818,8 @@ export component ProfilesPane {
     }
 
     // New-profile name-input dialog. `kind` is set when opening; the
-    // post-confirm `confirm-create` routes to either Manager1 or
-    // Session1 based on it.
+    // post-confirm `confirm-create` routes to the daemon or the session
+    // service based on it.
     NameInputDialog {
         open: root.pending-new-kind != ProfileKind.none;
         title: root.pending-new-kind == ProfileKind.system

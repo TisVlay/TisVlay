@@ -4,8 +4,8 @@
 // TvsPane / TvDetail forwarders.
 
 export global Daemon {
-    // -- Per-TV writable state (D-Bus methods on Tv1.Volume /
-    //    Tv1.Backlight / Tv1.Screen). The dispatch path is:
+    // -- Per-TV writable state (the per-TV rpcs). The dispatch
+    //    path is:
     //    OptimisticSlider.committed → Daemon.set-volume(tv.uuid, v) →
     //    Rust → coalescer → reconciler.dispatch + daemon write. --
     callback set-volume(string, int);
@@ -32,7 +32,7 @@ export global Daemon {
     /// `PairingWizard.active = true` after seeding initial state.
     callback request-pair();
     /// Re-pair an existing TV: refresh vendor credentials in place
-    /// without losing top-level config. Routes to `Tv1.RePair(tv_id)`
+    /// without losing top-level config. Routes to the re-pair rpc
     /// on the daemon side. The Rust handler opens the wizard at
     /// `StepPair` with vendor/address/name prefilled from the
     /// existing TV's state.

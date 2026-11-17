@@ -21,11 +21,16 @@ mod generated {
 
 pub use generated::*;
 
-/// Register the gettext catalogs for both Slint's `@tr()` and Rust-side
-/// `gettext()` calls; they share one domain. `init_translations!` names the
-/// domain after the package it expands in, so it must expand here, where
-/// the `.slint` files compile. `lang/` resolves relative to this crate at
-/// compile time; installed binaries fall back to the system locale dir.
+/// The gettext domain Slint's `@tr()` and the Rust-side `gettext()` calls
+/// share: this package's name, which `init_translations!` uses.
+pub const GETTEXT_DOMAIN: &str = env!("CARGO_PKG_NAME");
+
+/// Bind the gettext catalogs for Slint's `@tr()`. `init_translations!` names
+/// the domain after the package it expands in, so it must expand here,
+/// where the `.slint` files compile. It binds `lang/` as resolved at compile
+/// time, this crate's source tree; nothing installs the catalogs yet. The
+/// Rust-side `gettext()` calls also need [`GETTEXT_DOMAIN`] made the
+/// process's default domain.
 pub fn init_translations() {
     slint::init_translations!(concat!(env!("CARGO_MANIFEST_DIR"), "/lang"));
 }

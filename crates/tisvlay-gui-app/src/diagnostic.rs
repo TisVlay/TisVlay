@@ -29,19 +29,19 @@ const GUI_PROFILE: &str = if cfg!(debug_assertions) {
 };
 
 /// Target triple emitted by `build.rs`. Always present.
-const GUI_TARGET: &str = env!("VERGEN_CARGO_TARGET_TRIPLE");
+const GUI_TARGET: &str = env!("TISVLAY_BUILD_TARGET");
 
 /// `rustc --version` semver token emitted by `build.rs`. Always
 /// present.
-const GUI_RUSTC: &str = env!("VERGEN_RUSTC_SEMVER");
+const GUI_RUSTC: &str = env!("TISVLAY_BUILD_RUSTC");
 
 /// 7-char git short SHA emitted by `build.rs`. Falls back to
-/// `VERGEN_IDEMPOTENT_OUTPUT` when the build runs outside a git
+/// `TISVLAY_BUILD_UNKNOWN` when the build runs outside a git
 /// checkout (release tarball, Nix sandbox without git history); the
 /// renderer translates that sentinel to `null` so consumers can tell
 /// "tarball build" apart from a clean repo build.
-const GUI_GIT_SHA: &str = env!("VERGEN_GIT_SHA");
-const VERGEN_IDEMPOTENT_SENTINEL: &str = "VERGEN_IDEMPOTENT_OUTPUT";
+const GUI_GIT_SHA: &str = env!("TISVLAY_BUILD_GIT_SHA");
+const UNKNOWN_SENTINEL: &str = "TISVLAY_BUILD_UNKNOWN";
 
 /// Per-component snapshot. One of these per row in the About pane's
 /// COMPONENTS table. `name` is the catalogue id (`"tisvlay-daemon"`,
@@ -111,7 +111,7 @@ fn gui_section() -> Value {
 /// so consumers can tell a tarball / Nix sandbox build apart from a
 /// real checkout. Pure — split out for unit tests.
 fn maybe_git_sha(raw: &str) -> Value {
-    if raw.is_empty() || raw == VERGEN_IDEMPOTENT_SENTINEL {
+    if raw.is_empty() || raw == UNKNOWN_SENTINEL {
         Value::Null
     } else {
         Value::String(raw.to_owned())
@@ -323,7 +323,7 @@ mod tests {
     #[test]
     fn maybe_git_sha_collapses_idempotent_sentinel_to_null() {
         assert_eq!(maybe_git_sha(""), Value::Null);
-        assert_eq!(maybe_git_sha("VERGEN_IDEMPOTENT_OUTPUT"), Value::Null);
+        assert_eq!(maybe_git_sha("TISVLAY_BUILD_UNKNOWN"), Value::Null);
         assert_eq!(maybe_git_sha("9811118"), Value::String("9811118".into()));
     }
 

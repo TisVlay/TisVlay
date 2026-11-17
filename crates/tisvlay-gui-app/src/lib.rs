@@ -1,11 +1,10 @@
 //! tisvlay-gui — Slint-based settings + management window.
 //!
 //! Reads state from the daemon over the system zenoh socket and from
-//! `tisvlay-session` over the user socket. M2
-//! adds writable controls (volume, backlight, mute, screen toggle,
-//! input switcher, profile dropdowns, managed checkbox, remove,
-//! reload-config) plus staged power-on feedback via the per-TV
-//! `progress/power` key.
+//! `tisvlay-session` over the user socket, and drives both: per-TV
+//! controls (volume, backlight, mute, screen, input, profiles, managed,
+//! remove), pairing, the profile editors, reload, and staged power-on
+//! feedback through the per-TV `progress/power` key.
 
 mod about;
 mod accent;
@@ -24,6 +23,7 @@ mod schema_form;
 mod state;
 mod state_watch;
 mod toast;
+mod token;
 mod wizard;
 
 use about::{
@@ -40,10 +40,11 @@ use power_cycle::run_power_on_with_progress;
 use profiles::{
     EditorKind, ProfileEditor, dispatch_rename, dispatch_reset_all, dispatch_reset_field,
     dispatch_select_after_create, dispatch_value_edit, dispatch_value_edit_number, new_editor,
+    session_client,
 };
 use toast::show_toast;
 use wizard::{
-    WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
+    PairForm, WizardCtx, WizardDiscoveryCancel, WizardEntries, WizardEntry, WizardGen,
     WizardManualLookupCancel, cancel_wizard_discovery, cancel_wizard_manual_lookup,
     fetch_and_publish_schema, fill_picked_tv_name, publish_wizard_entries, reset_wizard,
     run_wizard_discovery, run_wizard_pair, run_wizard_re_pair,
@@ -51,7 +52,7 @@ use wizard::{
 
 use schema_form::{
     AutofilledRow, ClearedOptionals, build_config_from_schema, compute_schema_valid,
-    parse_field_type, prefill_schema_from_config, validate_value,
+    prefill_schema_from_config, revalidate_row,
 };
 
 use std::collections::HashMap;
@@ -70,7 +71,7 @@ use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{
     DaemonClient, NotificationCategory, NotificationSettingsPatch, SessionClient, TrayClient,
 };
-use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
+use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
@@ -122,6 +123,17 @@ pub(crate) fn vendor_display_for(model: &ModelRc<VendorOption>, id: &str) -> Sha
 /// convention. Background failures (state-watcher reconnects, etc.)
 /// are *not* routed here — they live in journald instead, since
 /// surfacing every transient flap would drown the user.
+/// The reserved-default system profile as the profile pickers list it
+/// (localized "default" plus its indicator glyph), so a picker seeded
+/// with it resolves `current-value` to that row.
+fn default_system_profile_display() -> SharedString {
+    SharedString::from(state::display_profile_name(
+        DEFAULT_SYSTEM_PROFILE_UUID,
+        "default",
+        DEFAULT_SYSTEM_PROFILE_UUID,
+    ))
+}
+
 fn push_tvs_error(app_weak: &slint::Weak<AppWindow>, title: String, message: String) {
     on_ui(app_weak, move |app| {
         let errors = app.global::<Errors>();
@@ -293,6 +305,41 @@ fn current_selection(app_weak: &slint::Weak<AppWindow>) -> Option<(EditorKind, u
     uuid::Uuid::parse_str(&uuid_str).ok().map(|u| (kind, u))
 }
 
+/// What a profile edit runs against: the editor cache and both clients.
+#[derive(Clone)]
+struct ProfileEditCtx {
+    editor: ProfileEditor,
+    daemon: Arc<DaemonClient>,
+    session: Arc<RwLock<Option<SessionClient>>>,
+}
+
+impl ProfileEditCtx {
+    /// Run `run` on the profile selected when the edit fired, off the UI
+    /// thread. A failure is logged as `edit` and toasted through `failed`,
+    /// a translated "…: {0}" format the error text fills.
+    fn spawn<Fut>(
+        &self,
+        app_weak: &slint::Weak<AppWindow>,
+        edit: &'static str,
+        failed: String,
+        run: impl FnOnce(Self, EditorKind, uuid::Uuid) -> Fut,
+    ) where
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let Some((kind, uuid)) = current_selection(app_weak) else {
+            return;
+        };
+        let task = run(self.clone(), kind, uuid);
+        let app_weak = app_weak.clone();
+        tokio::spawn(async move {
+            if let Err(e) = task.await {
+                warn!(edit, error = %e, "profile edit failed");
+                show_toast(app_weak, &failed.replace("{0}", &error_text(&*e)));
+            }
+        });
+    }
+}
+
 /// Per-(tv_id, property) reconciler maps for ramping TV-state values.
 /// User input dispatches through `volume.dispatch` / `backlight.dispatch`
 /// before the daemon write; the refresh path observes every fetched
@@ -367,12 +414,13 @@ pub fn run() -> Result<()> {
     )?;
 
     // Localization: one `tisvlay-gui` gettext catalog serves Slint's
-    // `@tr()` and our Rust-side `gettextrs::gettext()` calls; installed
-    // binaries fall back to
-    // `/usr/share/locale/<locale>/LC_MESSAGES/tisvlay-gui.mo`. v1 ships
-    // English only — every `@tr("…")` and `gettext("…")` returns the
-    // literal in the absence of a matching catalog.
+    // `@tr()` and our Rust-side `gettextrs::gettext()` calls, which read
+    // the process's default domain. Only English ships: every `@tr("…")`
+    // and `gettext("…")` returns the literal without a matching catalog.
     init_translations();
+    if let Err(e) = gettextrs::textdomain(GETTEXT_DOMAIN) {
+        warn!(%e, "couldn't select the gettext domain; strings stay untranslated");
+    }
 
     let args = Args::parse();
     let _ = ENDPOINTS.set(Endpoints {
@@ -389,7 +437,7 @@ pub fn run() -> Result<()> {
     info!("tisvlay-gui starting");
 
     // Slint's event loop owns the main thread once `run()` is called.
-    // A multi-thread tokio runtime backs all D-Bus work; spawned tasks
+    // A multi-thread tokio runtime backs all the async work; spawned tasks
     // live on its worker threads. We hold an `_enter` guard on the main
     // thread so any `tokio::spawn` invoked from a Slint callback finds
     // a runtime via `Handle::current()`.
@@ -483,11 +531,8 @@ pub fn run() -> Result<()> {
     // with `SingleMainWindow=true` in the .desktop) the taskbar /
     // app menu / KRunner can raise the existing window when the
     // user re-launches without going through our D-Bus Activate
-    // handler. PR slint-ui/slint#6851 (merged 2024-11) exposed
-    // this in slint::set_xdg_app_id; must be called before the
-    // AppWindow is shown — winit reads xdg_app_id when building
-    // WindowAttributes for the first show() (winitwindowadapter
-    // .rs:445).
+    // handler. Must be called before the AppWindow is shown: winit
+    // reads the app id when it builds the first window.
     slint::set_xdg_app_id(dbus::GUI_BUS_NAME).context("Failed to set Wayland app_id")?;
 
     let app = AppWindow::new()?;
@@ -632,18 +677,6 @@ pub fn run() -> Result<()> {
         });
     }
 
-    // Toast.show is the public Slint-side trigger for the top-center
-    // notification surface. Rust handlers can either invoke this
-    // callback (e.g., from `Daemon.on_*` paths via the AppWindow
-    // global) or call `show_toast` directly — both feed the same
-    // property + auto-clear flow.
-    {
-        let app_weak = app.as_weak();
-        app.global::<Toast>().on_show(move |message| {
-            show_toast(app_weak.clone(), message.as_str());
-        });
-    }
-
     // About-pane wiring: GUI version (compile-time) + the three
     // top-row callbacks (View source / Report issue / Copy diagnostic).
     // The COMPONENTS array is pushed lazily once the daemon/session
@@ -682,9 +715,11 @@ pub fn run() -> Result<()> {
         Arc::new(std::sync::RwLock::new(Vec::new()));
     {
         let app_weak = app.as_weak();
-        // The zenoh stack has sockets, not buses; the diagnostic blob's
-        // runtime.bus field reads "user" for the per-user dev socket.
-        let user_bus = true;
+        // The zenoh stack has sockets, not buses: the diagnostic blob's
+        // runtime.bus reads "system" for the packaged daemon socket and
+        // "user" for a per-user dev one, the triage split it exists for.
+        let user_bus = endpoints().system_socket
+            != std::path::Path::new(tisvlay_protocol::bootstrap::SYSTEM_SOCKET_PATH);
         let vendors = supported_vendors_cache.clone();
         app.on_copy_diagnostic_clicked(move || {
             let Some(app) = app_weak.upgrade() else {
@@ -1135,14 +1170,6 @@ fn register_callbacks(
     let wizard = app.global::<PairingWizard>();
     let edit_pane = app.global::<EditPane>();
     let errors_global = app.global::<Errors>();
-    // Inline-error action callback. v1 has no contextual actions
-    // wired — `kind`-based routing lands once the recovery flows
-    // do (e.g. "Edit MAC" once the edit-properties pane exists).
-    // Register a no-op so the Slint side has a handler bound; the
-    // close X is the only dismiss path users see today.
-    errors_global.on_tvs_action(|| {});
-    errors_global.on_pairing_action(|| {});
-
     // App-level access banner. When the user can't reach the daemon
     // socket the resilient link never connects (the socket is 0660,
     // `tisvlay` group + daemon-applied ACLs), so the window would
@@ -1201,7 +1228,7 @@ fn register_callbacks(
                             title: SharedString::from(gettext("Couldn't enable access")),
                             message: SharedString::from(
                                 gettext("Access wasn't granted: {0}")
-                                    .replace("{0}", &e.to_string()),
+                                    .replace("{0}", &error_text(&*e)),
                             ),
                             action_label: SharedString::from(gettext("Try again")),
                         }),
@@ -1263,18 +1290,17 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let name = name.to_string();
             tokio::spawn(async move {
-                let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.create_system_profile(&name).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => {
-                                client.create_user_profile(&name).await.map_err(Into::into)
-                            }
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<uuid::Uuid> = async {
+                    Ok(match editor_kind {
+                        EditorKind::System => d.create_system_profile(&name).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .create_user_profile(&name)
+                                .await?
                         }
-                    }
-                };
+                    })
+                }
+                .await;
                 match result {
                     Ok(uuid) => {
                         dispatch_select_after_create(ed, d, s, app_weak, editor_kind, uuid).await;
@@ -1312,16 +1338,17 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let new_name = new_name.to_string();
             tokio::spawn(async move {
-                let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.duplicate_system_profile(source, &new_name).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => client.duplicate_user_profile(source, &new_name).await.map_err(Into::into),
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<uuid::Uuid> = async {
+                    Ok(match editor_kind {
+                        EditorKind::System => d.duplicate_system_profile(source, &new_name).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .duplicate_user_profile(source, &new_name)
+                                .await?
                         }
-                    }
-                };
+                    })
+                }
+                .await;
                 match result {
                     Ok(uuid) => {
                         dispatch_select_after_create(
@@ -1370,18 +1397,18 @@ fn register_callbacks(
             let ed = ed.clone();
             let app_weak = app_weak.clone();
             tokio::spawn(async move {
-                let result: Result<()> = match editor_kind {
-                    EditorKind::System => d.delete_system_profile(uuid).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => {
-                                client.delete_user_profile(uuid).await.map_err(Into::into)
-                            }
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<()> = async {
+                    match editor_kind {
+                        EditorKind::System => d.delete_system_profile(uuid).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .delete_user_profile(uuid)
+                                .await?;
                         }
                     }
-                };
+                    Ok(())
+                }
+                .await;
                 match result {
                     Ok(()) => {
                         // Preemptive cache clear so the selected-row
@@ -1454,236 +1481,144 @@ fn register_callbacks(
         });
     }
 
-    // value-edited / value-edited-number / reset-field / reset-all
-    // all read the current selection on the UI thread and route to
-    // the matching dispatch helper. Failures land on the toast
-    // surface — every field edit is naturally retryable so the user
-    // can pick the value again.
+    // The profile edits act on the selection the UI shows when they fire,
+    // off the UI thread. A failure toasts; every edit is retryable by
+    // picking the value again.
+    let edits = ProfileEditCtx {
+        editor,
+        daemon: daemon.clone(),
+        session: session.clone(),
+    };
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
-            let field = field.to_string();
-            let value = value.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    dispatch_value_edit(&ed, &d, &s, editor_kind, uuid, &field, &value).await
-                {
-                    warn!(field = %field, value = %value, error = %e, "value_edited failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            let (field, value) = (field.to_string(), value.to_string());
+            edits.spawn(
+                &app_weak,
+                "value_edited",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_value_edit(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, &value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_restore_edited(move |field, checked| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    profiles::dispatch_restore_edit(&ed, &d, &s, editor_kind, uuid, &field, checked)
-                        .await
-                {
-                    warn!(field = %field, checked, error = %e, "restore_edited failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "restore_edited",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_restore_edit(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, checked,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_stream_gated(move |field, fires_while_streaming| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = profiles::dispatch_stream_gate_edit(
-                    &ed,
-                    &d,
-                    &s,
-                    editor_kind,
-                    uuid,
-                    &field,
-                    fires_while_streaming,
-                )
-                .await
-                {
-                    warn!(field = %field, fires_while_streaming, error = %e, "stream_gated failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "stream_gated",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_stream_gate_edit(
+                        &c.editor,
+                        &c.daemon,
+                        &c.session,
+                        kind,
+                        uuid,
+                        &field,
+                        fires_while_streaming,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited_number(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) =
-                    dispatch_value_edit_number(&ed, &d, &s, editor_kind, uuid, &field, value).await
-                {
-                    warn!(field = %field, value, error = %e, "value_edited_number failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "value_edited_number",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_value_edit_number(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_value_edited_bool(move |field, value| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = profiles::dispatch_value_edit_bool(
-                    &ed,
-                    &d,
-                    &s,
-                    editor_kind,
-                    uuid,
-                    &field,
-                    value,
-                )
-                .await
-                {
-                    warn!(field = %field, value, error = %e, "value_edited_bool failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Save change failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "value_edited_bool",
+                gettext("Save change failed: {0}"),
+                move |c, kind, uuid| async move {
+                    profiles::dispatch_value_edit_bool(
+                        &c.editor, &c.daemon, &c.session, kind, uuid, &field, value,
+                    )
+                    .await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_reset_field(move |field| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let field = field.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_reset_field(&ed, &d, &s, editor_kind, uuid, &field).await {
-                    warn!(field = %field, error = %e, "reset_field failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Reset field failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "reset_field",
+                gettext("Reset field failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_reset_field(&c.editor, &c.daemon, &c.session, kind, uuid, &field).await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor.clone();
-        let app_weak = app.as_weak();
+        let (edits, app_weak) = (edits.clone(), app.as_weak());
         profiles_global.on_reset_all(move || {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_reset_all(&ed, &d, &s, editor_kind, uuid).await {
-                    warn!(error = %e, "reset_all failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Reset all failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "reset_all",
+                gettext("Reset all failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_reset_all(&c.editor, &c.daemon, &c.session, kind, uuid).await
+                },
+            );
         });
     }
     {
-        let d = daemon.clone();
-        let s = session.clone();
-        let ed = editor;
         let app_weak = app.as_weak();
         profiles_global.on_rename_selected(move |new_name| {
-            let Some((editor_kind, uuid)) = current_selection(&app_weak) else {
-                return;
-            };
-            let d = d.clone();
-            let s = s.clone();
-            let ed = ed.clone();
-            let app_weak = app_weak.clone();
             let new_name = new_name.to_string();
-            tokio::spawn(async move {
-                if let Err(e) = dispatch_rename(&ed, &d, &s, editor_kind, uuid, &new_name).await {
-                    warn!(name = %new_name, error = %e, "rename_selected failed");
-                    show_toast(
-                        app_weak,
-                        &gettext("Rename failed: {0}").replace("{0}", &error_text(&*e)),
-                    );
-                }
-            });
+            edits.spawn(
+                &app_weak,
+                "rename_selected",
+                gettext("Rename failed: {0}"),
+                move |c, kind, uuid| async move {
+                    dispatch_rename(&c.editor, &c.daemon, &c.session, kind, uuid, &new_name).await
+                },
+            );
         });
     }
 
@@ -1846,40 +1781,20 @@ fn register_callbacks(
     let d = daemon.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_system_profile(move |tv_id, profile| {
-        // The ComboBox emits the display name; the daemon's
-        // `set-system-profile` rpc wants a UUID. Translate via a
-        // fresh catalog fetch (profile catalogs are small; an on-click
-        // round-trip is cheaper than threading a shared name->UUID
-        // cache through every callback). The match predicate goes
-        // through `display_profile_name` so the reserved-default
-        // entry (which the ComboBox renders with a localized
-        // "default" word + indicator glyph suffix) still resolves —
-        // matching against bare `body.name` would miss it.
+        // The ComboBox sends the picked entry's UUID, from the list
+        // beside its names: two profiles may share a name. A profile
+        // removed since the list was drawn is the daemon's refusal.
         let d = d.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let picked_name = profile.to_string();
+        let Ok(uuid) = profile.parse::<uuid::Uuid>() else {
+            warn!(tv_id = %tv_id, profile = %profile, "set_system_profile: not a profile id");
+            return;
+        };
         tokio::spawn(async move {
-            let bodies = d.list_system_profile_bodies();
-            let Some(uuid) = bodies
-                .iter()
-                .find(|(u, b)| {
-                    state::display_profile_name(**u, &b.name, DEFAULT_SYSTEM_PROFILE_UUID)
-                        == picked_name
-                })
-                .map(|(u, _)| *u)
-            else {
-                warn!(tv_id = %tv_id, name = %picked_name, "set_system_profile: name not in catalog");
-                push_tvs_error(
-                    &app_weak,
-                    gettext("Couldn't change system profile"),
-                    gettext("Selected profile is no longer in the catalog."),
-                );
-                return;
-            };
             if let Err(e) = with_id(&tv_id, |tv| d.set_tv_system_profile(tv, Some(uuid))).await {
                 let msg = error_text(&*e);
-                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_system_profile failed");
+                warn!(tv_id = %tv_id, uuid = %uuid, error = %msg, "set_system_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change system profile"), msg);
             }
         });
@@ -1888,12 +1803,15 @@ fn register_callbacks(
     let s = session.clone();
     let app_weak = app.as_weak();
     daemon_global.on_set_user_profile(move |tv_id, profile| {
-        // Same translation as `on_set_system_profile`, but the
-        // user-profile catalog lives with the session service.
+        // As `on_set_system_profile`, but the user-profile catalog lives
+        // with the session service.
         let s = s.clone();
         let app_weak = app_weak.clone();
         let tv_id = tv_id.to_string();
-        let picked_name = profile.to_string();
+        let Ok(uuid) = profile.parse::<uuid::Uuid>() else {
+            warn!(tv_id = %tv_id, profile = %profile, "set_user_profile: not a profile id");
+            return;
+        };
         tokio::spawn(async move {
             let session_ref = s.read().await;
             let Some(client) = session_ref.as_ref() else {
@@ -1901,30 +1819,15 @@ fn register_callbacks(
                 push_tvs_error(
                     &app_weak,
                     gettext("Session service unavailable"),
-                    gettext("User-profile assignments require the per-user tisvlay-session service."),
-                );
-                return;
-            };
-            let bodies = client.list_user_profile_bodies();
-            let Some(uuid) = bodies
-                .iter()
-                .find(|(u, b)| {
-                    state::display_profile_name(**u, &b.name, DEFAULT_USER_PROFILE_UUID)
-                        == picked_name
-                })
-                .map(|(u, _)| *u)
-            else {
-                warn!(tv_id = %tv_id, name = %picked_name, "set_user_profile: name not in catalog");
-                push_tvs_error(
-                    &app_weak,
-                    gettext("Couldn't change user profile"),
-                    gettext("Selected profile is no longer in the catalog."),
+                    gettext(
+                        "User-profile assignments require the per-user tisvlay-session service.",
+                    ),
                 );
                 return;
             };
             if let Err(e) = with_id(&tv_id, |tv| client.set_tv_user_profile(tv, Some(uuid))).await {
                 let msg = error_text(&*e);
-                warn!(tv_id = %tv_id, name = %picked_name, uuid = %uuid, error = %msg, "set_user_profile failed");
+                warn!(tv_id = %tv_id, uuid = %uuid, error = %msg, "set_user_profile failed");
                 push_tvs_error(&app_weak, gettext("Couldn't change user profile"), msg);
             }
         });
@@ -2101,11 +2004,10 @@ fn register_callbacks(
         wizard.set_selected_vendor(vendor_id);
         wizard.set_selected_vendor_name(vendor_name);
         wizard.set_selected_address(tv.primary_descriptor.clone());
-        // Hardware model isn't carried in TvViewModel today — leave
-        // blank; the wizard's StepPair UI handles an empty value.
-        wizard.set_selected_hw_model(SharedString::default());
+        wizard.set_selected_hw_model(tv.hw_model);
         wizard.set_tv_name(tv.name);
         wizard.set_pair_tv_id(SharedString::from(tv_id_str.as_str()));
+        wizard.set_re_pair(true);
         wizard.set_step(3);
         wizard.set_active(true);
 
@@ -2198,17 +2100,7 @@ fn register_callbacks(
                 wizard.set_selected_address(SharedString::from(entry.address.as_str()));
                 wizard.set_selected_hw_model(SharedString::from(entry.hw_model.as_str()));
                 if wizard.get_system_profile().is_empty() {
-                    // Pre-select the reserved-default profile in the
-                    // wizard's picker. Must match the display form
-                    // used in `Profiles.system-profiles` (localized
-                    // "default" + indicator glyph) so std `ComboBox`'s
-                    // string-match `current-value` resolves to the
-                    // right model row.
-                    wizard.set_system_profile(SharedString::from(state::display_profile_name(
-                        DEFAULT_SYSTEM_PROFILE_UUID,
-                        "default",
-                        DEFAULT_SYSTEM_PROFILE_UUID,
-                    )));
+                    wizard.set_system_profile(default_system_profile_display());
                 }
                 // User picked a TV — stop the streaming discovery
                 // session AND any in-flight manual-entry MAC lookup
@@ -2248,6 +2140,7 @@ fn register_callbacks(
                 let config =
                     build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
                 let managed = wizard.get_managed();
+                let profile = wizard.get_system_profile_id().parse::<uuid::Uuid>().ok();
 
                 wizard.set_step(3);
                 wizard.set_pair_phase(SharedString::default());
@@ -2255,10 +2148,16 @@ fn register_callbacks(
 
                 let d = ctx.daemon.clone();
                 let wg = ctx.generation.clone();
+                let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
                 let app_weak = app.as_weak();
-                tokio::spawn(async move {
-                    run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
-                });
+                let form = PairForm {
+                    name,
+                    vendor,
+                    config,
+                    managed,
+                    system_profile: profile,
+                };
+                tokio::spawn(run_wizard_pair(d, app_weak, wg, captured_gen, form));
             }
             // Pair → Done. Only allowed once pairing completed.
             3 if wizard.get_pair_phase() == tisvlay::PairingPhase::Complete.as_str() => {
@@ -2290,7 +2189,8 @@ fn register_callbacks(
         }
     });
 
-    // Pair-failed → retry: restart pair_tv with the same parameters.
+    // Pair-failed → retry: re-pair the same TV, or restart pair_tv with
+    // the same parameters.
     let ctx = wizard_ctx.clone();
     let app_weak = app.as_weak();
     wizard.on_retry_pair(move || {
@@ -2298,6 +2198,20 @@ fn register_callbacks(
             return;
         };
         let wizard = app.global::<PairingWizard>();
+        if wizard.get_re_pair() {
+            let Ok(tv) = wizard.get_pair_tv_id().parse::<uuid::Uuid>() else {
+                warn!("wizard: re-pair retry without a TV id, ignoring");
+                return;
+            };
+            wizard.set_pair_phase(SharedString::default());
+            wizard.set_pair_message(SharedString::default());
+            let ctx = ctx.clone();
+            let app_weak = app.as_weak();
+            tokio::spawn(async move {
+                run_wizard_re_pair(ctx.daemon, app_weak, ctx.generation, tv).await;
+            });
+            return;
+        }
         let name = wizard.get_tv_name().to_string();
         if name.is_empty() {
             return;
@@ -2305,16 +2219,23 @@ fn register_callbacks(
         let vendor = wizard.get_selected_vendor().to_string();
         let config = build_config_from_schema(&wizard.get_schema_fields(), ClearedOptionals::Omit);
         let managed = wizard.get_managed();
+        let profile = wizard.get_system_profile_id().parse::<uuid::Uuid>().ok();
 
         wizard.set_pair_phase(SharedString::default());
         wizard.set_pair_message(SharedString::default());
 
         let d = ctx.daemon.clone();
         let wg = ctx.generation.clone();
+        let captured_gen = wg.load(std::sync::atomic::Ordering::SeqCst);
         let app_weak = app.as_weak();
-        tokio::spawn(async move {
-            run_wizard_pair(d, app_weak, wg, name, vendor, config, managed).await;
-        });
+        let form = PairForm {
+            name,
+            vendor,
+            config,
+            managed,
+            system_profile: profile,
+        };
+        tokio::spawn(run_wizard_pair(d, app_weak, wg, captured_gen, form));
     });
 
     // Done step: adopt the MAC the TV reported. An ordinary config write —
@@ -2346,7 +2267,7 @@ fn register_callbacks(
                 match result {
                     Ok(()) => wizard.set_mac_notice("saved".into()),
                     Err(e) => wizard.set_mac_error(SharedString::from(
-                        gettext("Couldn't update the MAC: {0}").replace("{0}", &e.to_string()),
+                        gettext("Couldn't update the MAC: {0}").replace("{0}", &error_text(&*e)),
                     )),
                 }
             });
@@ -2402,11 +2323,8 @@ fn register_callbacks(
         }
     });
 
-    // Other input handlers — Slint's `<=>` already handles
-    // property-level sync; these are no-ops for now.
+    // The name's `<=>` binding already syncs it.
     wizard.on_name_edited(|_| {});
-    wizard.on_profile_selected(|_| {});
-    wizard.on_managed_toggled(|_| {});
 
     // Manual-entry: the vendor ComboBox writes its `current-index`
     // straight into `manual-vendor-index` via two-way binding (no
@@ -2432,30 +2350,9 @@ fn register_callbacks(
         };
         let wizard = app.global::<PairingWizard>();
         let model = wizard.get_schema_fields();
-        let Some(mut row) = model.row_data(i as usize) else {
-            return;
-        };
-        let options: Vec<String> = (0..row.options.row_count())
-            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
-            .collect();
-        let (state, error) = validate_value(
-            &row.name,
-            parse_field_type(&row.field_type),
-            row.required,
-            &options,
-            &v,
-        );
-        row.value = v;
-        row.state = SharedString::from(state);
-        row.error = SharedString::from(error);
-        // User editing the field clears its "Auto-detected" badge —
-        // the value is now theirs, not the system's. Cosmetic, but
-        // it keeps the trust signal honest.
-        row.autofilled = false;
-        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
-            vec_model.set_row_data(i as usize, row);
+        if revalidate_row(&model, i as usize, v) {
+            wizard.set_schema_valid(compute_schema_valid(&model));
         }
-        wizard.set_schema_valid(compute_schema_valid(&model));
     });
 
     // ---------------------------------------------------------------------
@@ -2473,6 +2370,10 @@ fn register_callbacks(
     // the draft.
     let app_weak = app.as_weak();
     let d = daemon.clone();
+    // Counts starts, so only the latest load lands: starting TV B's edit
+    // before TV A's load returns would otherwise leave A's fields under
+    // B's name, and Save would rename A.
+    let loads = Arc::new(std::sync::atomic::AtomicU64::new(0));
     edit_pane.on_start(move |uuid| {
         let Some(app) = app_weak.upgrade() else {
             return;
@@ -2496,19 +2397,23 @@ fn register_callbacks(
         edit_pane.set_error(SharedString::default());
         edit_pane.set_saving(false);
         edit_pane.set_dirty(false);
-        edit_pane.set_name(SharedString::from(name.as_str()));
 
         let app_weak = app.as_weak();
         let d = d.clone();
         let uuid_owned = uuid.to_string();
+        let loads = Arc::clone(&loads);
+        let load = loads.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let current = move || loads.load(std::sync::atomic::Ordering::SeqCst) == load;
         tokio::spawn(async move {
             // Pairing schema is the `UserInput` projection of
             // `config_schema()` — exactly the editable subset we want.
             let schema = match d.get_pairing_schema(&vendor).await {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(vendor = %vendor, error = %e, "EditPane.start: GetPairingSchema failed");
-                    publish_edit_error(&app_weak, error_text(&e));
+                    warn!(vendor = %vendor, error = %e, "EditPane.start: pairing schema fetch failed");
+                    if current() {
+                        publish_edit_error(&app_weak, error_text(&e));
+                    }
                     return;
                 }
             };
@@ -2516,15 +2421,21 @@ fn register_callbacks(
             let view = match with_id(&uuid_owned, |tv| d.get_tv_config(tv)).await {
                 Ok(view) => view,
                 Err(e) => {
-                    warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: GetConfig failed");
-                    publish_edit_error(&app_weak, error_text(&*e));
+                    warn!(tv_uuid = %uuid_owned, error = %e, "EditPane.start: get-config failed");
+                    if current() {
+                        publish_edit_error(&app_weak, error_text(&*e));
+                    }
                     return;
                 }
             };
 
             let raw_rows = prefill_schema_from_config(&schema, &view.config);
             on_ui(&app_weak, move |app| {
+                if !current() {
+                    return;
+                }
                 let edit_pane = app.global::<EditPane>();
+                edit_pane.set_name(SharedString::from(name.as_str()));
                 let rows: Vec<PairingFieldRow> = raw_rows
                     .into_iter()
                     .map(AutofilledRow::into_slint)
@@ -2570,25 +2481,8 @@ fn register_callbacks(
             return;
         };
         let edit_pane = app.global::<EditPane>();
-        let model = edit_pane.get_fields();
-        let Some(mut row) = model.row_data(i as usize) else {
+        if !revalidate_row(&edit_pane.get_fields(), i as usize, v) {
             return;
-        };
-        let options: Vec<String> = (0..row.options.row_count())
-            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
-            .collect();
-        let (state, error) = validate_value(
-            &row.name,
-            parse_field_type(&row.field_type),
-            row.required,
-            &options,
-            &v,
-        );
-        row.value = v;
-        row.state = SharedString::from(state);
-        row.error = SharedString::from(error);
-        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
-            vec_model.set_row_data(i as usize, row);
         }
         edit_pane.set_dirty(true);
         edit_pane.set_valid(compute_edit_valid(&edit_pane));
@@ -2642,11 +2536,14 @@ fn register_callbacks(
                         // Per-field validation errors get routed back
                         // to the originating row so the user can fix
                         // them in place. Non-field errors fall through
-                        // to the generic banner.
-                        if let Some((field, reason)) = extract_invalid_vendor_config(&e) {
-                            let model = edit_pane.get_fields();
-                            mark_edit_field_invalid(&edit_pane, &model, &field, &reason);
-                        } else {
+                        // to the generic banner, as does a field no row
+                        // shows.
+                        let routed =
+                            extract_invalid_vendor_config(&e).is_some_and(|(field, reason)| {
+                                let model = edit_pane.get_fields();
+                                mark_edit_field_invalid(&edit_pane, &model, &field, &reason)
+                            });
+                        if !routed {
                             edit_pane.set_error(SharedString::from(error_text(&e)));
                         }
                     }
@@ -2716,22 +2613,16 @@ fn register_callbacks(
         // schema step.
         let primary_is_ip = option.primary_is_ip;
         tokio::spawn(async move {
-            // Daemon-side cap is 600 ms; wizard cap of 1 s is the
-            // safety net for a hung RPC. Either firing produces an
-            // empty vendor_data — same outcome as a clean miss, the
-            // user just sees the field blank with the "MAC not
-            // detected" helper.
+            // The daemon bounds its own lookup and the rpc has its
+            // deadline; a miss either way, like a clean miss, leaves the
+            // field blank with the "MAC not detected" helper.
             let vendor_data = if !primary_is_ip {
                 HashMap::new()
             } else {
                 tokio::select! {
                     _ = cancel_rx => HashMap::new(),
-                    res = tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
-                        d.enrich_manual_entry(&vendor, &ip),
-                    ) => res
+                    res = d.enrich_manual_entry(&vendor, &ip) => res
                         .ok()
-                        .and_then(std::result::Result::ok)
                         .flatten()
                         .map(|mac| HashMap::from([(tisvlay_core::MAC_CONFIG_KEY.to_string(), mac)]))
                         .unwrap_or_default(),
@@ -2771,7 +2662,7 @@ fn register_callbacks(
                 wizard.set_selected_hw_model(SharedString::default());
                 fill_picked_tv_name(&wizard, &ip_for_ui);
                 if wizard.get_system_profile().is_empty() {
-                    wizard.set_system_profile("default".into());
+                    wizard.set_system_profile(default_system_profile_display());
                 }
                 wizard.set_schema_fields(ModelRc::new(VecModel::<PairingFieldRow>::default()));
                 wizard.set_schema_valid(false);
@@ -2821,7 +2712,7 @@ fn register_callbacks(
             };
             let body = build_notification_update(&category, enabled);
             if let Err(e) = client.update_notification_settings(body).await {
-                warn!(category = %category, enabled, error = %e, "UpdateNotificationSettings failed");
+                warn!(category = %category, enabled, error = %e, "notification settings update failed");
             }
         });
     });
@@ -2836,7 +2727,7 @@ fn register_callbacks(
                 return;
             };
             if let Err(e) = client.send_test_notification().await {
-                warn!(error = %e, "SendTestNotification failed");
+                warn!(error = %e, "test notification failed");
             }
         });
     });
@@ -3148,8 +3039,8 @@ mod tests {
         let vendors = Arc::new(std::sync::RwLock::new(Vec::new()));
         let app = AppWindow::new().unwrap();
         app.set_daemon_available(true);
-        app.set_session_available(true);
-        app.set_tray_available(true);
+        app.global::<Profiles>().set_session_available(true);
+        app.global::<Tray>().set_available(true);
         let watcher = tokio::spawn(state_watch::watch(
             daemon.clone(),
             session.clone(),
@@ -3160,7 +3051,9 @@ mod tests {
             editor.clone(),
         ));
         wait_for_ui(&app, |app| {
-            !app.get_daemon_available() && !app.get_session_available() && !app.get_tray_available()
+            !app.get_daemon_available()
+                && !app.global::<Profiles>().get_session_available()
+                && !app.global::<Tray>().get_available()
         });
         let (connector, discovery, _mock) = tisvlay_mock::new_test_parts();
         let stack = tisvlay_daemon::serve(
@@ -3267,9 +3160,7 @@ mod tests {
         })
         .await
         .unwrap();
-        wait_for_ui(&app, |app| {
-            app.get_session_available() && app.global::<Profiles>().get_session_available()
-        });
+        wait_for_ui(&app, |app| app.global::<Profiles>().get_session_available());
         let user_profile = session_client
             .create_user_profile("Watcher personal")
             .await
@@ -3333,9 +3224,7 @@ mod tests {
             tray_path.clone(),
             notifier,
         ));
-        wait_for_ui(&app, |app| {
-            app.get_tray_available() && app.global::<Tray>().get_available()
-        });
+        wait_for_ui(&app, |app| app.global::<Tray>().get_available());
         tray_client
             .update_notification_settings(NotificationSettingsPatch {
                 tv_wake: Some(false),
@@ -3349,9 +3238,7 @@ mod tests {
         assert!(app.global::<Tray>().get_notifications().tv_pairing);
         tray_service.abort();
         assert!(tray_service.await.unwrap_err().is_cancelled());
-        wait_for_ui(&app, |app| {
-            !app.get_tray_available() && !app.global::<Tray>().get_available()
-        });
+        wait_for_ui(&app, |app| !app.global::<Tray>().get_available());
         let link = zenoh::open(tisvlay_protocol::bootstrap::client_config(&user_socket).unwrap())
             .await
             .unwrap();
@@ -3365,7 +3252,8 @@ mod tests {
             notifier,
         ));
         wait_for_ui(&app, |app| {
-            app.get_tray_available() && !app.global::<Tray>().get_notifications().tv_wake
+            app.global::<Tray>().get_available()
+                && !app.global::<Tray>().get_notifications().tv_wake
         });
         tray_client
             .update_notification_settings(NotificationSettingsPatch {
@@ -3379,10 +3267,10 @@ mod tests {
         });
         tray_restarted.abort();
         assert!(tray_restarted.await.unwrap_err().is_cancelled());
-        wait_for_ui(&app, |app| !app.get_tray_available());
+        wait_for_ui(&app, |app| !app.global::<Tray>().get_available());
         drop(session_stack);
         wait_for_ui(&app, |app| {
-            !app.get_session_available() && !app.global::<Profiles>().get_session_available()
+            !app.global::<Profiles>().get_session_available()
         });
         daemon.remove_tv(tv).await.unwrap();
         wait_for_ui(&app, |app| {
@@ -3779,7 +3667,7 @@ mod tests {
             daemon.list_system_profile_bodies()[&original_id].name,
             "Work"
         );
-        controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
+        controls.invoke_set_system_profile(tv.to_string().into(), original_id.to_string().into());
         wait_for_tvs(&daemon, |tvs| {
             tvs.iter()
                 .any(|info| info.uuid == tv && info.system_profile == Some(original_id))
@@ -3794,11 +3682,17 @@ mod tests {
         profiles.invoke_open_tv(tv.to_string().into());
         assert_eq!(app.get_active_pane(), Pane::Tvs);
         assert_eq!(app.get_selected_tv_index(), 0);
-        controls.invoke_set_user_profile(tv.to_string().into(), "Personal".into());
+        controls.invoke_set_user_profile(
+            tv.to_string().into(),
+            uuid::Uuid::new_v4().to_string().into(),
+        );
         wait_for_ui(&app, |app| {
             app.global::<Errors>().get_tvs().title == "Session service unavailable"
         });
-        controls.invoke_set_system_profile(tv.to_string().into(), "Deleted profile".into());
+        controls.invoke_set_system_profile(
+            tv.to_string().into(),
+            uuid::Uuid::new_v4().to_string().into(),
+        );
         wait_for_ui(&app, |app| {
             app.global::<Errors>().get_tvs().title == "Couldn't change system profile"
         });
@@ -3904,7 +3798,7 @@ mod tests {
                 && body["screencast_arms"].is_null()
         })
         .await;
-        controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
+        controls.invoke_set_user_profile(tv.to_string().into(), user_id.to_string().into());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             while client.get_tv_user_profile(tv) != Some(user_id) {
                 watcher.next().await.unwrap();
@@ -3988,9 +3882,19 @@ mod tests {
         assert_eq!(wizard.get_step(), 3);
         assert_eq!(wizard.get_tv_name(), "Retry TV");
         assert_eq!(wizard.get_selected_vendor_name(), "Mock");
+        assert!(wizard.get_re_pair());
         wait_for_ui(&app, |app| {
             app.global::<PairingWizard>().get_pair_phase() == "complete"
         });
+        // A re-pair has no configure step to go back to, and its Retry
+        // re-pairs the same TV rather than pairing a new one.
+        assert!(!wizard.get_back_enabled());
+        wizard.invoke_retry_pair();
+        assert_eq!(wizard.get_pair_phase(), "");
+        wait_for_ui(&app, |app| {
+            app.global::<PairingWizard>().get_pair_phase() == "complete"
+        });
+        assert_eq!(wizard.get_pair_tv_id(), retry_tv.to_string().as_str());
         wizard.set_mac_notice("differs".into());
         wizard.set_pair_tv_id(uuid::Uuid::new_v4().to_string().into());
         wizard.set_mac_reported("84:90:0A:63:A9:94".into());
@@ -4201,12 +4105,22 @@ mod tests {
         );
         expect_tv_error(
             &app,
-            || controls.invoke_set_system_profile(missing.clone(), "Work".into()),
+            || {
+                controls.invoke_set_system_profile(
+                    missing.clone(),
+                    DEFAULT_SYSTEM_PROFILE_UUID.to_string().into(),
+                );
+            },
             "Couldn't change system profile",
         );
         expect_tv_error(
             &app,
-            || controls.invoke_set_user_profile(tv.to_string().into(), "Missing profile".into()),
+            || {
+                controls.invoke_set_user_profile(
+                    tv.to_string().into(),
+                    uuid::Uuid::new_v4().to_string().into(),
+                );
+            },
             "Couldn't change user profile",
         );
         tray_service.abort();

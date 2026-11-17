@@ -10,10 +10,9 @@
 //     (`tisvlay_runtime::client::ReconcilerMap`); Slint stays a thin view.
 //   - Animations: see `widgets.slint` (`PulseDot`, `SpinnerArc`,
 //     `ScanLine`) and the per-call-site `animate background { ... }`
-//     hover transitions, all aligned with
-//     `.claude/ui/pairing-wizard-motion.md`.
+//     hover transitions.
 
-import { Button, VerticalBox, HorizontalBox, ListView, ScrollView, GroupBox, StandardButton } from "std-widgets.slint";
+import { VerticalBox, HorizontalBox } from "std-widgets.slint";
 import { Theme } from "theme.slint";
 import { Design } from "design.slint";
 import { Focusable, InlineError } from "widgets.slint";
@@ -46,7 +45,7 @@ export enum Pane {
 }
 
 // Sidebar entry. Optional `icon` (a freedesktop-resolved symbolic
-// SVG loaded from the user's icon theme — see `main.rs::load_themed_icon`)
+// SVG loaded from the user's icon theme — see `icon_theme::load_symbolic_icon`)
 // renders left-of-label, tinted to white when selected and
 // `Theme.sidebar-text` otherwise. If the icon failed to resolve the
 // `image` property is empty and Slint draws nothing in its slot —
@@ -364,8 +363,6 @@ export component AppWindow inherits Window {
     in property <bool> daemon-available: false;
     // Up, but its TVs and profiles haven't all arrived yet.
     in property <bool> daemon-loading: false;
-    in property <bool> session-available: false;
-    in property <bool> tray-available: false;
     // Presence plus release compatibility, for the footer dots (and the
     // TVs pane's empty state). The `*-available` flags above stay
     // presence only.
@@ -374,6 +371,10 @@ export component AppWindow inherits Window {
     in property <ServiceHealth> tray-health: ServiceHealth.offline;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    // Each list's profile UUIDs, index for index: a pick sends the UUID,
+    // since two profiles may share a name.
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
     in property <string> gui-version;
     in property <[AboutComponentRow]> about-components;
     callback view-notices-clicked();
@@ -417,7 +418,7 @@ export component AppWindow inherits Window {
     callback open-config-folder(string);
 
     // Sidebar glyphs — Rust resolves these against the user's
-    // freedesktop icon theme at startup (see `main.rs`). Empty
+    // freedesktop icon theme at startup (see `icon_theme.rs`). Empty
     // images render as blank, so missing names degrade to
     // label-only without errors.
     in property <image> tvs-icon;
@@ -430,11 +431,6 @@ export component AppWindow inherits Window {
     // `about-icon` so the sidebar's About row keeps a distinct
     // info-style glyph (`help-about`).
     in property <image> app-logo;
-
-    // Daemon callbacks moved to `Daemon` global (globals/daemon.slint).
-    // Wizard callbacks + state moved to `PairingWizard` global
-    // (globals/pairing_wizard.slint). Appearance follows
-    // `Palette.color-scheme` directly — no app-level setting.
 
     nav-scope := FocusScope {
         width: 100%;
@@ -775,6 +771,8 @@ export component AppWindow inherits Window {
                         daemon-health: root.daemon-health;
                         system-profiles: root.system-profiles;
                         user-profiles: root.user-profiles;
+                        system-profile-ids: root.system-profile-ids;
+                        user-profile-ids: root.user-profile-ids;
                     }
                     if root.active-pane == Pane.profiles: ProfilesPane {
                         width: 100%;
@@ -806,7 +804,7 @@ export component AppWindow inherits Window {
     // renders on top of the panes. Positioned by `x`/`y` rather than
     // a layout because we want it to float over the chrome (titlebar
     // edge included), not inside the sidebar+pane split. Auto-clears
-    // via Rust-side timer (see `show_toast` in main.rs).
+    // via Rust-side timer (see `toast::show_toast`).
     ToastView {
         x: (root.width - self.width) / 2;
         y: 24px;

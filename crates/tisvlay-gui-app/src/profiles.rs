@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gettextrs::pgettext;
+use gettextrs::{gettext, pgettext};
 use parking_lot::Mutex;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use tisvlay::{DaemonClient, SessionClient, SystemProfileBody, UserProfileBody};
@@ -43,6 +43,8 @@ use tisvlay_core::{
 };
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
+
+use crate::token::{enum_token, parse_token};
 use uuid::Uuid;
 
 use crate::state::{fetch_system_profile_body, fetch_user_profile_body};
@@ -663,25 +665,21 @@ fn action_modifier(
 /// to the body shape co-locate with the table.
 fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_startup" => body.on_startup.map(|a| session_action_token(a.action())),
-        "on_shutdown" => body.on_shutdown.map(|a| session_action_token(a.action())),
-        "on_reboot" => body.on_reboot.map(|a| session_action_token(a.action())),
-        "on_sleep" => body.on_sleep.map(|a| session_action_token(a.action())),
-        "on_wake" => body.on_wake.map(|a| session_action_token(a.action())),
-        "on_dpms_off" => body.on_dpms_off.map(|a| session_action_token(a.action())),
-        "on_dpms_on" => body.on_dpms_on.map(|a| session_action_token(a.action())),
-        "on_idle_timeout" => body
-            .on_idle_timeout
-            .map(|a| session_action_token(a.action())),
-        "on_idle_resume" => body
-            .on_idle_resume
-            .map(|a| session_action_token(a.action())),
+        "on_startup" => body.on_startup.map(|a| enum_token(a.action())),
+        "on_shutdown" => body.on_shutdown.map(|a| enum_token(a.action())),
+        "on_reboot" => body.on_reboot.map(|a| enum_token(a.action())),
+        "on_sleep" => body.on_sleep.map(|a| enum_token(a.action())),
+        "on_wake" => body.on_wake.map(|a| enum_token(a.action())),
+        "on_dpms_off" => body.on_dpms_off.map(|a| enum_token(a.action())),
+        "on_dpms_on" => body.on_dpms_on.map(|a| enum_token(a.action())),
+        "on_idle_timeout" => body.on_idle_timeout.map(|a| enum_token(a.action())),
+        "on_idle_resume" => body.on_idle_resume.map(|a| enum_token(a.action())),
         "idle_timeout_seconds" => body.idle_timeout_seconds.map(|v| v.to_string()),
         "automate_when" => body.automate_when.map(|when| when.to_string()),
-        "on_tv_power_off" => body.on_tv_power_off.map(system_sleep_action_token),
-        "on_remote_power" => body.on_remote_power.map(system_sleep_action_token),
+        "on_tv_power_off" => body.on_tv_power_off.map(enum_token),
+        "on_remote_power" => body.on_remote_power.map(enum_token),
         "remote_keys" => body.remote_keys.map(|v| v.to_string()),
-        "on_tv_power_on" => body.on_tv_power_on.map(system_wake_action_token),
+        "on_tv_power_on" => body.on_tv_power_on.map(enum_token),
         _ => None,
     }
 }
@@ -689,81 +687,23 @@ fn read_system_field(body: &SystemProfileBody, wire: &str) -> Option<String> {
 /// User-side mirror of [`read_system_field`].
 fn read_user_field(body: &UserProfileBody, wire: &str) -> Option<String> {
     match wire {
-        "on_session_lock" => body
-            .on_session_lock
-            .map(|a| session_action_token(a.action())),
-        "on_session_unlock" => body
-            .on_session_unlock
-            .map(|a| session_action_token(a.action())),
-        "on_lock_wake" => body.on_lock_wake.map(|a| session_action_token(a.action())),
-        "on_idle_timeout" => body
-            .on_idle_timeout
-            .map(|a| session_action_token(a.action())),
-        "on_idle_resume" => body
-            .on_idle_resume
-            .map(|a| session_action_token(a.action())),
+        "on_session_lock" => body.on_session_lock.map(|a| enum_token(a.action())),
+        "on_session_unlock" => body.on_session_unlock.map(|a| enum_token(a.action())),
+        "on_lock_wake" => body.on_lock_wake.map(|a| enum_token(a.action())),
+        "on_idle_timeout" => body.on_idle_timeout.map(|a| enum_token(a.action())),
+        "on_idle_resume" => body.on_idle_resume.map(|a| enum_token(a.action())),
         "locked_idle_timeout_seconds" => body.locked_idle_timeout_seconds.map(|v| v.to_string()),
         "unlocked_idle_timeout_seconds" => {
             body.unlocked_idle_timeout_seconds.map(|v| v.to_string())
         }
-        "on_stream_start" => body
-            .on_stream_start
-            .map(|a| session_action_token(a.action())),
-        "on_stream_end" => body.on_stream_end.map(|a| session_action_token(a.action())),
-        "on_local_return" => body
-            .on_local_return
-            .map(|a| session_action_token(a.action())),
+        "on_stream_start" => body.on_stream_start.map(|a| enum_token(a.action())),
+        "on_stream_end" => body.on_stream_end.map(|a| enum_token(a.action())),
+        "on_local_return" => body.on_local_return.map(|a| enum_token(a.action())),
         "screencast_arms" => body.screencast_arms.map(|v| v.to_string()),
-        "on_tv_power_off" => body.on_tv_power_off.map(user_lock_action_token),
-        "on_remote_power" => body.on_remote_power.map(user_lock_action_token),
+        "on_tv_power_off" => body.on_tv_power_off.map(enum_token),
+        "on_remote_power" => body.on_remote_power.map(enum_token),
         _ => None,
     }
-}
-
-/// Map a [`SessionAction`] to its wire token. Mirrors the
-/// `#[serde(rename_all = "snake_case")]` on the enum so the GUI's
-/// row tokens stay byte-identical to what `UpdateSystemProfile` /
-/// `UpdateUserProfile` round-trip.
-fn session_action_token(action: SessionAction) -> String {
-    match action {
-        SessionAction::None => "none",
-        SessionAction::ScreenOff => "screen_off",
-        SessionAction::ScreenOn => "screen_on",
-        SessionAction::PowerOff => "power_off",
-        SessionAction::PowerOn => "power_on",
-    }
-    .to_string()
-}
-
-/// Map a [`SystemSleepAction`] to its wire token, mirroring the enum's
-/// `#[serde(rename_all = "snake_case")]`.
-fn system_sleep_action_token(action: SystemSleepAction) -> String {
-    match action {
-        SystemSleepAction::None => "none",
-        SystemSleepAction::Suspend => "suspend",
-        SystemSleepAction::Sleep => "sleep",
-    }
-    .to_string()
-}
-
-/// Map a [`SystemWakeAction`] to its wire token, mirroring the enum's
-/// `#[serde(rename_all = "snake_case")]`.
-fn system_wake_action_token(action: SystemWakeAction) -> String {
-    match action {
-        SystemWakeAction::None => "none",
-        SystemWakeAction::Wake => "wake",
-    }
-    .to_string()
-}
-
-/// Map a [`UserLockAction`] to its wire token, mirroring the enum's
-/// `#[serde(rename_all = "snake_case")]`.
-fn user_lock_action_token(action: UserLockAction) -> String {
-    match action {
-        UserLockAction::None => "none",
-        UserLockAction::Lock => "lock",
-    }
-    .to_string()
 }
 
 // =============================================================================
@@ -1709,60 +1649,6 @@ pub(crate) enum BodyPatch {
     Clear,
 }
 
-/// Parse a ComboBox-emitted token into the matching `SessionAction`
-/// variant. Tokens mirror the `#[serde(rename_all = "snake_case")]`
-/// emitted by [`session_action_token`] — if either diverges this
-/// match arm catches it.
-fn parse_session_action(token: &str) -> anyhow::Result<SessionAction> {
-    match token {
-        "none" => Ok(SessionAction::None),
-        "screen_off" => Ok(SessionAction::ScreenOff),
-        "screen_on" => Ok(SessionAction::ScreenOn),
-        "power_off" => Ok(SessionAction::PowerOff),
-        "power_on" => Ok(SessionAction::PowerOn),
-        other => Err(anyhow::anyhow!("Unknown SessionAction variant: {other}")),
-    }
-}
-
-fn parse_automate_when(token: &str) -> anyhow::Result<AutomateWhen> {
-    token
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Unknown AutomateWhen variant: {token}"))
-}
-
-/// Parse a ComboBox token into a [`SystemSleepAction`]; the inverse of
-/// [`system_sleep_action_token`].
-fn parse_system_sleep_action(token: &str) -> anyhow::Result<SystemSleepAction> {
-    match token {
-        "none" => Ok(SystemSleepAction::None),
-        "suspend" => Ok(SystemSleepAction::Suspend),
-        "sleep" => Ok(SystemSleepAction::Sleep),
-        other => Err(anyhow::anyhow!(
-            "Unknown SystemSleepAction variant: {other}"
-        )),
-    }
-}
-
-/// Parse a ComboBox token into a [`SystemWakeAction`]; the inverse of
-/// [`system_wake_action_token`].
-fn parse_system_wake_action(token: &str) -> anyhow::Result<SystemWakeAction> {
-    match token {
-        "none" => Ok(SystemWakeAction::None),
-        "wake" => Ok(SystemWakeAction::Wake),
-        other => Err(anyhow::anyhow!("Unknown SystemWakeAction variant: {other}")),
-    }
-}
-
-/// Parse a ComboBox token into a [`UserLockAction`]; the inverse of
-/// [`user_lock_action_token`].
-fn parse_user_lock_action(token: &str) -> anyhow::Result<UserLockAction> {
-    match token {
-        "none" => Ok(UserLockAction::None),
-        "lock" => Ok(UserLockAction::Lock),
-        other => Err(anyhow::anyhow!("Unknown UserLockAction variant: {other}")),
-    }
-}
-
 /// Mutate one field on a `SystemProfileBody`. The patch's variant
 /// must match the target's `FieldKind` — passing `BodyPatch::Number`
 /// to an enum field surfaces as an `anyhow::Error`.
@@ -1929,27 +1815,31 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
         FieldKind::Enum {
             class: EnumClass::SessionAction,
             ..
-        } => Ok(BodyPatch::SessionAction(parse_session_action(token)?)),
+        } => Ok(BodyPatch::SessionAction(parse_token::<SessionAction>(
+            token,
+        )?)),
         FieldKind::Enum {
             class: EnumClass::AutomateWhen,
             ..
-        } => Ok(BodyPatch::AutomateWhen(parse_automate_when(token)?)),
+        } => Ok(BodyPatch::AutomateWhen(parse_token::<AutomateWhen>(token)?)),
         FieldKind::Enum {
             class: EnumClass::UserLockAction,
             ..
-        } => Ok(BodyPatch::UserLockAction(parse_user_lock_action(token)?)),
+        } => Ok(BodyPatch::UserLockAction(parse_token::<UserLockAction>(
+            token,
+        )?)),
         FieldKind::Enum {
             class: EnumClass::SystemSleepAction,
             ..
-        } => Ok(BodyPatch::SystemSleepAction(parse_system_sleep_action(
-            token,
-        )?)),
+        } => Ok(BodyPatch::SystemSleepAction(parse_token::<
+            SystemSleepAction,
+        >(token)?)),
         FieldKind::Enum {
             class: EnumClass::SystemWakeAction,
             ..
-        } => Ok(BodyPatch::SystemWakeAction(parse_system_wake_action(
-            token,
-        )?)),
+        } => Ok(BodyPatch::SystemWakeAction(
+            parse_token::<SystemWakeAction>(token)?,
+        )),
         FieldKind::Number { .. } => {
             anyhow::bail!("Cannot parse an enum token for a number field")
         }
@@ -1965,10 +1855,14 @@ fn parse_enum_token(kind: FieldKind, token: &str) -> anyhow::Result<BodyPatch> {
 
 /// Read the cached body for the current selection (the per-uuid entry
 /// if present, the `default_body` slot when `uuid` matches the
-/// reserved default, or an empty body as a last resort). Returned by
-/// value so the caller can mutate without holding the editor lock
-/// across the daemon call.
-fn snapshot_system_body(state: &ProfileEditorState, uuid: Uuid) -> SystemProfileBody {
+/// reserved default). Returned by value so the caller can mutate
+/// without holding the editor lock across the daemon call. An edit is a
+/// whole-body write, so a body that hasn't loaded refuses the edit
+/// rather than writing an empty one over the profile.
+fn snapshot_system_body(
+    state: &ProfileEditorState,
+    uuid: Uuid,
+) -> anyhow::Result<SystemProfileBody> {
     state
         .system
         .bodies
@@ -1981,10 +1875,17 @@ fn snapshot_system_body(state: &ProfileEditorState, uuid: Uuid) -> SystemProfile
                 None
             }
         })
-        .unwrap_or_default()
+        .ok_or_else(not_loaded)
 }
 
-fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> UserProfileBody {
+/// The refusal for an edit to a profile whose body hasn't loaded.
+fn not_loaded() -> anyhow::Error {
+    // Outside the macro, where xgettext finds it.
+    let message = gettext("The profile hasn't loaded yet; try again.");
+    anyhow::anyhow!(message)
+}
+
+fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> anyhow::Result<UserProfileBody> {
     state
         .user
         .bodies
@@ -1997,13 +1898,14 @@ fn snapshot_user_body(state: &ProfileEditorState, uuid: Uuid) -> UserProfileBody
                 None
             }
         })
-        .unwrap_or_default()
+        .ok_or_else(not_loaded)
 }
 
 /// Read-modify-write helper for a single field on a system profile.
 /// Snapshots the cached body, applies `mutate`, then writes it back
-/// over D-Bus. The lock is held only for the snapshot; the daemon
-/// round-trip happens after `drop`.
+/// and caches what it wrote, so a second edit before the published
+/// echo builds on this one. The lock is held only for the snapshot and
+/// the cache write; the daemon round-trip happens between them.
 async fn update_system_field(
     editor: &ProfileEditor,
     daemon: &DaemonClient,
@@ -2013,10 +1915,12 @@ async fn update_system_field(
 ) -> anyhow::Result<()> {
     let mut body = {
         let state = editor.lock();
-        snapshot_system_body(&state, uuid)
+        snapshot_system_body(&state, uuid)?
     };
     set_system_field(&mut body, wire, patch)?;
-    Ok(daemon.update_system_profile(uuid, body).await?)
+    daemon.update_system_profile(uuid, body.clone()).await?;
+    editor.lock().system.cache_body(uuid, body);
+    Ok(())
 }
 
 async fn update_user_field(
@@ -2028,19 +1932,27 @@ async fn update_user_field(
 ) -> anyhow::Result<()> {
     let mut body = {
         let state = editor.lock();
-        snapshot_user_body(&state, uuid)
+        snapshot_user_body(&state, uuid)?
     };
     set_user_field(&mut body, wire, patch)?;
     let session_ref = session.read().await;
-    let client = session_ref
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-    Ok(client.update_user_profile(uuid, body).await?)
+    let client = session_client(&session_ref)?;
+    client.update_user_profile(uuid, body.clone()).await?;
+    editor.lock().user.cache_body(uuid, body);
+    Ok(())
 }
 
 /// Apply a ComboBox-driven enum edit to the selected profile. The
 /// dispatch helpers all read the selection's `(kind, uuid)` from the
 /// caller (Slint reads the global at task-start) so the editor cache
+/// The session client, or the error a user-profile edit reports without
+/// one.
+pub(crate) fn session_client(session: &Option<SessionClient>) -> anyhow::Result<&SessionClient> {
+    session
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))
+}
+
 /// doesn't need an extra round-trip to confirm it.
 pub(crate) async fn dispatch_value_edit(
     editor: &ProfileEditor,
@@ -2062,7 +1974,7 @@ pub(crate) async fn dispatch_value_edit(
             class: EnumClass::SessionAction,
             ..
         } => {
-            let action = parse_session_action(value)?;
+            let action = parse_token::<SessionAction>(value)?;
             let (_token, restore_input, while_streaming) =
                 resolve_action_modifiers(editor, kind, uuid, field_wire)?;
             BodyPatch::EventAction(materialize_event_action(
@@ -2146,7 +2058,7 @@ pub(crate) async fn dispatch_restore_edit(
 ) -> anyhow::Result<()> {
     let (token, _restore, while_streaming) =
         resolve_action_modifiers(editor, kind, uuid, field_wire)?;
-    let action = parse_session_action(&token)?;
+    let action = parse_token::<SessionAction>(&token)?;
     let patch = BodyPatch::EventAction(materialize_event_action(action, checked, while_streaming));
     match kind {
         EditorKind::System => update_system_field(editor, daemon, uuid, field_wire, patch).await,
@@ -2168,7 +2080,7 @@ pub(crate) async fn dispatch_stream_gate_edit(
     fires_while_streaming: bool,
 ) -> anyhow::Result<()> {
     let (token, restore_input, _gate) = resolve_action_modifiers(editor, kind, uuid, field_wire)?;
-    let action = parse_session_action(&token)?;
+    let action = parse_token::<SessionAction>(&token)?;
     let patch = BodyPatch::EventAction(materialize_event_action(
         action,
         restore_input,
@@ -2275,28 +2187,30 @@ pub(crate) async fn dispatch_reset_all(
         EditorKind::System => {
             let snapshot = {
                 let state = editor.lock();
-                snapshot_system_body(&state, uuid)
+                snapshot_system_body(&state, uuid)?
             };
             let body = SystemProfileBody {
                 name: snapshot.name,
                 ..Default::default()
             };
-            Ok(daemon.update_system_profile(uuid, body).await?)
+            daemon.update_system_profile(uuid, body.clone()).await?;
+            editor.lock().system.cache_body(uuid, body);
+            Ok(())
         }
         EditorKind::User => {
             let snapshot = {
                 let state = editor.lock();
-                snapshot_user_body(&state, uuid)
+                snapshot_user_body(&state, uuid)?
             };
             let body = UserProfileBody {
                 name: snapshot.name,
                 ..Default::default()
             };
             let session_ref = session.read().await;
-            let client = session_ref
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, body).await?)
+            let client = session_client(&session_ref)?;
+            client.update_user_profile(uuid, body.clone()).await?;
+            editor.lock().user.cache_body(uuid, body);
+            Ok(())
         }
     }
 }
@@ -2317,22 +2231,24 @@ pub(crate) async fn dispatch_rename(
         EditorKind::System => {
             let mut body = {
                 let state = editor.lock();
-                snapshot_system_body(&state, uuid)
+                snapshot_system_body(&state, uuid)?
             };
             body.name = new_name.to_string();
-            Ok(daemon.update_system_profile(uuid, body).await?)
+            daemon.update_system_profile(uuid, body.clone()).await?;
+            editor.lock().system.cache_body(uuid, body);
+            Ok(())
         }
         EditorKind::User => {
             let mut body = {
                 let state = editor.lock();
-                snapshot_user_body(&state, uuid)
+                snapshot_user_body(&state, uuid)?
             };
             body.name = new_name.to_string();
             let session_ref = session.read().await;
-            let client = session_ref
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
-            Ok(client.update_user_profile(uuid, body).await?)
+            let client = session_client(&session_ref)?;
+            client.update_user_profile(uuid, body.clone()).await?;
+            editor.lock().user.cache_body(uuid, body);
+            Ok(())
         }
     }
 }
@@ -2375,8 +2291,8 @@ pub(crate) async fn dispatch_select_after_create(
 
     // Push the selection. The detail-header materializes once
     // `selected-row.uuid` becomes non-empty; the master list pushes
-    // a fully populated row through `push_profiles` shortly after
-    // the `*ProfileAdded` signal handler runs. Until then the
+    // a fully populated row through `state_watch::push_snapshot` shortly
+    // after the new profile's key is published. Until then the
     // header reads name = empty, but the field-editor below is
     // populated correctly from the eager-fetched body.
     let uuid_str = SharedString::from(uuid.to_string());
@@ -3042,10 +2958,7 @@ mod tests {
         let field = SYSTEM_FIELDS.iter().find(|f| f.wire == "on_sleep").unwrap();
         let resolved = resolve_system_field(&layers, DEFAULT_SYSTEM_PROFILE_UUID, field);
         assert!(resolved.is_locally_set());
-        assert_eq!(
-            resolved.current(),
-            session_action_token(SessionAction::ScreenOff)
-        );
+        assert_eq!(resolved.current(), enum_token(SessionAction::ScreenOff));
     }
 
     // -----------------------------------------------------------------
@@ -3694,43 +3607,53 @@ mod tests {
     // Enum-token parsers
     // -----------------------------------------------------------------
 
+    /// Every variant's token is its serde name, the same string
+    /// `Display` gives where the enum has one, and parses back.
     #[test]
-    fn parse_session_action_round_trips_every_variant() {
-        for action in [
+    fn enum_tokens_round_trip_every_variant() {
+        fn round_trip<T>(variants: &[T])
+        where
+            T: Copy + PartialEq + std::fmt::Debug + serde::Serialize + serde::de::DeserializeOwned,
+        {
+            for &variant in variants {
+                let token = enum_token(variant);
+                assert_eq!(parse_token::<T>(&token).expect("known token"), variant);
+            }
+        }
+        round_trip(&[
             SessionAction::None,
             SessionAction::ScreenOff,
             SessionAction::ScreenOn,
             SessionAction::PowerOff,
             SessionAction::PowerOn,
-        ] {
-            let token = session_action_token(action);
-            let parsed = parse_session_action(&token).expect("known token");
-            assert_eq!(parsed, action);
-        }
-    }
-
-    #[test]
-    fn parse_automate_when_round_trips_every_variant() {
+        ]);
+        round_trip(&[
+            SystemSleepAction::None,
+            SystemSleepAction::Suspend,
+            SystemSleepAction::Sleep,
+        ]);
+        round_trip(&[SystemWakeAction::None, SystemWakeAction::Wake]);
+        round_trip(&[UserLockAction::None, UserLockAction::Lock]);
+        round_trip(&[
+            AutomateWhen::Always,
+            AutomateWhen::OnPrimary,
+            AutomateWhen::OffPrimary,
+        ]);
         for when in [
             AutomateWhen::Always,
             AutomateWhen::OnPrimary,
             AutomateWhen::OffPrimary,
         ] {
-            let token = when.to_string();
-            let parsed = parse_automate_when(&token).expect("known token");
-            assert_eq!(parsed, when);
+            assert_eq!(enum_token(when), when.to_string());
         }
+        assert_eq!(enum_token(SessionAction::ScreenOff), "screen_off");
     }
 
     #[test]
-    fn parse_session_action_rejects_unknown_token() {
-        let err = parse_session_action("invalid_token").unwrap_err();
+    fn parse_token_rejects_an_unknown_token() {
+        let err = parse_token::<SessionAction>("invalid_token").unwrap_err();
         assert!(err.to_string().contains("invalid_token"));
-    }
-
-    #[test]
-    fn parse_automate_when_rejects_unknown_token() {
-        let err = parse_automate_when("invalid_token").unwrap_err();
+        let err = parse_token::<AutomateWhen>("invalid_token").unwrap_err();
         assert!(err.to_string().contains("invalid_token"));
     }
 
@@ -3813,7 +3736,7 @@ mod tests {
             on_startup: Some(SessionAction::PowerOn.into()),
             ..Default::default()
         };
-        let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID);
+        let snap = snapshot_system_body(&state, DEFAULT_SYSTEM_PROFILE_UUID).unwrap();
         assert_eq!(snap.name, "default");
         assert_eq!(snap.on_startup, Some(SessionAction::PowerOn.into()));
     }
@@ -3830,17 +3753,18 @@ mod tests {
                 ..Default::default()
             },
         );
-        let snap = snapshot_system_body(&state, uuid);
+        let snap = snapshot_system_body(&state, uuid).unwrap();
         assert_eq!(snap.name, "evening");
         assert_eq!(snap.on_startup, Some(SessionAction::ScreenOff.into()));
     }
 
     #[test]
-    fn snapshot_system_body_returns_empty_for_uncached_non_default_uuid() {
+    fn snapshot_system_body_refuses_an_uncached_non_default_uuid() {
+        // An edit is a whole-body write: an empty body would wipe the
+        // profile's name and every field.
         let state = ProfileEditorState::default();
-        let snap = snapshot_system_body(&state, Uuid::new_v4());
-        assert_eq!(snap.name, "");
-        assert_eq!(snap.on_startup, None);
+        assert!(snapshot_system_body(&state, Uuid::new_v4()).is_err());
+        assert!(snapshot_user_body(&state, Uuid::new_v4()).is_err());
     }
 
     #[test]
@@ -3851,7 +3775,7 @@ mod tests {
             unlocked_idle_timeout_seconds: Some(300),
             ..Default::default()
         };
-        let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID);
+        let snap = snapshot_user_body(&state, DEFAULT_USER_PROFILE_UUID).unwrap();
         assert_eq!(snap.name, "default");
         assert_eq!(snap.unlocked_idle_timeout_seconds, Some(300));
     }
