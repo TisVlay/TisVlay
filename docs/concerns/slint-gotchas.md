@@ -24,7 +24,7 @@ Both drove the custom in-window overlay — see [gui/contextual-help.md](../gui/
 
 A Slint `TouchArea` is binary: enabled it eats both clicks and hover; disabled it eats neither. There is no "block clicks but let hover through," so a full-window modal scrim and a live cursor are mutually exclusive — the help overlay forgoes a scrim (intercepting only the bubble rect) and dismisses when focus leaves the "i"'s row instead, which (because the window's `forward-focus` points at a full-area nav `FocusScope` with `focus-on-click`) still yields a click-anywhere dismiss without any scrim. The same binary nature means a destroyed or disabled `TouchArea` never emits a final `has-hover = false`, so a trigger that goes non-interactive must clear its own hover state explicitly.
 
-The rest were hit making the GUI navigable from a remote ([gui/remote-navigation.md](../gui/remote-navigation.md)), on Slint 1.18.1.
+The rest were hit making the GUI navigable from a remote ([gui/remote-navigation.md](../gui/remote-navigation.md)), on Slint 1.18.1, and re-checked on 1.19.
 
 ### The winit backend drops keys it can't name
 
@@ -52,8 +52,18 @@ The pending `changed` handlers are pushed at the front of a list and drained fro
 
 ### Scroll-into-view has no margin
 
-The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it.
+The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it. Slint 1.19's `ensure-visible(behavior)` scrolls the same way, edge to edge, so the margin stays the GUI's own. `ThemedSelect`'s flyout does use it: the cursor row calls `ensure-visible(instant)` from `changed is-cursor`, which also keeps a key step in view after a wheel scroll replaced the flyout's `content-y` binding. A select opening on a value past `max-visible` keeps the binding for its first position, since that row becomes the cursor in the creation pass, where `changed` doesn't run and the layout isn't there to read.
 
 ### `TextInput` focus rules
 
 `TextInput::focus_event` refuses focus while `enabled: false` (a programmatic `focus()` then walks on, see above), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.
+
+The last two were found moving the GUI to Slint 1.19.
+
+### Edition 1.19 sizes `if` and `for` children, and the compiler gains infos
+
+The UI opts into edition 1.19 in `crates/tisvlay-gui/slint-project.json`, which the build script compiles and the LSP and `slint-viewer` read too, so all three agree on the edition (a bare `.slint` path to the viewer compiles without it). The edition's gates that can move this UI are the sizing ones: an element created with `if` or `for` counts toward its parent's size, and a wrapping `Text` with a width of its own inside one is measured at that width ([slint-ui/slint#14705](https://github.com/slint-ui/slint/issues/14705)). Headless renders under `--edition 1.19` and `--edition 1.18` matched pixel for pixel when the GUI moved. 1.19 also adds an info level, chiefly "a binding to a property's default value": `slint-build` drops infos, while the viewer's `--check` and the LSP show them. The GUI keeps the check clean, so a new default-valued binding shows up as the only line.
+
+### `unstable-fontique-012` isn't worth adopting
+
+`fontique_012::set_shared_collection()` would hand Slint the font collection the GUI builds for its monospace lookup (`fonts.rs`), one fontconfig view and one scan instead of two. It sits behind a preliminary feature renamed at every fontique bump, next to `unstable-winit-030`, while both scans already run off the UI thread and read the same fontconfig, so nothing a user sees would change. Revisit if the feature stabilizes.
