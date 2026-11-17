@@ -92,7 +92,7 @@ pub enum Command {
         /// The TV's display name.
         name: String,
         /// The backend to pair with (`tisvlay vendor` lists them).
-        #[arg(long, default_value = "lg", add = vendor_completions())]
+        #[arg(long, add = vendor_completions())]
         vendor: String,
         /// Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'.
         #[arg(long)]

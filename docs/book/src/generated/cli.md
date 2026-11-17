@@ -155,7 +155,7 @@ Scan for TVs: a bounded window, or with `--watch` until ctrl-c
 
 Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 
-**Usage:** `tisvlay pair [OPTIONS] --params <PARAMS> <NAME>`
+**Usage:** `tisvlay pair [OPTIONS] --vendor <VENDOR> --params <PARAMS> <NAME>`
 
 ###### **Arguments:**
 
@@ -164,8 +164,6 @@ Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 ###### **Options:**
 
 * `--vendor <VENDOR>` — The backend to pair with (`tisvlay vendor` lists them)
-
-  Default value: `lg`
 * `--params <PARAMS>` — Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'
 * `--unmanaged` — Enroll the TV unmanaged: the daemon won't automate it
 
