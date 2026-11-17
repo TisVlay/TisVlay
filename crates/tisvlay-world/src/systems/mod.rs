@@ -145,6 +145,16 @@ fn redial(e: &mut EntityCommands, wake: bool) {
         .remove::<HeldWake>();
 }
 
+/// Redial a driven TV whose vendor config just changed. Clearing
+/// `Reconnecting` supersedes a dial still in flight on the old config:
+/// the new dial spawns now and becomes the TV's `LatestDial`, so the old
+/// one's outcome is dropped on arrival instead of connecting the TV on
+/// the config it no longer has.
+fn redial_on_new_config(e: &mut EntityCommands) {
+    e.remove::<(ConnectionHandle, RetryAt, Reconnecting)>();
+    redial(e, false);
+}
+
 /// Drop a screen-on intent riding a wake that won't happen: re-asserted
 /// over the reconnect, it would turn on the TV the wake no longer will
 /// (outright, where the screen is emulated as power). A screen-off latch
@@ -160,8 +170,9 @@ fn drop_screen_on_intent(e: &mut EntityCommands) {
 /// A newer off intent cancels a held wake: a pending wake dial that isn't
 /// in flight. The TV still reconnects, as a plain connect, which never
 /// powers it on, and the wake reports failed so a client following it
-/// stops waiting. A wake already dialing is left to finish: its outcome
-/// is already on its way.
+/// stops waiting. The wake's input restore goes with it: the reconnect
+/// may land hours later, on a TV someone is watching. A wake already
+/// dialing is left to finish: its outcome is already on its way.
 fn cancel_held_wake(commands: &mut Commands, entity: Entity) {
     commands.entity(entity).queue(|mut e: EntityWorldMut| {
         if e.contains::<Reconnecting>() {
@@ -174,7 +185,7 @@ fn cancel_held_wake(commands: &mut Commands, entity: Entity) {
             return;
         }
         pending.wake = false;
-        e.remove::<HeldWake>();
+        e.remove::<(HeldWake, DesiredInput)>();
         if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
             e.remove::<DispatchVerify>();
         }

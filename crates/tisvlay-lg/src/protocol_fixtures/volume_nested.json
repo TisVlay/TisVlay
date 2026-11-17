@@ -4,8 +4,12 @@
   "payload": {
     "returnValue": true,
     "volumeStatus": {
+      "volumeLimitable": true,
+      "activeStatus": true,
+      "maxVolume": 100,
       "volume": 25,
-      "muted": false
+      "muteStatus": true,
+      "soundOutput": "tv_speaker"
     }
   }
 }

@@ -15,7 +15,7 @@ use crate::endpoints::{
 };
 use crate::protocol::{
     ExternalInputList, RegisterPayload, RegisteredPayload, Request, Response, ResponseType,
-    VolumeInfo, VolumeResponse,
+    VolumeInfo, VolumeResponse, payload_keys,
 };
 use crate::transport::Connection;
 use serde_json::{Value, json};
@@ -23,15 +23,6 @@ use std::net::IpAddr;
 use std::time::Duration;
 use tisvlay_core::{Error, HardwareId, InputInfo, MacAddress, PowerState, Result, Secret, TvState};
 use tokio::sync::mpsc;
-
-/// A response payload's key names, for logs: the `Registered` payload
-/// carries the client key, so the values never reach a log line.
-fn payload_keys(payload: &Value) -> Vec<&str> {
-    payload
-        .as_object()
-        .map(|object| object.keys().map(String::as_str).collect())
-        .unwrap_or_default()
-}
 
 /// Client for controlling an LG WebOS TV.
 pub(crate) struct WebOsClient {
@@ -159,11 +150,12 @@ impl WebOsClient {
 
     /// Register with the TV and get a client key.
     ///
-    /// Uses the multiplexed `request()` method which routes the matching
-    /// response via a oneshot channel. Intermediate messages (e.g.,
-    /// subscription updates) are handled by the background reader and
-    /// do not interfere with registration.
+    /// Reads every reply to the register request from one waiter, so the
+    /// prompt's acknowledgment and the key that follows it can't race.
+    /// Other messages (e.g., subscription updates) are routed by the
+    /// background reader and don't interfere with registration.
     async fn register(&mut self, existing_key: Option<Secret>) -> Result<Secret> {
+        let keyed = existing_key.is_some();
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
@@ -171,19 +163,29 @@ impl WebOsClient {
         //   1. Response { pairingType: "PROMPT", returnValue: true } — prompt shown
         //   2. Registered { client-key: "..." } — user accepted
         //
-        // The multiplexed request() uses a oneshot channel: the background
-        // reader removes the pending entry after delivering the first match.
-        // To handle the two-phase flow, we use request_wait() which only
-        // registers the oneshot (no send) for the second phase.
+        // Both phases are read from one waiter, registered before the send.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
+
+        // Phase 1: send the register request and get the first response. A
+        // keyed register is a machine round-trip: the TV accepts the key, or
+        // shows the prompt and says so, at once. Only a first pairing may
+        // wait on a person before its first answer.
+        let first_answer = if keyed { self.timeout } else { pairing_timeout };
+        let conn = self.conn.as_ref().ok_or(Error::ConnectionClosed)?;
+        let mut replies = conn.request_replies(&request).await?;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Instant plus the REQUEST_MS or PAIRING_MS constant cannot overflow"
+        )]
+        let response = replies
+            .next(tokio::time::Instant::now() + first_answer)
+            .await?;
+        // The person at the TV gets the pairing timeout from the prompt.
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "Instant plus the PAIRING_MS constant cannot overflow"
         )]
         let deadline = tokio::time::Instant::now() + pairing_timeout;
-
-        // Phase 1: send the register request and get the first response.
-        let response = self.conn()?.request(&request, pairing_timeout).await?;
         tracing::debug!(
             msg_type = ?response.msg_type,
             payload_keys = ?payload_keys(&response.payload),
@@ -219,10 +221,9 @@ impl WebOsClient {
         }
 
         // Phase 2: wait for the Registered response (no re-send).
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         // The TV answered and is asking someone to accept: running out of
         // time here is the pairing going unanswered, not the TV.
-        let response = match self.conn()?.request_wait(&request.id, remaining).await {
+        let response = match replies.next(deadline).await {
             Err(Error::RequestTimeout) => return Err(Error::PairingTimeout),
             other => other?,
         };
@@ -269,6 +270,12 @@ impl WebOsClient {
     }
 
     /// Generate the next request ID.
+    /// Shorten the request timeout, for tests that wait one out.
+    #[cfg(test)]
+    pub(crate) fn set_request_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
     fn next_id(&mut self) -> String {
         let id = self.request_id;
         self.request_id = self.request_id.wrapping_add(1);
@@ -383,8 +390,13 @@ impl WebOsClient {
                     initial_responses.push((uri_string.clone(), response));
                     id_to_uri.insert(req_id, uri_string);
                 }
+                // No first answer in time isn't a refusal: a waking TV may
+                // still subscribe and answer late, so its pushes, the late
+                // first answer included, are routed like any other. Only an
+                // error response means the TV refused.
                 Err(e) => {
                     tracing::warn!(uri = %uri_string, error = %e, "Subscribe request failed");
+                    id_to_uri.insert(req_id, uri_string);
                 }
             }
         }
@@ -497,6 +509,26 @@ impl WebOsClient {
             .collect())
     }
 
+    /// The current input: the foreground app, mapped to its physical input
+    /// ID through the input list. LG names an input's app
+    /// `com.webos.app.hdmi1` but the input itself `HDMI_1`; a non-input app
+    /// (a streaming app) reads as its app ID.
+    pub(crate) async fn get_current_input(&mut self) -> Result<Option<String>> {
+        let mut state = TvState::new();
+        self.read_inputs(&mut state).await?;
+        Ok(state.current_input)
+    }
+
+    /// Read the input list, then the foreground app, into `state` through
+    /// the subscription parser, which maps the app to its input.
+    async fn read_inputs(&mut self, state: &mut TvState) -> Result<()> {
+        for uri in [input::GET_EXTERNAL_INPUT_LIST, input::GET_CURRENT_INPUT] {
+            let response = self.command(uri, json!({})).await?;
+            crate::connection::update_state_from_subscription(state, uri, &response.payload);
+        }
+        Ok(())
+    }
+
     // -------------------------------------------------------------------------
     // Audio Control
     // -------------------------------------------------------------------------
@@ -527,12 +559,11 @@ impl WebOsClient {
     /// Get current mute state.
     pub(crate) async fn get_mute(&mut self) -> Result<bool> {
         let response = self.command(audio::GET_MUTE, json!({})).await?;
-        let muted = response
+        response
             .payload
             .get("mute")
             .and_then(Value::as_bool)
-            .unwrap_or(false);
-        Ok(muted)
+            .ok_or_else(|| Error::InvalidResponse("No mute in response".to_string()))
     }
 
     // -------------------------------------------------------------------------
@@ -604,7 +635,7 @@ impl WebOsClient {
             .get("settings")
             .and_then(|s| s.get("backlight"))
             .and_then(Value::as_i64)
-            .unwrap_or(50);
+            .ok_or_else(|| Error::InvalidResponse("No backlight in response".to_string()))?;
 
         Ok(raw.clamp(0, 100) as u8)
     }
@@ -696,12 +727,21 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Get the current TV state.
+    ///
+    /// Power is the field the world needs, so losing the link while reading
+    /// it fails the read (and lets a caller's retry reconnect); the other
+    /// fields are best effort.
     pub(crate) async fn get_state(&mut self) -> Result<TvState> {
         let mut state = TvState::new();
 
-        // Get power state
         match self.get_power_state().await {
             Ok(power_state) => state.update_power(power_state),
+            Err(
+                e @ (Error::ConnectionClosed
+                | Error::Connection(_)
+                | Error::Io(_)
+                | Error::RequestTimeout),
+            ) => return Err(e),
             Err(e) => tracing::debug!(error = %e, "get_state: power state failed"),
         }
 
@@ -716,10 +756,8 @@ impl WebOsClient {
             Err(e) => tracing::debug!(error = %e, "get_state: mute failed"),
         }
 
-        // Get inputs
-        match self.get_inputs().await {
-            Ok(inputs) => state.inputs = inputs,
-            Err(e) => tracing::debug!(error = %e, "get_state: inputs failed"),
+        if let Err(e) = self.read_inputs(&mut state).await {
+            tracing::debug!(error = %e, "get_state: inputs failed");
         }
 
         // Get backlight
@@ -901,6 +939,19 @@ mod tests {
         assert_eq!(inputs[1].id, "HDMI_2");
     }
 
+    /// The foreground app (`com.webos.app.hdmi2` in the fake's one-shot
+    /// reply) reads as its physical input.
+    #[tokio::test]
+    async fn get_current_input_maps_the_foreground_app() {
+        let server = FakeSsapServer::start().await;
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+
+        let current = client.get_current_input().await.unwrap();
+        assert_eq!(current.as_deref(), Some("HDMI_2"));
+    }
+
     #[tokio::test]
     async fn switch_input() {
         let server = FakeSsapServer::start().await;
@@ -1016,6 +1067,7 @@ mod tests {
         assert_eq!(state.muted, Some(false));
         assert_eq!(state.backlight, Some(80));
         assert!(!state.inputs.is_empty());
+        assert_eq!(state.current_input.as_deref(), Some("HDMI_2"));
     }
 
     #[tokio::test]
@@ -1055,7 +1107,7 @@ mod tests {
             &vol_req_id,
             serde_json::json!({
                 "returnValue": true,
-                "volumeStatus": { "volume": 75, "muted": true }
+                "volumeStatus": { "volume": 75, "muteStatus": true }
             }),
         );
 

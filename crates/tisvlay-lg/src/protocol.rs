@@ -17,8 +17,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tisvlay_core::Secret;
 
-/// Outgoing message to the TV.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A payload's key names, for logs and `Debug`: a registration's payload
+/// carries the client key, so the values never reach either.
+pub(crate) fn payload_keys(payload: &Value) -> Vec<&str> {
+    payload
+        .as_object()
+        .map(|object| object.keys().map(String::as_str).collect())
+        .unwrap_or_default()
+}
+
+/// Outgoing message to the TV. `Debug` shows the payload's key names
+/// only: a registration's carries the client key.
+#[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Request {
     /// Unique request ID for correlating responses.
     pub id: String,
@@ -33,6 +43,17 @@ pub(crate) struct Request {
     pub payload: Option<Value>,
 }
 
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Request")
+            .field("id", &self.id)
+            .field("msg_type", &self.msg_type)
+            .field("uri", &self.uri)
+            .field("payload_keys", &self.payload.as_ref().map(payload_keys))
+            .finish()
+    }
+}
+
 /// Request message types.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -45,8 +66,9 @@ pub(crate) enum RequestType {
     Subscribe,
 }
 
-/// Incoming message from the TV.
-#[derive(Debug, Clone, Deserialize)]
+/// Incoming message from the TV. `Debug` shows the payload's key names
+/// only: a `Registered` payload carries the client key.
+#[derive(Clone, Deserialize)]
 pub(crate) struct Response {
     /// Request ID this response corresponds to.
     pub id: Option<String>,
@@ -58,6 +80,17 @@ pub(crate) struct Response {
     pub payload: Value,
     /// Error message (for error responses).
     pub error: Option<String>,
+}
+
+impl std::fmt::Debug for Response {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Response")
+            .field("id", &self.id)
+            .field("msg_type", &self.msg_type)
+            .field("payload_keys", &payload_keys(&self.payload))
+            .field("error", &self.error)
+            .finish()
+    }
 }
 
 /// Response message types.
@@ -281,8 +314,9 @@ impl VolumeResponse {
 pub(crate) struct VolumeInfo {
     /// Current volume level (0-100).
     pub volume: i32,
-    /// Whether audio is muted.
-    #[serde(default)]
+    /// Whether audio is muted: `muteStatus` in the nested `volumeStatus`
+    /// webOS sends, `muted` in older flat replies.
+    #[serde(default, alias = "muteStatus")]
     pub muted: bool,
 }
 
@@ -367,6 +401,13 @@ mod tests {
         let registered = RegisteredPayload {
             client_key: key.into(),
         };
+        let request = Request::register("register_0", register.clone());
+        let response: Response = serde_json::from_value(serde_json::json!({
+            "id": "register_0",
+            "type": "registered",
+            "payload": { "client-key": key },
+        }))
+        .unwrap();
         for shown in [
             format!("{register:?}"),
             format!("{register:#?}"),
@@ -375,6 +416,11 @@ mod tests {
         ] {
             assert!(!shown.contains(key), "client key leaked into {shown}");
             assert!(shown.contains("[REDACTED]"), "{shown}");
+        }
+        // The messages carrying them show their payload's key names only.
+        for shown in [format!("{request:?}"), format!("{response:#?}")] {
+            assert!(!shown.contains(key), "client key leaked into {shown}");
+            assert!(shown.contains("client-key"), "{shown}");
         }
     }
 }

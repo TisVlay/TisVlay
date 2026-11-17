@@ -78,6 +78,20 @@ pub(super) fn apply_backend_events(
         let InEvent::Backend { tv, dial, event } = msg else {
             continue;
         };
+        // Rpc replies route by reply id, not by TV or dial: answered even
+        // for a TV removed or a dial superseded meanwhile, since dropping
+        // one would hang its caller.
+        if let BackendEvent::CommandDone { reply, result } = event {
+            match result {
+                Ok(()) => reply_ok(&mut outbox, Some(*reply)),
+                Err(message) => reply_err(
+                    &mut outbox,
+                    Some(*reply),
+                    WireError::command_failed(message.clone()),
+                ),
+            }
+            continue;
+        }
         let Some(entity) = index.get(tv).filter(|_| !rolled_back.contains(tv)) else {
             // The boring resolution of remove-during-in-flight: a late
             // event for a despawned TV simply has nowhere to land.
@@ -86,11 +100,8 @@ pub(super) fn apply_backend_events(
         };
         // A superseded dial (one a re-pair overtook) has no say: its
         // outcome can't settle a verification, and its task's trailing
-        // pushes can't touch the live link. Rpc replies are exempt — they
-        // route by reply id, and dropping one would hang its caller.
-        if !matches!(event, BackendEvent::CommandDone { .. })
-            && latest.get(entity).map(|l| l.0) != Ok(*dial)
-        {
+        // pushes can't touch the live link.
+        if latest.get(entity).map(|l| l.0) != Ok(*dial) {
             tracing::debug!(%tv, dial, ?event, "event from a superseded dial dropped");
             continue;
         }
@@ -480,14 +491,8 @@ pub(super) fn apply_backend_events(
             BackendEvent::PowerPhase(phase) => {
                 publish_power_phase(&mut outbox, &site, tv, *phase);
             }
-            BackendEvent::CommandDone { reply, result } => match result {
-                Ok(()) => reply_ok(&mut outbox, Some(*reply)),
-                Err(message) => reply_err(
-                    &mut outbox,
-                    Some(*reply),
-                    WireError::command_failed(message.clone()),
-                ),
-            },
+            // Answered before the TV was resolved.
+            BackendEvent::CommandDone { .. } => {}
         }
     }
 }
@@ -658,24 +663,21 @@ pub(super) fn apply_pairing_updates(
                                 attempt: session.attempt,
                             });
                         }
-                        // Re-pair: refresh credentials and reconnect. The
-                        // terminal is likewise gated on the reconnect, but
-                        // a failure keeps the (pre-existing) TV. Clearing
-                        // `Reconnecting` supersedes a dial still in flight
-                        // on the old credentials: the verification dial
-                        // spawns now and becomes the TV's `LatestDial`, so
-                        // the old one's outcome is dropped on arrival.
+                        // Re-pair: refresh credentials and reconnect, the
+                        // verification dial superseding one still in
+                        // flight on the old credentials. The terminal is
+                        // likewise gated on the reconnect, but a failure
+                        // keeps the (pre-existing) TV.
                         (None, Some(tv_entity)) => {
                             if let Ok(mut vendor) = writes.vendor.get_mut(tv_entity) {
                                 vendor.config = config.clone();
                             }
                             let mut e = commands.entity(tv_entity);
-                            e.remove::<(ConnectionHandle, RetryAt, Reconnecting)>()
-                                .insert(PairVerifying {
-                                    rollback: false,
-                                    attempt: session.attempt,
-                                });
-                            redial(&mut e, false);
+                            e.insert(PairVerifying {
+                                rollback: false,
+                                attempt: session.attempt,
+                            });
+                            redial_on_new_config(&mut e);
                         }
                         _ => tracing::warn!(%id, "pairing outcome had no home, dropped"),
                     }
@@ -1132,7 +1134,9 @@ pub(super) fn reconcile_connections(
                         tracing::info!(tv = %id.0, "a held wake expired; reconnecting without it");
                         pending.wake = false;
                         let mut e = commands.entity(entity);
-                        e.remove::<HeldWake>();
+                        // Its input restore too: the reconnect may land
+                        // hours later, on a TV someone is watching.
+                        e.remove::<(HeldWake, DesiredInput)>();
                         drop_screen_on_intent(&mut e);
                         publish_power_phase(&mut outbox, &site, &id.0, payload::PowerPhase::Failed);
                     }

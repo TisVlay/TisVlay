@@ -124,7 +124,7 @@ The instinctive fix is "shorten the wait" — either by adding a tighter timeout
 
 ### Why each bypass loses
 
-The LG client's `with_retry` wrapper ([connection.rs](../../crates/tisvlay-lg/src/connection.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s.
+The LG client's `with_retry` wrapper ([connection.rs](../../crates/tisvlay-lg/src/connection.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s. The reconnect also re-subscribes the state endpoints on the fresh link and hands them to the same state stream, so a retry that succeeds reads as a live TV to the world, not as a dropped link.
 
 Any approach that *bypasses* `screen_on` to avoid the 10 s wait skips this accidental knock. The TV slips deeper into standby, and full WoL recovery now takes 9-12 s instead of <1 s. The arithmetic: ~7-10 s saved on the bypassed wait, ~9-12 s lost on slower recovery. Net pessimization in every case.
 

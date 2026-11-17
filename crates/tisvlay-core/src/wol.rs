@@ -130,6 +130,10 @@ pub async fn wake_with_retry(mac: &MacAddress, max_attempts: u32) -> Result<()> 
     for attempt in 1..=max_attempts {
         match wake(mac) {
             Ok(()) => return Ok(()),
+            Err(e) if attempt == max_attempts => {
+                tracing::warn!(mac = %mac, attempt, error = %e, "WoL send failed");
+                last_err = Some(e);
+            }
             Err(e) => {
                 tracing::warn!(mac = %mac, attempt, error = %e, "WoL send failed, retrying");
                 last_err = Some(e);

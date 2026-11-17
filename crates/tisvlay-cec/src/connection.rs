@@ -302,14 +302,14 @@ impl TvConnection for CecConnection {
         // explicit initial push the daemon has no CEC power state until the
         // TV happens to broadcast, and a freshly-connected TV reads stale
         // standby. `connect` accepts a standby TV, so this reads the live
-        // power (On / Standby / ToOn); the Active fallback applies only if
-        // the query blips.
+        // power (On / Standby / ToOn). A query that blips seeds Unknown,
+        // which the world treats as needing a wake, rather than a guess.
         let initial = self
             .link
             .query_power()
             .await
             .map(map_power)
-            .unwrap_or(PowerState::Active);
+            .unwrap_or(PowerState::Unknown);
         // Open a second, follower-mode handle on the same device (see
         // `CecMonitor`): its blocking receive loop lives on a distinct fd,
         // so it can't starve the single-threaded worker the tx handle
@@ -604,6 +604,24 @@ mod tests {
             rx.recv().await.is_none(),
             "state channel closes once the connection drops",
         );
+    }
+
+    #[tokio::test]
+    async fn a_failed_power_query_seeds_unknown() {
+        let opener = Arc::new(FakeCecLinkOpener::with_monitor_script(Vec::new()));
+        let mut conn = CecConnection::new(
+            Box::new(FakeCecLink::new(PowerStatus::Standby).with_failing_power_query()),
+            opener,
+            "/dev/cec0".to_string(),
+            crate::identity::CecIdentity::default(),
+        );
+        let mut rx = conn.subscribe_state().await.expect("subscribe");
+        let initial = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("initial pushed within 1s")
+            .expect("subscription channel open");
+        // Not Active: a standby TV mustn't read as on, or as showing the PC.
+        assert_eq!(initial.power_state, PowerState::Unknown);
     }
 
     #[tokio::test]
