@@ -799,6 +799,7 @@ component ProfileFieldRowNumber inherits ProfileFieldRow {
                 horizontal-stretch: 1;
                 alignment: center;
                 number-control := ThemedSpinBox {
+                    accessible-label: root.entry.label;
                     nav-row: root.row-id;
                     accessible-id: "profiles-field-" + root.entry.field-name;
                     value: root.entry.number-value;
@@ -1067,6 +1068,7 @@ component ProfileDetailHeader inherits Rectangle {
                         }
 
                         LineEditField {
+                            accessible-label: @tr("Profile name");
                             nav-row: root.title-row;
                             placeholder-text: @tr("Profile name");
                             text <=> root.pending-name;

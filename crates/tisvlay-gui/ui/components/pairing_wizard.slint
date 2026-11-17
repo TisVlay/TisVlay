@@ -573,6 +573,7 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         address-field := LineEditField {
+                            accessible-label: root.supported-vendors.length > root.manual-vendor-index ? root.supported-vendors[root.manual-vendor-index].primary-label : @tr("Address");
                             nav-row: root.manual-row;
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
@@ -663,6 +664,7 @@ component StepConfigure {
                 font-weight: 500;
             }
             LineEditField {
+                accessible-label: @tr("Friendly name");
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> root.tv-name;
                 edited(value) => { root.name-edited(value); }

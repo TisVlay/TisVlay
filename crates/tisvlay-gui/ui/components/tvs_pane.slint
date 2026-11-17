@@ -766,6 +766,7 @@ component TvConfigEditForm {
                 font-weight: 500;
             }
             LineEditField {
+                accessible-label: @tr("Friendly name");
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> EditPane.name;
                 accessible-id: "tv-edit-name";
@@ -1121,6 +1122,7 @@ component TvDetail inherits Rectangle {
                         key: "backlight";
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
+                            label: backlight-row.label;
                             nav-row: backlight-row.row-id;
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -1159,6 +1161,7 @@ component TvDetail inherits Rectangle {
                         label: @tr("Volume");
                         key: "volume";
                         OptimisticSlider {
+                            label: volume-row.label;
                             nav-row: volume-row.row-id;
                             model-value: root.tv.volume;
                             enabled: root.tv.connected && !root.tv.muted;

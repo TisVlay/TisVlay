@@ -53,12 +53,14 @@ export component FieldRenderer {
 
         // Input control (label is rendered by parent so all rows align).
         if root.is-line-edit: LineEditField {
+            accessible-label: root.field.label;
             placeholder-text: root.field.placeholder;
             text: root.field.value;
             font-family: root.is-mono ? Theme.mono-font : "";
             edited(v) => { root.value-edited(v); }
         }
         if root.field.field-type == "password": LineEditField {
+            accessible-label: root.field.label;
             placeholder-text: root.field.placeholder;
             text: root.field.value;
             input-type: password;
