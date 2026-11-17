@@ -636,8 +636,7 @@ pub trait TvConnector: Send + Sync {
     /// The vendor config provides transport address and any initial connection
     /// parameters needed to reach the device.
     ///
-    /// Returns a [`PairingSession`] that can be used to track pairing progress
-    /// and submit user input if required by the backend's pairing flow.
+    /// Returns the [`PairingSession`] the daemon follows to completion.
     fn start_pairing(&self, vendor_config: &VendorConfig) -> Result<PairingSession>;
 
     /// Build vendor config from pairing results for persistence.
