@@ -237,7 +237,6 @@ pub struct Meta {
     /// from the session service). While set, the world honors the
     /// system profile's while-streaming overrides on DPMS-on/resume; a
     /// read-only projection for clients to surface the state.
-    #[serde(default)]
     pub stream_armed: bool,
 }
 

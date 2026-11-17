@@ -237,12 +237,10 @@ pub struct DiscoveredTv {
     /// Hardware identity (manufacturer / model / serial) as reported by
     /// the discovery protocol. Backends fill what they can read; may be
     /// `None` if the discovery channel exposes no identity data.
-    #[serde(default)]
     pub hardware_id: Option<HardwareId>,
     /// Vendor identifier (e.g., "lg", "samsung").
     pub vendor: String,
     /// Location URL for device description (vendor-specific).
-    #[serde(default)]
     pub location: String,
     /// Vendor-specific discovery data, free-form `key → value` map.
     ///
@@ -258,7 +256,6 @@ pub struct DiscoveredTv {
     /// `PairingField` declares `autofill = "discovery.mac"` and
     /// `vendor_data["mac"]` is populated, the wizard pre-fills the
     /// field with that value.
-    #[serde(default)]
     pub vendor_data: HashMap<String, String>,
 }
 
