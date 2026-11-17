@@ -150,10 +150,10 @@ impl WebOsClient {
 
     /// Register with the TV and get a client key.
     ///
-    /// Uses the multiplexed `request()` method which routes the matching
-    /// response via a oneshot channel. Intermediate messages (e.g.,
-    /// subscription updates) are handled by the background reader and
-    /// do not interfere with registration.
+    /// Reads every reply to the register request from one waiter, so the
+    /// prompt's acknowledgment and the key that follows it can't race.
+    /// Other messages (e.g., subscription updates) are routed by the
+    /// background reader and don't interfere with registration.
     async fn register(&mut self, existing_key: Option<Secret>) -> Result<Secret> {
         let keyed = existing_key.is_some();
         let payload = RegisterPayload::new(existing_key);
@@ -163,10 +163,7 @@ impl WebOsClient {
         //   1. Response { pairingType: "PROMPT", returnValue: true } — prompt shown
         //   2. Registered { client-key: "..." } — user accepted
         //
-        // The multiplexed request() uses a oneshot channel: the background
-        // reader removes the pending entry after delivering the first match.
-        // To handle the two-phase flow, we use request_wait() which only
-        // registers the oneshot (no send) for the second phase.
+        // Both phases are read from one waiter, registered before the send.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
 
         // Phase 1: send the register request and get the first response. A
@@ -174,7 +171,15 @@ impl WebOsClient {
         // shows the prompt and says so, at once. Only a first pairing may
         // wait on a person before its first answer.
         let first_answer = if keyed { self.timeout } else { pairing_timeout };
-        let response = self.conn()?.request(&request, first_answer).await?;
+        let conn = self.conn.as_ref().ok_or(Error::ConnectionClosed)?;
+        let mut replies = conn.request_replies(&request).await?;
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "Instant plus the REQUEST_MS or PAIRING_MS constant cannot overflow"
+        )]
+        let response = replies
+            .next(tokio::time::Instant::now() + first_answer)
+            .await?;
         // The person at the TV gets the pairing timeout from the prompt.
         #[expect(
             clippy::arithmetic_side_effects,
@@ -216,10 +221,9 @@ impl WebOsClient {
         }
 
         // Phase 2: wait for the Registered response (no re-send).
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         // The TV answered and is asking someone to accept: running out of
         // time here is the pairing going unanswered, not the TV.
-        let response = match self.conn()?.request_wait(&request.id, remaining).await {
+        let response = match replies.next(deadline).await {
             Err(Error::RequestTimeout) => return Err(Error::PairingTimeout),
             other => other?,
         };

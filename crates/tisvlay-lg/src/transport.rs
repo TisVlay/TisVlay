@@ -2,9 +2,10 @@
 //!
 //! The connection is split into a writer (shared via `Arc<Mutex>`) and a
 //! background reader task. Incoming messages are routed by request ID:
-//! responses with a pending waiter go to that waiter's oneshot channel,
-//! while subscription updates and unsolicited messages are forwarded to
-//! a shared `mpsc` channel.
+//! responses with a pending waiter go to that waiter (one reply, or every
+//! reply for a request answered more than once), while subscription
+//! updates and unsolicited messages are forwarded to a shared `mpsc`
+//! channel.
 
 use crate::config::WebOsScheme;
 use crate::endpoints::{WS_PORT, WSS_PORT};
@@ -29,32 +30,69 @@ pub(crate) type WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type WsSink = SplitSink<WsStream, Message>;
 
 /// Pending request waiters keyed by request ID.
-type PendingMap = Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<Response>>>>;
+type PendingMap = Arc<parking_lot::Mutex<HashMap<String, Reply>>>;
+
+/// Where a request's replies go.
+enum Reply {
+    /// The first reply, after which the waiter is done.
+    Once(oneshot::Sender<Response>),
+    /// Every reply, for as long as the waiter lasts: a request the TV
+    /// answers more than once (registration's prompt, then its key).
+    Each(mpsc::UnboundedSender<Response>),
+}
+
+impl Reply {
+    fn is_closed(&self) -> bool {
+        match self {
+            Self::Once(tx) => tx.is_closed(),
+            Self::Each(tx) => tx.is_closed(),
+        }
+    }
+}
 
 /// A request's waiter in the pending map, removed when the request ends
 /// however it ends: answered, timed out, or its future dropped by a caller
 /// that stopped waiting (a wake poll cut off at its deadline). Without it
 /// a reply that never comes would leave the entry for the connection's
 /// life. Only a waiter whose receiver is gone is removed, so a later
-/// waiter on the same id (a registration's second phase) is left alone.
+/// waiter on the same id is left alone.
 struct Waiter<'a> {
     pending: &'a PendingMap,
     id: &'a str,
 }
 
 impl<'a> Waiter<'a> {
-    fn register(pending: &'a PendingMap, id: &'a str) -> (Self, oneshot::Receiver<Response>) {
-        let (tx, rx) = oneshot::channel();
-        pending.lock().insert(id.to_owned(), tx);
-        (Self { pending, id }, rx)
+    fn register(pending: &'a PendingMap, id: &'a str, reply: Reply) -> Self {
+        pending.lock().insert(id.to_owned(), reply);
+        Self { pending, id }
     }
 }
 
 impl Drop for Waiter<'_> {
     fn drop(&mut self) {
         let mut pending = self.pending.lock();
-        if pending.get(self.id).is_some_and(oneshot::Sender::is_closed) {
+        if pending.get(self.id).is_some_and(Reply::is_closed) {
             pending.remove(self.id);
+        }
+    }
+}
+
+/// Every reply to one sent request, in order, until dropped.
+pub(crate) struct Replies<'a> {
+    // Declared first, so the receiver is gone by the time the waiter's
+    // drop checks for it.
+    rx: mpsc::UnboundedReceiver<Response>,
+    _waiter: Waiter<'a>,
+}
+
+impl Replies<'_> {
+    /// The next reply, waiting until `deadline`.
+    pub(crate) async fn next(&mut self, deadline: tokio::time::Instant) -> Result<Response> {
+        match tokio::time::timeout_at(deadline, self.rx.recv()).await {
+            Ok(Some(response)) => Ok(response),
+            // The reader task exited and dropped the sender.
+            Ok(None) => Err(Error::ConnectionClosed),
+            Err(_) => Err(Error::RequestTimeout),
         }
     }
 }
@@ -309,18 +347,29 @@ impl Connection {
                         "Received response"
                     );
 
-                    // Check if there's a pending request waiter for this ID.
-                    let waiter = response
-                        .id
-                        .as_ref()
-                        .and_then(|id| pending.lock().remove(id));
+                    // Check if there's a pending request waiter for this ID:
+                    // a one-reply waiter is done once answered, an
+                    // every-reply one stays for the next.
+                    let waiter = response.id.as_ref().and_then(|id| {
+                        let mut pending = pending.lock();
+                        match pending.get(id)? {
+                            Reply::Each(tx) => Some(Reply::Each(tx.clone())),
+                            Reply::Once(_) => pending.remove(id),
+                        }
+                    });
 
-                    if let Some(tx) = waiter {
+                    match waiter {
                         // Matched a pending request — deliver directly.
-                        let _ = tx.send(response);
-                    } else {
+                        Some(Reply::Once(tx)) => {
+                            let _ = tx.send(response);
+                        }
+                        Some(Reply::Each(tx)) => {
+                            let _ = tx.send(response);
+                        }
                         // No waiter — subscription update or unsolicited message.
-                        let _ = subscription_tx.send(response);
+                        None => {
+                            let _ = subscription_tx.send(response);
+                        }
                     }
                 }
                 Message::Ping(data) => {
@@ -341,9 +390,8 @@ impl Connection {
         }
 
         // When the reader exits, fail all pending waiters so they don't hang.
-        let waiters: Vec<oneshot::Sender<Response>> =
-            pending.lock().drain().map(|(_, tx)| tx).collect();
-        // Drop them (receivers get RecvError, which callers interpret as ConnectionClosed).
+        let waiters: Vec<Reply> = pending.lock().drain().map(|(_, reply)| reply).collect();
+        // Drop them (receivers see the sender gone, which callers interpret as ConnectionClosed).
         drop(waiters);
     }
 
@@ -371,7 +419,8 @@ impl Connection {
         timeout_dur: Duration,
     ) -> Result<Response> {
         // Register the waiter before sending to avoid race conditions.
-        let (_waiter, rx) = Waiter::register(&self.pending, &request.id);
+        let (tx, rx) = oneshot::channel();
+        let _waiter = Waiter::register(&self.pending, &request.id, Reply::Once(tx));
         self.send(request).await?;
         // The receiver goes with the match, so `_waiter` then finds its
         // sender closed and removes it.
@@ -383,19 +432,19 @@ impl Connection {
         }
     }
 
-    /// Wait for an additional response to an already-sent request.
-    ///
-    /// Like [`request`], but only registers a oneshot waiter without
-    /// re-sending the request. Used for multi-phase protocols (e.g., LG
+    /// Send a request the TV answers more than once, and read each reply
+    /// in turn. The waiter takes every reply from before the send, so a
+    /// second reply read straight after the first can't miss it (LG
     /// pairing sends a `Response` acknowledgment first, then `Registered`
     /// with the client key after the user accepts the TV prompt).
-    pub(crate) async fn request_wait(&self, id: &str, timeout_dur: Duration) -> Result<Response> {
-        let (_waiter, rx) = Waiter::register(&self.pending, id);
-        match timeout(timeout_dur, rx).await {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(_)) => Err(Error::ConnectionClosed),
-            Err(_) => Err(Error::RequestTimeout),
-        }
+    pub(crate) async fn request_replies<'a>(&'a self, request: &'a Request) -> Result<Replies<'a>> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let waiter = Waiter::register(&self.pending, &request.id, Reply::Each(tx));
+        self.send(request).await?;
+        Ok(Replies {
+            rx,
+            _waiter: waiter,
+        })
     }
 
     /// Take the subscription receiver.
