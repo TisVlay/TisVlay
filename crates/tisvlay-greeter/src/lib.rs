@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use serde_json::json;
 use tisvlay_protocol::keys;
+use tisvlay_protocol::payload::{GreeterIdle, GreeterTimeout};
 use tisvlay_runtime::idle_mutter::IdleWatch;
 use tisvlay_runtime::wayland::{
     IdleNotification, IdleTransition, WatchHandle, WaylandIdleError, start_idle_watch_on_socket,
@@ -106,7 +106,8 @@ where
     let publish = |idle: bool| {
         let publisher = &publisher;
         async move {
-            let payload = serde_json::to_vec(&json!({ "idle": idle })).unwrap_or_default();
+            let payload = serde_json::to_vec(&GreeterIdle { idle })
+                .expect("a struct of one bool always encodes as JSON");
             if let Err(e) = publisher.put(payload).await {
                 warn!(idle, %e, "greeter idle publish failed");
                 false
@@ -190,10 +191,7 @@ async fn next_transition<Guard>(
 /// The seconds in a `greeter/timeout` payload; anything unreadable is `0`
 /// (disabled).
 fn timeout_seconds(payload: &[u8]) -> u64 {
-    serde_json::from_slice::<serde_json::Value>(payload)
-        .ok()
-        .and_then(|value| value.get("seconds").and_then(serde_json::Value::as_u64))
-        .unwrap_or(0)
+    serde_json::from_slice::<GreeterTimeout>(payload).map_or(0, |timeout| timeout.seconds)
 }
 
 /// Attach the greeter idle watch. Tries the compositor's wayland socket
@@ -354,6 +352,7 @@ fn wayland_sockets_in(dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[tokio::test(start_paused = true)]
     async fn retries_not_ready_but_unsupported_goes_straight_to_fallback() {

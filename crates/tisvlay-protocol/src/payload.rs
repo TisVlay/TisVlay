@@ -348,6 +348,33 @@ impl StatePayload for PowerProgress {
     const PATH: &'static str = "progress/power";
 }
 
+/// A TV's user-profile assignment, at
+/// [`keys::user_tv_profile`](crate::keys::user_tv_profile). `None` (JSON
+/// `null`) is no assignment: the TV follows the default user profile.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserTvProfile {
+    /// The assigned user profile.
+    pub profile: Option<uuid::Uuid>,
+}
+
+/// The login screen's idle state, at
+/// [`keys::greeter_idle`](crate::keys::greeter_idle).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GreeterIdle {
+    /// The login screen is idle.
+    pub idle: bool,
+}
+
+/// The greeter's idle timeout, at
+/// [`keys::greeter_timeout`](crate::keys::greeter_timeout): the shortest
+/// enabled across automated TVs.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GreeterTimeout {
+    /// Seconds of idle before the login screen counts as idle; 0 disables
+    /// the greeter's watch.
+    pub seconds: u64,
+}
+
 /// The TV powered off by itself or from its own remote, at
 /// [`keys::tv_power_off`](crate::keys::tv_power_off): a live edge from on
 /// to off between two reports on one connection, which TisVlay's own

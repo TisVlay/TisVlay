@@ -575,10 +575,9 @@ async fn serve_stack(
     tokio::spawn(async move {
         let sub = greeter_sub;
         while let Ok(sample) = sub.recv_async().await {
-            let idle = serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
-                .ok()
-                .and_then(|value| value.get("idle").and_then(serde_json::Value::as_bool));
-            let Some(idle) = idle else {
+            let Ok(tisvlay_protocol::payload::GreeterIdle { idle }) =
+                serde_json::from_slice(&sample.payload().to_bytes())
+            else {
                 warn!(key = %sample.key_expr(), "undecodable greeter idle sample");
                 continue;
             };

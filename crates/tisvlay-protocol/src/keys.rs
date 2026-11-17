@@ -56,15 +56,15 @@ pub fn session_event(site: &str, name: &str) -> String {
     format!("tisvlay/{site}/event/session/{name}")
 }
 
-/// Greeter idle transitions, published by `tisvlay-greeter`:
-/// `tisvlay/<site>/greeter/idle` with `{idle: bool}`.
+/// Greeter idle transitions, published by `tisvlay-greeter`, carrying a
+/// [`GreeterIdle`](crate::payload::GreeterIdle).
 pub fn greeter_idle(site: &str) -> String {
     format!("tisvlay/{site}/greeter/idle")
 }
 
-/// The daemon-computed greeter idle timeout (shortest enabled across
-/// automated TVs, `{seconds}`; 0 = disabled): cached pub the greeter
-/// subscribes to.
+/// The daemon-computed greeter idle timeout, a
+/// [`GreeterTimeout`](crate::payload::GreeterTimeout): a cached publish
+/// the greeter follows.
 pub fn greeter_timeout(site: &str) -> String {
     format!("tisvlay/{site}/greeter/timeout")
 }
@@ -80,7 +80,8 @@ pub fn user_profile_wild(site: &str) -> String {
     format!("tisvlay/{site}/user/profile/*")
 }
 
-/// Per-TV user-profile assignment on the user socket.
+/// Per-TV user-profile assignment on the user socket, a
+/// [`UserTvProfile`](crate::payload::UserTvProfile).
 pub fn user_tv_profile(site: &str, tv: &Uuid) -> String {
     format!("tisvlay/{site}/user/tv/{tv}/profile")
 }

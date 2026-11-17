@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::Value;
 use tisvlay_core::SystemProfileConfig;
 use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::rpc::NotificationSettings;
@@ -213,10 +212,11 @@ impl Mirror for UserMirror {
         if let Some(tv) = keys::parse_user_tv_profile(site, key) {
             match sample.kind() {
                 SampleKind::Put => {
-                    let assigned: Option<Uuid> =
-                        serde_json::from_slice::<Value>(&sample.payload().to_bytes())
-                            .ok()
-                            .and_then(|body| body["profile"].as_str().and_then(|s| s.parse().ok()));
+                    let assigned: Option<Uuid> = serde_json::from_slice::<payload::UserTvProfile>(
+                        &sample.payload().to_bytes(),
+                    )
+                    .ok()
+                    .and_then(|assignment| assignment.profile);
                     match assigned {
                         Some(profile) => self.assignments.insert(tv, profile),
                         None => self.assignments.remove(&tv),

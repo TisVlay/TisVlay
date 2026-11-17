@@ -522,7 +522,8 @@ pub(crate) async fn user_profile(
         .map_err(|e| anyhow!("subscribe: {e}"))?;
     let assigned = values
         .get(&key)
-        .and_then(|value| serde_json::from_value::<Uuid>(value["profile"].clone()).ok())
+        .and_then(|value| serde_json::from_value::<payload::UserTvProfile>(value.clone()).ok())
+        .and_then(|assignment| assignment.profile)
         .unwrap_or(DEFAULT_USER_PROFILE_UUID);
     emit(json_out, assigned, json!(assigned))?;
     Ok(())

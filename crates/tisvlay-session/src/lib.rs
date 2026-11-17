@@ -1535,7 +1535,8 @@ impl Core {
 
     async fn publish_assignment(&mut self, tv: &Uuid, profile: Option<Uuid>) {
         let key = keys::user_tv_profile(&self.site, tv);
-        self.publish(&key, &json!({ "profile": profile })).await;
+        self.publish(&key, &json!(payload::UserTvProfile { profile }))
+            .await;
     }
 
     async fn publish(&mut self, key: &str, payload: &Value) {

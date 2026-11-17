@@ -118,7 +118,7 @@ pub(super) fn publish_greeter_timeout(
         *last = Some(timeout);
         outbox.0.push(Effect::Wire(WireEffect::Publish {
             key: keys::greeter_timeout(&site.0),
-            payload: json!({ "seconds": timeout }),
+            payload: json!(payload::GreeterTimeout { seconds: timeout }),
         }));
     }
 }
