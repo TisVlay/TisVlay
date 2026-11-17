@@ -50,7 +50,7 @@ use wizard::{
 
 use schema_form::{
     AutofilledRow, ClearedOptionals, build_config_from_schema, compute_schema_valid,
-    parse_field_type, prefill_schema_from_config, validate_value,
+    prefill_schema_from_config, revalidate_row,
 };
 
 use std::collections::HashMap;
@@ -2417,30 +2417,9 @@ fn register_callbacks(
         };
         let wizard = app.global::<PairingWizard>();
         let model = wizard.get_schema_fields();
-        let Some(mut row) = model.row_data(i as usize) else {
-            return;
-        };
-        let options: Vec<String> = (0..row.options.row_count())
-            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
-            .collect();
-        let (state, error) = validate_value(
-            &row.name,
-            parse_field_type(&row.field_type),
-            row.required,
-            &options,
-            &v,
-        );
-        row.value = v;
-        row.state = SharedString::from(state);
-        row.error = SharedString::from(error);
-        // User editing the field clears its "Auto-detected" badge —
-        // the value is now theirs, not the system's. Cosmetic, but
-        // it keeps the trust signal honest.
-        row.autofilled = false;
-        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
-            vec_model.set_row_data(i as usize, row);
+        if revalidate_row(&model, i as usize, v) {
+            wizard.set_schema_valid(compute_schema_valid(&model));
         }
-        wizard.set_schema_valid(compute_schema_valid(&model));
     });
 
     // ---------------------------------------------------------------------
@@ -2569,25 +2548,8 @@ fn register_callbacks(
             return;
         };
         let edit_pane = app.global::<EditPane>();
-        let model = edit_pane.get_fields();
-        let Some(mut row) = model.row_data(i as usize) else {
+        if !revalidate_row(&edit_pane.get_fields(), i as usize, v) {
             return;
-        };
-        let options: Vec<String> = (0..row.options.row_count())
-            .filter_map(|k| row.options.row_data(k).map(|s| s.to_string()))
-            .collect();
-        let (state, error) = validate_value(
-            &row.name,
-            parse_field_type(&row.field_type),
-            row.required,
-            &options,
-            &v,
-        );
-        row.value = v;
-        row.state = SharedString::from(state);
-        row.error = SharedString::from(error);
-        if let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() {
-            vec_model.set_row_data(i as usize, row);
         }
         edit_pane.set_dirty(true);
         edit_pane.set_valid(compute_edit_valid(&edit_pane));

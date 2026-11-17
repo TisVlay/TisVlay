@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use parking_lot::Mutex;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay::{
     DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
 };
@@ -20,7 +20,7 @@ use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
 use tracing::{debug, warn};
 
 use crate::edit_pane::extract_invalid_vendor_config;
-use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid};
+use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid, mark_row_invalid};
 use crate::{AppWindow, PairingFieldRow, PairingWizard, WizardDiscoveredTv, error_text, on_ui};
 
 /// One row of the pairing-wizard's discovery list, owned Rust-side.
@@ -835,22 +835,11 @@ pub(crate) fn publish_pair_outcome(
 /// should fall through to a generic pair-failed surface.
 fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> bool {
     let model = wizard.get_schema_fields();
-    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
+    if !mark_row_invalid(&model, field, reason) {
         return false;
-    };
-    for i in 0..model.row_count() {
-        let Some(mut row) = model.row_data(i) else {
-            continue;
-        };
-        if row.name == field {
-            row.state = SharedString::from("invalid");
-            row.error = SharedString::from(reason);
-            vec_model.set_row_data(i, row);
-            wizard.set_schema_valid(compute_schema_valid(&model));
-            return true;
-        }
     }
-    false
+    wizard.set_schema_valid(compute_schema_valid(&model));
+    true
 }
 
 #[cfg(test)]
