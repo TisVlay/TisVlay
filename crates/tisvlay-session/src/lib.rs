@@ -1663,7 +1663,7 @@ const WATCH_RETRY: Duration = Duration::from_secs(5);
 /// Timeouts re-register on change; registration failures retry (the
 /// compositor may be restarting). A fresh watch starts out not idle, so a
 /// re-registration while the user is away would lose the unlocked rule's
-/// `Resumed`: [`OwedResume`] has the probe send that `IdleResume` instead.
+/// `Resumed`; the always-on probe sends that `IdleResume` instead.
 /// Runs until the client closes.
 pub async fn idle_adapter(
     mut timeouts: watch::Receiver<(u64, u64)>,
