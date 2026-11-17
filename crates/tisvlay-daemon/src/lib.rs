@@ -562,13 +562,18 @@ async fn serve_stack(
         reloads.clone(),
         bridge_ready,
     ));
-    // Greeter idle transitions arrive as plain puts from `tisvlay-greeter`
-    // (or any client standing in for it) — forward them into the world.
-    // Declared before the spawn (and thus before the liveliness token
-    // below): a greeter that sees the daemon alive must not put into
+    // Greeter idle transitions from `tisvlay-greeter` (or any client
+    // standing in for it) — forward them into the world. The greeter's
+    // publisher keeps its last sample in a cache-1 history, which this
+    // subscriber hydrates: a daemon (re)started under an idle login screen
+    // acts on the standing level, as though the greeter had just gone
+    // idle. Declared before the spawn (and thus before the liveliness
+    // token below): a greeter that sees the daemon alive must not put into
     // the void.
     let greeter_sub = session
         .declare_subscriber(tisvlay_protocol::keys::greeter_idle(site))
+        .history(HistoryConfig::default().detect_late_publishers())
+        .recovery(RecoveryConfig::default().heartbeat())
         .await
         .map_err(|e| anyhow!("declare greeter idle subscriber: {e}"))?;
     let greeter_world = world.clone();
