@@ -707,12 +707,21 @@ impl WebOsClient {
     // -------------------------------------------------------------------------
 
     /// Get the current TV state.
+    ///
+    /// Power is the field the world needs, so losing the link while reading
+    /// it fails the read (and lets a caller's retry reconnect); the other
+    /// fields are best effort.
     pub(crate) async fn get_state(&mut self) -> Result<TvState> {
         let mut state = TvState::new();
 
-        // Get power state
         match self.get_power_state().await {
             Ok(power_state) => state.update_power(power_state),
+            Err(
+                e @ (Error::ConnectionClosed
+                | Error::Connection(_)
+                | Error::Io(_)
+                | Error::RequestTimeout),
+            ) => return Err(e),
             Err(e) => tracing::debug!(error = %e, "get_state: power state failed"),
         }
 

@@ -1165,6 +1165,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_state_read_on_a_stale_link_reconnects() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let mut conn = retrying_connection(&server, std::time::Duration::from_millis(300)).await;
+        server.stall();
+        // The power read times out on the stale link, which fails the read
+        // and sends it through the retry, instead of reporting a snapshot
+        // with nothing in it.
+        let state = conn.get_state().await.expect("read on a fresh link");
+        assert!(state.is_on);
+        assert_eq!(state.volume, Some(30));
+    }
+
+    #[tokio::test]
     async fn a_dropped_link_ends_the_state_stream() {
         let server = crate::test_server::FakeSsapServer::start().await;
         let mut conn = retrying_connection(&server, std::time::Duration::from_secs(10)).await;
