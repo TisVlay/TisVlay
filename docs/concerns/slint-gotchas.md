@@ -36,7 +36,7 @@ When the focused item is hidden or destroyed, Slint clears focus, and with nothi
 
 ### `changed has-focus` is deferred; `focus-gained` is synchronous
 
-A `changed` handler runs after the pass that changed the property; `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`. A component created and focused in the same pass (a detail focusing its first stop from `init`) gets its `changed has-focus` after `init` like any other change; up to Slint 1.18 it never saw one (slint-ui/slint#14894).
+A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all (slint-ui/slint#14894; its fix, slint-ui/slint#14927, merged after the 1.19 release branch was cut). `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
 
 ### Change handlers in one pass run newest first
 

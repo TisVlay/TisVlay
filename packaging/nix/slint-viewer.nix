@@ -1,16 +1,12 @@
 # `slint-viewer` at the workspace's Slint version (root Cargo.toml
 # [workspace.dependencies] → the exact `slint` pin), so its headless
 # `--check` / `--screenshot` renders compile the UI with the compiler the
-# app builds with. nixpkgs' is behind the workspace. While 1.19 is a
-# pre-release the source is the Slint repository at the revision the
-# workspace is patched to (flake.nix's `slintSrc`); back to `fetchCrate`
-# once 1.19.0 is published. Mirrors the nixpkgs recipe
-# (pkgs/by-name/sl/slint-viewer).
+# app builds with. nixpkgs' is behind the workspace. Mirrors the nixpkgs
+# recipe (pkgs/by-name/sl/slint-viewer) with the version bumped.
 {
   lib,
   rustPlatform,
-  slintSrc,
-  slintCargoDeps,
+  fetchCrate,
 
   fontconfig,
   libGL,
@@ -22,9 +18,12 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "slint-viewer";
   version = "1.19.0";
 
-  src = slintSrc;
-  cargoDeps = slintCargoDeps;
-  buildAndTestSubdir = "tools/viewer";
+  src = fetchCrate {
+    inherit (finalAttrs) pname version;
+    hash = "sha256-1oazE2WEuEgRr6tJVBy89VqPc3A0jZ+qCYdtgx+NCwg=";
+  };
+
+  cargoHash = "sha256-UyYmXHejolkBuN9Q5pxyvfBCuaqkq3wSq19JMhrXlxA=";
 
   buildInputs = [
     qt6.qtbase

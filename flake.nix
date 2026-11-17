@@ -54,22 +54,6 @@
         # once here to the major matching this toolchain's rustc; keep in step
         # on a channel bump.
         llvmPkgs = pkgs.llvmPackages_23;
-        # Slint 1.19 ahead of its crates.io release, from a fork that adds
-        # one unmerged upstream fix: the dev shell's viewer
-        # and LSP build from the revision the workspace's `slint` is patched
-        # to (root Cargo.toml, `[patch.crates-io]`), so the tools compile the
-        # UI with the app's compiler. Both go back to the registry releases
-        # with the patch.
-        slintSrc = pkgs.fetchFromGitHub {
-          owner = "ruffsl";
-          repo = "slint";
-          rev = "aba0379c26daa965cbb2260aaf6ef412035f5b48";
-          hash = "sha256-wjsK+6x9OK55RIlYRtwMrzq6A3V5s1vhfIgor/MRcFE=";
-        };
-        slintCargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-          src = slintSrc;
-          hash = "sha256-5SAXsaKRxITsGHjE3iZkF10cdAonr6h36BOJDVInW38=";
-        };
       in
       {
         packages = {
@@ -91,12 +75,8 @@
           # slint-viewer and slint-lsp at the workspace's slint version;
           # nixpkgs' lag behind it. Exposed so the devShell and CI can share
           # one definition.
-          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix {
-            inherit slintSrc slintCargoDeps;
-          };
-          slint-lsp = pkgs.callPackage ./packaging/nix/slint-lsp.nix {
-            inherit slintSrc slintCargoDeps;
-          };
+          slint-viewer = pkgs.callPackage ./packaging/nix/slint-viewer.nix { };
+          slint-lsp = pkgs.callPackage ./packaging/nix/slint-lsp.nix { };
 
           # The workspace's MSRV toolchain, for `just msrv`. The version is
           # read from Cargo.toml's `rust-version` (padded to x.y.z), so the
