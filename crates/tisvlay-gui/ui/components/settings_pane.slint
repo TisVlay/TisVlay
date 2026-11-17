@@ -17,23 +17,18 @@ import { Nav } from "../globals/nav.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Group, InlineError, SettingRow, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 
-// A notification category's switch.
-component NotificationRow {
-    in property <string> label;
-    in property <string> helper;
+// A notification category's switch. It inherits the row rather than
+// wrapping it, so the row itself fills the group's width.
+component NotificationRow inherits SettingRow {
     in property <bool> checked;
     in property <bool> enabled: true;
     callback toggled(bool);
 
-    SettingRow {
-        label: root.label;
-        helper: root.helper;
-        ThemedSwitch {
-            accessible-label: root.label;
-            checked: root.checked;
-            enabled: root.enabled;
-            toggled => { root.toggled(self.checked); }
-        }
+    ThemedSwitch {
+        accessible-label: root.label;
+        checked: root.checked;
+        enabled: root.enabled;
+        toggled => { root.toggled(self.checked); }
     }
 }
 

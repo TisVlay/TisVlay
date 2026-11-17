@@ -603,127 +603,127 @@ msgid "Cancel"
 msgstr ""
 
 #. The couch-mode preference's choices, in the order of `mode-index`.
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:44
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:39
 msgctxt "SettingsPane"
 msgid "Follow the session"
 msgstr ""
 
 #. The couch-mode preference's choices, in the order of `mode-index`.
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:44
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:39
 msgctxt "SettingsPane"
 msgid "On"
 msgstr ""
 
 #. The couch-mode preference's choices, in the order of `mode-index`.
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:44
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:39
 msgctxt "SettingsPane"
 msgid "Off"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:72
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:67
 msgctxt "SettingsPane"
 msgid "Settings"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:84
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:79
 msgctxt "SettingsPane"
 msgid "COUCH MODE"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:87
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:87
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:82
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:82
 msgctxt "SettingsPane"
 msgid "Couch mode"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:88
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:83
 msgctxt "SettingsPane"
 msgid ""
 "Maximized and scaled up, with the keys arranged for a remote. Following the "
 "session turns it on under a TV shell such as Plasma Bigscreen."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:102
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:102
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:97
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:97
 msgctxt "SettingsPane"
 msgid "Scale"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:103
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:98
 msgctxt "SettingsPane"
 msgid ""
 "On top of the display's own scale, in percent. Larger for a farther couch or "
 "a smaller screen."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:122
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:117
 msgctxt "SettingsPane"
 msgid "Tray service is not running"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:123
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:118
 msgctxt "SettingsPane"
 msgid "Start it to change these settings."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:137
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:132
 msgctxt "SettingsPane"
 msgid "NOTIFY ME ABOUT"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:140
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:135
 msgctxt "SettingsPane"
 msgid "TV connection"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:141
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:136
 msgctxt "SettingsPane"
 msgid "Notify when a TV connects or disconnects."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:147
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:142
 msgctxt "SettingsPane"
 msgid "Pairing outcome"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:148
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:143
 msgctxt "SettingsPane"
 msgid "Notify when pairing or re-pairing completes or fails."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:154
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:149
 msgctxt "SettingsPane"
 msgid "Wake outcome"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:155
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:150
 msgctxt "SettingsPane"
 msgid "Notify when a Wake-on-LAN attempt succeeds or fails."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:161
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:156
 msgctxt "SettingsPane"
 msgid "Daemon offline"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:162
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:157
 msgctxt "SettingsPane"
 msgid "Notify when the connection to the daemon is lost."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:177
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:172
 msgctxt "SettingsPane"
 msgid "STACK VERIFICATION"
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:187
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:182
 msgctxt "SettingsPane"
 msgid ""
 "Send a one-off notification to verify your desktop's notification stack is "
 "working."
 msgstr ""
 
-#: crates/tisvlay-gui/ui/components/settings_pane.slint:196
+#: crates/tisvlay-gui/ui/components/settings_pane.slint:191
 msgctxt "SettingsPane"
 msgid "Send test notification"
 msgstr ""
