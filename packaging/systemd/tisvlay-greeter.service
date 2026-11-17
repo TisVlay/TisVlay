@@ -18,8 +18,8 @@ Type=simple
 # greeter to the socket.
 ExecStart=/usr/bin/tisvlay service greeter --socket /run/tisvlay/zenoh.sock
 SyslogIdentifier=tisvlay-greeter
-# on-failure (not always): a clean exit — compositor disconnect at login, or
-# the timeout-disabled early-exit — must not restart-loop.
+# on-failure (not always): a clean exit — compositor disconnect at login —
+# must not restart-loop.
 Restart=on-failure
 RestartSec=5
 

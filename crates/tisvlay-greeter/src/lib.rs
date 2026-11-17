@@ -7,10 +7,10 @@
 //! only component running before login, so it's what protects an OLED
 //! panel at an unattended login screen.
 //!
-//! The timeout to register comes from the daemon's cached
-//! `greeter/timeout` key (`0` = disabled: assert presence, then exit).
-//! The idle key itself is a cached publish, so a daemon restarting under
-//! a live greeter can re-hydrate the current idle state.
+//! The timeout to register follows the daemon's cached `greeter/timeout`
+//! key (`0` = disabled: no watch until it turns non-zero). The idle key
+//! itself is a cached publish, so a daemon restarting under a live greeter
+//! can re-hydrate the current idle state.
 
 pub mod service;
 
@@ -48,10 +48,11 @@ fn next_notify(transition: IdleTransition, last_sent: Option<bool>) -> Option<bo
 ///
 /// On startup it publishes `{idle: false}` to assert the login screen is
 /// present (lit), so a screen-off latched by the prior user session
-/// doesn't strand it dark — regardless of the idle timer. It then reads
-/// the daemon's greeter timeout; `0` returns immediately. Otherwise it
-/// registers the idle watch and forwards each edge until the compositor
-/// disconnects (greeter session ended), which is a clean exit.
+/// doesn't strand it dark — regardless of the idle timer. It then follows
+/// the daemon's greeter timeout, which moves with the TVs' inputs: a
+/// non-zero value registers the idle watch, a change re-registers it, and
+/// `0` drops it. Each edge is forwarded until the compositor disconnects
+/// (greeter session ended), which is a clean exit.
 pub async fn run(socket: &Path, site: &str) -> Result<()> {
     run_with_watch(socket, site, |timeout, sender| async move {
         connect_idle_watch(timeout, &sender).await
@@ -62,10 +63,10 @@ pub async fn run(socket: &Path, site: &str) -> Result<()> {
 async fn run_with_watch<Attach, Attached, Guard>(
     socket: &Path,
     site: &str,
-    attach: Attach,
+    mut attach: Attach,
 ) -> Result<()>
 where
-    Attach: FnOnce(u32, mpsc::UnboundedSender<(u32, IdleTransition)>) -> Attached,
+    Attach: FnMut(u32, mpsc::UnboundedSender<(u32, IdleTransition)>) -> Attached,
     Attached: Future<Output = Result<Guard>>,
 {
     // Pre-flight the daemon socket: a greeter whose group the daemon grants
@@ -122,60 +123,77 @@ where
         last_sent = Some(false);
     }
 
-    let timeout_secs = read_timeout(&session, site).await;
-    if timeout_secs == 0 {
-        info!("greeter idle timeout is 0 (disabled); presence asserted, nothing to watch");
-        return Ok(());
-    }
-    let timeout_ms = u32::try_from(timeout_secs.saturating_mul(1000)).unwrap_or(u32::MAX);
-    info!(timeout_secs, "starting greeter idle watch");
-
-    let (tx, mut rx) = mpsc::unbounded_channel::<(u32, IdleTransition)>();
-    // Held for the lifetime of `run` — dropping it stops the watch. One
-    // process per greeter session, so there is no re-register path.
-    let _watch = attach(timeout_ms, tx.clone()).await?;
-    drop(tx);
-
-    while let Some((_tag, transition)) = rx.recv().await {
-        let Some(idle) = next_notify(transition, last_sent) else {
-            continue;
-        };
-        if publish(idle).await {
-            last_sent = Some(idle);
-        }
-    }
-
-    // The compositor socket closed — normally the greeter session ending
-    // at login, where systemd is already stopping this unit.
-    warn!("greeter idle watch ended (compositor disconnected); exiting");
-    Ok(())
-}
-
-/// Read the daemon-computed timeout from the cached `greeter/timeout`
-/// key. Read once at greeter start (each greeter session is a fresh
-/// process); absent daemon or key means 0 (disabled).
-async fn read_timeout(session: &zenoh::Session, site: &str) -> u64 {
-    let sub = match session
+    let timeouts = session
         .declare_subscriber(keys::greeter_timeout(site))
         .history(HistoryConfig::default().detect_late_publishers())
         .await
-    {
-        Ok(sub) => sub,
-        Err(e) => {
-            warn!(%e, "greeter timeout subscribe failed; treating as disabled");
-            return 0;
+        .map_err(|e| anyhow!("subscribe to the greeter timeout: {e}"))?;
+    // The timeout the daemon asks for, and the one the watch was registered
+    // with (`0`: no watch). Until the daemon publishes, nothing is watched.
+    let (mut wanted, mut applied) = (0_u64, 0_u64);
+    // Dropping the guard stops the watch; its channel ends with it.
+    let mut watch: Option<(Guard, mpsc::UnboundedReceiver<(u32, IdleTransition)>)> = None;
+    loop {
+        // A fresh watch starts out not idle and reports `Resumed` only after
+        // idling a full timeout of its own, so swapping the watch while the
+        // login screen is idle would leave the panel dark when someone comes
+        // back. The swap waits for the resume instead.
+        if wanted != applied && last_sent != Some(true) {
+            watch = None;
+            applied = wanted;
+            if applied == 0 {
+                info!("greeter idle timeout is 0 (disabled); not watching");
+            } else {
+                let timeout_ms = u32::try_from(applied.saturating_mul(1000)).unwrap_or(u32::MAX);
+                info!(timeout_secs = applied, "starting greeter idle watch");
+                let (tx, rx) = mpsc::unbounded_channel();
+                watch = Some((attach(timeout_ms, tx).await?, rx));
+            }
         }
-    };
-    match tokio::time::timeout(Duration::from_secs(3), sub.recv_async()).await {
-        Ok(Ok(sample)) => serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes())
-            .ok()
-            .and_then(|value| value.get("seconds").and_then(serde_json::Value::as_u64))
-            .unwrap_or(0),
-        _ => {
-            warn!("no greeter timeout sample; treating as disabled");
-            0
+        tokio::select! {
+            sample = timeouts.recv_async() => {
+                let Ok(sample) = sample else {
+                    // The session closed under us; nothing more will come.
+                    return Ok(());
+                };
+                wanted = timeout_seconds(&sample.payload().to_bytes());
+            }
+            transition = next_transition(&mut watch) => {
+                let Some((_tag, transition)) = transition else {
+                    // The compositor socket closed — normally the greeter
+                    // session ending at login, where systemd is already
+                    // stopping this unit.
+                    warn!("greeter idle watch ended (compositor disconnected); exiting");
+                    return Ok(());
+                };
+                let Some(idle) = next_notify(transition, last_sent) else {
+                    continue;
+                };
+                if publish(idle).await {
+                    last_sent = Some(idle);
+                }
+            }
         }
     }
+}
+
+/// The next transition from the attached watch; never, without one.
+async fn next_transition<Guard>(
+    watch: &mut Option<(Guard, mpsc::UnboundedReceiver<(u32, IdleTransition)>)>,
+) -> Option<(u32, IdleTransition)> {
+    match watch {
+        Some((_, rx)) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The seconds in a `greeter/timeout` payload; anything unreadable is `0`
+/// (disabled).
+fn timeout_seconds(payload: &[u8]) -> u64 {
+    serde_json::from_slice::<serde_json::Value>(payload)
+        .ok()
+        .and_then(|value| value.get("seconds").and_then(serde_json::Value::as_u64))
+        .unwrap_or(0)
 }
 
 /// Attach the greeter idle watch. Tries the compositor's wayland socket
@@ -448,36 +466,67 @@ mod tests {
                 router,
             }
         }
+
+        /// The daemon's cached `greeter/timeout` publisher.
+        async fn timeout(&self) -> zenoh_ext::AdvancedPublisher<'static> {
+            self.router
+                .declare_publisher(keys::greeter_timeout("test"))
+                .cache(CacheConfig::default().max_samples(1))
+                .await
+                .unwrap()
+        }
+
+        /// Run the greeter with a fake idle transport; each attach reports
+        /// its timeout and the sender a compositor would feed.
+        fn spawn(&self) -> (tokio::task::JoinHandle<Result<()>>, Attachments) {
+            let (attached, attachments) = mpsc::unbounded_channel();
+            let socket = self.socket.clone();
+            let task = tokio::spawn(async move {
+                run_with_watch(&socket, "test", move |timeout, sender| {
+                    attached.send((timeout, sender)).unwrap();
+                    async { Ok(()) }
+                })
+                .await
+            });
+            (task, attachments)
+        }
+    }
+
+    type Attachments = mpsc::UnboundedReceiver<(u32, mpsc::UnboundedSender<(u32, IdleTransition)>)>;
+
+    async fn next_attach(
+        attachments: &mut Attachments,
+    ) -> (u32, mpsc::UnboundedSender<(u32, IdleTransition)>) {
+        tokio::time::timeout(Duration::from_secs(10), attachments.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    }
+
+    async fn next_idle(
+        subscriber: &zenoh::pubsub::Subscriber<
+            zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+        >,
+    ) -> serde_json::Value {
+        let sample = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_async())
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_slice(&sample.payload().to_bytes()).unwrap()
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn publishes_presence_edges_and_cached_idle_without_a_desktop() {
         let wire = Wire::new().await;
-        let timeout = wire
-            .router
-            .declare_publisher(keys::greeter_timeout("test"))
-            .cache(CacheConfig::default().max_samples(1))
-            .await
-            .unwrap();
+        let timeout = wire.timeout().await;
         timeout.put(r#"{"seconds":2}"#).await.unwrap();
         let subscriber = wire
             .router
             .declare_subscriber(keys::greeter_idle("test"))
             .await
             .unwrap();
-        let (attached, attachment) = tokio::sync::oneshot::channel();
-        let socket = wire.socket.clone();
-        let task = tokio::spawn(async move {
-            run_with_watch(&socket, "test", |timeout, sender| async move {
-                attached.send((timeout, sender)).unwrap();
-                Ok(())
-            })
-            .await
-        });
-        let (timeout_ms, sender) = tokio::time::timeout(Duration::from_secs(10), attachment)
-            .await
-            .unwrap()
-            .unwrap();
+        let (task, mut attachments) = wire.spawn();
+        let (timeout_ms, sender) = next_attach(&mut attachments).await;
         assert_eq!(timeout_ms, 2000);
         let sample = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_async())
             .await
@@ -536,33 +585,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn disabled_timeout_asserts_presence_without_attaching_idle_transport() {
+    async fn a_disabled_timeout_waits_for_one() {
         let wire = Wire::new().await;
-        let timeout = wire
-            .router
-            .declare_publisher(keys::greeter_timeout("test"))
-            .cache(CacheConfig::default().max_samples(1))
-            .await
-            .unwrap();
+        let timeout = wire.timeout().await;
         timeout.put(r#"{"seconds":0}"#).await.unwrap();
         let subscriber = wire
             .router
             .declare_subscriber(keys::greeter_idle("test"))
             .await
             .unwrap();
-        run_with_watch(&wire.socket, "test", |_, _| async {
-            Err::<(), _>(anyhow!("disabled timeout must not attach"))
-        })
-        .await
-        .unwrap();
-        let sample = tokio::time::timeout(Duration::from_secs(5), subscriber.recv_async())
+        let (task, mut attachments) = wire.spawn();
+        // Presence is asserted whatever the timeout.
+        assert_eq!(next_idle(&subscriber).await, json!({"idle": false}));
+        // The TV switches to the PC's input: the timeout turns non-zero, and
+        // the greeter, still running, starts watching.
+        timeout.put(r#"{"seconds":5}"#).await.unwrap();
+        let (timeout_ms, _sender) = next_attach(&mut attachments).await;
+        assert_eq!(timeout_ms, 5000);
+        assert!(!task.is_finished());
+        task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_timeout_change_waits_for_an_idle_screen_to_resume() {
+        let wire = Wire::new().await;
+        let timeout = wire.timeout().await;
+        timeout.put(r#"{"seconds":2}"#).await.unwrap();
+        let subscriber = wire
+            .router
+            .declare_subscriber(keys::greeter_idle("test"))
             .await
-            .unwrap()
             .unwrap();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&sample.payload().to_bytes()).unwrap(),
-            json!({"idle": false})
+        let (task, mut attachments) = wire.spawn();
+        let (_, first) = next_attach(&mut attachments).await;
+        assert_eq!(next_idle(&subscriber).await, json!({"idle": false}));
+        first.send((0, IdleTransition::Idled)).unwrap();
+        assert_eq!(next_idle(&subscriber).await, json!({"idle": true}));
+        // A change while idle keeps the watch that can still resume.
+        timeout.put(r#"{"seconds":7}"#).await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(500), attachments.recv())
+                .await
+                .is_err(),
+            "no re-registration while the screen is idle"
         );
+        first.send((0, IdleTransition::Resumed)).unwrap();
+        assert_eq!(next_idle(&subscriber).await, json!({"idle": false}));
+        let (timeout_ms, _second) = next_attach(&mut attachments).await;
+        assert_eq!(timeout_ms, 7000, "re-registered once the screen resumed");
+        task.abort();
     }
 
     #[test]
@@ -571,36 +642,23 @@ mod tests {
         assert_eq!(next_notify(IdleTransition::Resumed, None), Some(false));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn invalid_or_absent_timeout_is_disabled() {
-        let wire = Wire::new().await;
-        let publisher = wire
-            .router
-            .declare_publisher(keys::greeter_timeout("test"))
-            .cache(CacheConfig::default().max_samples(1))
-            .await
-            .unwrap();
+    #[test]
+    fn an_unreadable_timeout_is_disabled() {
         for body in [
             "not-json",
             r#"{"seconds":"invalid"}"#,
             r#"{"seconds":-1}"#,
             "{}",
         ] {
-            publisher.put(body).await.unwrap();
-            assert_eq!(read_timeout(&wire.router, "test").await, 0);
+            assert_eq!(timeout_seconds(body.as_bytes()), 0, "{body}");
         }
-        assert_eq!(read_timeout(&wire.router, "absent").await, 0);
+        assert_eq!(timeout_seconds(br#"{"seconds":30}"#), 30);
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn large_timeout_is_clamped_and_attach_failure_is_returned() {
         let wire = Wire::new().await;
-        let publisher = wire
-            .router
-            .declare_publisher(keys::greeter_timeout("test"))
-            .cache(CacheConfig::default().max_samples(1))
-            .await
-            .unwrap();
+        let publisher = wire.timeout().await;
         publisher
             .put(serde_json::to_vec(&json!({"seconds":u64::MAX})).unwrap())
             .await
