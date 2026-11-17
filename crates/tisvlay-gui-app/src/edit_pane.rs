@@ -6,9 +6,9 @@
 //! same daemon-side validation error so per-field reasons round-trip
 //! back to the originating widget.
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString};
 
-use crate::schema_form::compute_schema_valid;
+use crate::schema_form::{compute_schema_valid, mark_row_invalid};
 use crate::{AppWindow, EditPane, PairingFieldRow, on_ui};
 use tisvlay::ErrorCode;
 
@@ -51,27 +51,16 @@ pub(crate) fn mark_edit_field_invalid(
     field: &str,
     reason: &str,
 ) -> bool {
-    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
+    if !mark_row_invalid(model, field, reason) {
         return false;
-    };
-    for i in 0..model.row_count() {
-        let Some(mut row) = model.row_data(i) else {
-            continue;
-        };
-        if row.name == field {
-            row.state = SharedString::from("invalid");
-            row.error = SharedString::from(reason);
-            vec_model.set_row_data(i, row);
-            edit_pane.set_valid(compute_edit_valid(edit_pane));
-            return true;
-        }
     }
-    false
+    edit_pane.set_valid(compute_edit_valid(edit_pane));
+    true
 }
 
 /// Push a generic edit-mode error message onto the EditPane banner
-/// from a worker thread. Called when the prefetch flow (GetPairingSchema
-/// / GetConfig) fails before the form is even populated.
+/// from a worker thread. Called when the prefetch flow (the vendor's
+/// schema, the TV's config) fails before the form is even populated.
 pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: String) {
     on_ui(app_weak, move |app| {
         let edit_pane = app.global::<EditPane>();
@@ -83,6 +72,7 @@ pub(crate) fn publish_edit_error(app_weak: &slint::Weak<AppWindow>, message: Str
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use slint::{Model, VecModel};
 
     fn field_row(name: &str) -> PairingFieldRow {
         PairingFieldRow {

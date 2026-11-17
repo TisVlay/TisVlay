@@ -32,7 +32,7 @@ impl TvBackend for LgBackend {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // ALL covers the feature methods; IPV4 / IPV6 declare the
+        // STOCK covers the feature methods; IPV4 / IPV6 declare the
         // verified transport families. v6 was confirmed on G4
         // firmware by reaching the SSAP WebSocket endpoint over a
         // SLAAC ULA — same cert chain, same TLS 1.3 / X25519 /

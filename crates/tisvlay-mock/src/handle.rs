@@ -220,11 +220,9 @@ impl MockHandle {
     /// the user presses Power on the remote, the TV's actual
     /// substate changes immediately (panel goes dark) but the
     /// subscription stream can stay quiet for several seconds before
-    /// pushing the new `PowerState`. The daemon's cached
-    /// `last_known_power_state` reads stale during that window.
-    /// Tests use this knob to verify pre-flight wake gates that
-    /// route through an authoritative live query rather than the
-    /// stale cached value.
+    /// pushing the new `PowerState`. The world's cached `State<Power>`
+    /// reads stale during that window, which tests use this knob to
+    /// model.
     ///
     /// No-op if no connection is currently open for that address.
     #[instrument(skip(self))]
@@ -321,6 +319,60 @@ impl MockHandle {
         }
     }
 
+    /// Make the TV answer dials to `address` and turn them down with
+    /// `NotRegistered` while `enabled`, as one that has forgotten the
+    /// client key does. Unlike [`set_unreachable`](Self::set_unreachable),
+    /// something answered.
+    #[instrument(skip(self))]
+    pub fn set_key_rejected(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.key_rejected.insert(address.to_string());
+        } else {
+            state.key_rejected.remove(address);
+        }
+    }
+
+    /// Make `switch_input` accept the switch and not act on it, so an
+    /// input restore stays pending across its retries. Pass
+    /// `enabled = false` to switch again.
+    #[instrument(skip(self))]
+    pub fn set_switch_input_noop(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.switch_input_noop.insert(address.to_string());
+        } else {
+            state.switch_input_noop.remove(address);
+        }
+    }
+
+    /// Make `power_off` close the link without a standby report first,
+    /// as a TV that goes off without saying so does. Pass
+    /// `enabled = false` to restore the report.
+    #[instrument(skip(self))]
+    pub fn set_power_off_unreported(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.power_off_unreported.insert(address.to_string());
+        } else {
+            state.power_off_unreported.remove(address);
+        }
+    }
+
+    /// Make `screen_off` meet a dead link: the connection closes and the
+    /// call fails with `ConnectionClosed`, as a network TV's does when
+    /// a send is the first thing to notice an outage. Pass
+    /// `enabled = false` to restore the default blank.
+    #[instrument(skip(self))]
+    pub fn set_screen_off_closes(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.screen_off_closes.insert(address.to_string());
+        } else {
+            state.screen_off_closes.remove(address);
+        }
+    }
+
     /// Make an in-band `power_on` go unheeded: it returns `Ok` and the TV
     /// stays off, as a TV that ignores the wake frame does. Pass
     /// `enabled = false` to restore the default wake in place.
@@ -331,6 +383,33 @@ impl MockHandle {
             state.power_on_ignored.insert(address.to_string());
         } else {
             state.power_on_ignored.remove(address);
+        }
+    }
+
+    /// Cut the live link to `address` without a power change, as a
+    /// network outage does to a TV that stays on: the subscription
+    /// stream ends, so the daemon's connection task reports the drop.
+    /// The TV's last pushed state stays whatever it was.
+    ///
+    /// No-op if no subscription is open for that address (a poll-only
+    /// connection has none).
+    #[instrument(skip(self))]
+    pub fn cut_link(&self, address: &str) {
+        let dropped = self.state.lock().subscription_txs.remove(address);
+        tracing::debug!(address, cut = dropped.is_some(), "cutting the mock link");
+    }
+
+    /// Make dials to `address` fail with `NetworkUnreachable` while
+    /// `enabled`, as during a router reboot. Pass `enabled = false` to
+    /// let them through again. Unlike the `refuse_connect` config key
+    /// it toggles while the TV exists, and fails with a typed I/O error.
+    #[instrument(skip(self))]
+    pub fn set_unreachable(&self, address: &str, enabled: bool) {
+        let mut state = self.state.lock();
+        if enabled {
+            state.unreachable.insert(address.to_string());
+        } else {
+            state.unreachable.remove(address);
         }
     }
 
@@ -355,8 +434,8 @@ impl MockHandle {
     /// remote-off: the daemon's `power_on` succeeds at the WS level
     /// (a new `MockConnection` is created) but the firmware reports
     /// a wake-preflight substate (`ActiveStandby` / `Standby`) that
-    /// never transitions to `Active`. Needed to drive the daemon's
-    /// `screen_off`-post-wake-settle graceful-fallback branch.
+    /// never transitions to `Active`: a TV that wakes into a wake-needy
+    /// substate, for the verify and escalation tests.
     #[instrument(skip(self))]
     pub fn set_initial_power_state_override(&self, address: &str, target: PowerState) {
         let mut state = self.state.lock();
@@ -457,6 +536,36 @@ mod tests {
         assert_eq!(power, PowerState::ActiveStandby);
     }
 
+    /// A connection dropped after its successor opened (a redial
+    /// overtaking the old task) takes only its own registrations: the
+    /// new connection's state and event streams stay open and driven.
+    #[tokio::test]
+    async fn a_dropped_connection_leaves_its_successors_streams_open() {
+        let (connector, _discovery, handle) = new_test_parts();
+        let cfg = vendor_config("mock://successor");
+
+        let mut old = connector.connect(&cfg).await.expect("first connect");
+        let _old_states = old.subscribe_state().await.expect("subscribe");
+        let _old_events = old.subscribe_events().await.expect("subscribe");
+        let mut new = connector.connect(&cfg).await.expect("second connect");
+        let mut states = new.subscribe_state().await.expect("subscribe");
+        let mut events = new.subscribe_events().await.expect("subscribe");
+        states.recv().await.expect("the initial snapshot");
+        drop(old);
+
+        handle.inject_power_state("mock://successor", PowerState::ScreenOff);
+        let pushed = states.recv().await.expect("the state stream is open");
+        assert_eq!(pushed.power_state, PowerState::ScreenOff);
+        handle.press_remote_power("mock://successor");
+        assert_eq!(
+            events.recv().await.expect("the event stream is open"),
+            TvEvent::RemotePower
+        );
+
+        handle.cut_link("mock://successor");
+        assert!(states.recv().await.is_none(), "a cut ends the stream");
+    }
+
     /// The override survives reconnects — drops the first connection,
     /// opens a second, and the new one still picks up the override.
     /// Models the LG firmware quirk where `power_on` reconnects but
@@ -546,7 +655,7 @@ mod tests {
 
     /// `disable_subscription = true` makes `subscribe_state` return
     /// `NotSupported` (modeling a poll-only backend) while `get_state`
-    /// still works — so the daemon's poll path has something to read.
+    /// still works — so the world's verify reads have something to read.
     /// The default (knob absent / false) keeps the push subscription,
     /// which the bulk of the mock-based tests rely on.
     #[tokio::test]

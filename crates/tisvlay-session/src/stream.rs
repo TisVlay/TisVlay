@@ -5,8 +5,8 @@
 //! into a live source set, recomputes the per-TV `armed` projection
 //! whenever the sources or the resolved profiles move, and publishes the
 //! fact two ways — a cached pub on the user socket (the session owns that
-//! router) and a plain-put mirror on the system socket (a connect-only
-//! peer link, so served entities would not propagate). While armed,
+//! router) and a cache-1 mirror on the system socket, which the directly
+//! dialed daemon hydrates on its restart. While armed,
 //! `Core::action_for` suppresses any event whose action carries a
 //! `while_streaming = false` gate.
 //!

@@ -9,8 +9,10 @@
 
 use crate::client::WebOsClient;
 use crate::config::LgVendorConfig;
+use crate::protocol::Response;
 use async_trait::async_trait;
 use serde_json::Value;
+use std::collections::HashMap;
 use tisvlay_core::{Capabilities, Error, InputInfo, PowerState, Result, TvConnection, TvState};
 use tokio::sync::mpsc;
 use tracing::{info, trace, warn};
@@ -25,10 +27,16 @@ pub(crate) struct LgConnection {
     config: LgVendorConfig,
     capabilities: Capabilities,
     /// Cached hardware identity. Seeded by the connector at construction
-    /// time (after the initial `getSystemInfo` call) and refreshed on
-    /// each fresh reconnect. Returned from [`hardware_id`](Self::hardware_id)
+    /// time (after the initial `getSystemInfo` call), or fetched once by
+    /// the first reconnect that finds none cached. Returned from [`hardware_id`](Self::hardware_id)
     /// without blocking.
     hardware_id: std::sync::Arc<std::sync::RwLock<Option<tisvlay_core::HardwareId>>>,
+    /// The state subscription's converter, once [`subscribe_state`]
+    /// started one: a retry's reconnect hands it the new link's
+    /// subscription, so the state stream outlives the link it began on.
+    ///
+    /// [`subscribe_state`]: TvConnection::subscribe_state
+    resubscribe: Option<mpsc::UnboundedSender<Resubscribe>>,
     /// Test override for where a reconnect dials — the fake SSAP server's
     /// URL, since the real path always dials the configured IP on the
     /// standard SSAP ports.
@@ -53,6 +61,7 @@ impl LgConnection {
             config,
             capabilities: Capabilities::STOCK,
             hardware_id: std::sync::Arc::new(std::sync::RwLock::new(hardware_id)),
+            resubscribe: None,
             #[cfg(test)]
             reconnect_url: None,
         }
@@ -105,8 +114,8 @@ impl LgConnection {
             let client = self.dial().await?;
             self.client = Some(client);
 
-            // Best-effort identity refresh on fresh connect. Runs once
-            // per reconnect (the values don't change for a given TV).
+            // Best-effort identity fetch, only while none is cached: the
+            // values don't change for a given TV.
             if self.hardware_id.read().map(|g| g.is_none()).unwrap_or(true) {
                 self.refresh_hardware_id().await;
             }
@@ -115,10 +124,36 @@ impl LgConnection {
         self.client.as_mut().ok_or(Error::ConnectionClosed)
     }
 
-    /// Force a fresh reconnect (drop existing connection first).
+    /// Force a fresh reconnect (drop existing connection first), carrying
+    /// the state subscription over to the new link. Dropping the old link
+    /// ends its subscription, so the converter is told first to wait for
+    /// the new one; a reconnect that fails lets it end, which is how the
+    /// world hears the link is gone.
     async fn reconnect(&mut self) -> Result<&mut WebOsClient> {
+        if let Some(converter) = &self.resubscribe {
+            let _ = converter.send(Resubscribe::Pending);
+        }
         self.client = None;
-        self.ensure_connected().await
+        if let Err(e) = self.ensure_connected().await {
+            self.resubscribe = None;
+            return Err(e);
+        }
+        if let Some(converter) = self.resubscribe.take() {
+            let client = self.client.as_mut().ok_or(Error::ConnectionClosed)?;
+            let (id_to_uri, initial) = client.subscribe_state_updates().await?;
+            let updates = client
+                .take_subscription_rx()
+                .ok_or(Error::ConnectionClosed)?;
+            let ready = Resubscribe::Ready {
+                updates,
+                id_to_uri,
+                initial,
+            };
+            if converter.send(ready).is_ok() {
+                self.resubscribe = Some(converter);
+            }
+        }
+        self.client.as_mut().ok_or(Error::ConnectionClosed)
     }
 
     /// Execute a command with automatic retry on stale connections.
@@ -200,15 +235,23 @@ impl TvConnection for LgConnection {
     // Feature methods (overriding TvConnection defaults)
     // =========================================================================
 
+    /// Retried like every command: an idle link can go stale without a
+    /// sign, and a `turnOff` lost on one would leave the TV on while the
+    /// world records it off. Only the TV's own refusal is taken as the
+    /// TV already being off.
     async fn power_off(&mut self) -> Result<()> {
-        if let Some(ref mut client) = self.client {
-            if let Err(e) = client.power_off().await {
-                tracing::warn!(error = %e, "power_off command failed (TV may already be off)");
-            }
+        let result = self.with_retry(|c| Box::pin(c.power_off())).await;
+        if let Some(client) = self.client.as_mut() {
             let _ = client.close().await;
         }
         self.client = None;
-        Ok(())
+        match result {
+            Err(Error::TvError(e)) => {
+                warn!(error = %e, "power_off refused (TV may already be off)");
+                Ok(())
+            }
+            other => other,
+        }
     }
 
     async fn get_power_state(&mut self) -> Result<PowerState> {
@@ -263,8 +306,7 @@ impl TvConnection for LgConnection {
     }
 
     async fn get_current_input(&mut self) -> Result<Option<String>> {
-        let state = self.with_retry(|c| Box::pin(c.get_state())).await?;
-        Ok(state.current_input)
+        self.with_retry(|c| Box::pin(c.get_current_input())).await
     }
 
     async fn list_inputs(&mut self) -> Result<Vec<InputInfo>> {
@@ -303,8 +345,10 @@ impl TvConnection for LgConnection {
 
         // Create a channel for TvState updates.
         let (state_tx, state_rx) = mpsc::unbounded_channel();
+        let (resubscribe, resubscriptions) = mpsc::unbounded_channel();
+        self.resubscribe = Some(resubscribe);
 
-        // Send the initial seeded state so D-Bus cached properties are
+        // Send the initial seeded state so the world's published state is
         // populated immediately, rather than waiting for the first
         // subsequent WebSocket push from the TV.
         let _ = state_tx.send(initial_state.clone());
@@ -312,30 +356,116 @@ impl TvConnection for LgConnection {
         // Spawn a task that converts SSAP subscription responses into
         // TvState snapshots. Each update merges into a cached state so
         // the receiver always gets a complete snapshot.
-        tokio::spawn(async move {
-            let mut cached_state = initial_state;
-            let mut sub_rx = sub_rx;
-            while let Some(response) = sub_rx.recv().await {
-                // Look up the endpoint URI from the response ID.
-                let uri = response
-                    .id
-                    .as_ref()
-                    .and_then(|id| id_to_uri.get(id))
-                    .map(String::as_str);
+        tokio::spawn(convert_state(
+            initial_state,
+            Some((sub_rx, id_to_uri)),
+            resubscriptions,
+            state_tx,
+        ));
 
-                if let Some(uri) = uri {
-                    let changed =
-                        update_state_from_subscription(&mut cached_state, uri, &response.payload);
+        Ok(state_rx)
+    }
+}
+
+/// What the state converter hears from a reconnect.
+#[derive(Debug)]
+enum Resubscribe {
+    /// The link is being replaced: its subscription ending is the swap,
+    /// not the TV going away.
+    Pending,
+    /// The new link's subscription and its initial responses.
+    Ready {
+        updates: mpsc::UnboundedReceiver<Response>,
+        id_to_uri: HashMap<String, String>,
+        initial: Vec<(String, Response)>,
+    },
+}
+
+/// A subscription's updates and the endpoint each request id names (SSAP
+/// updates carry the request id, not the URI).
+type Feed = (mpsc::UnboundedReceiver<Response>, HashMap<String, String>);
+
+/// Convert SSAP subscription responses into `TvState` snapshots, merging
+/// each into a cached state so the receiver always gets a complete one.
+/// It ends, closing `state_tx`, when the subscription ends with no
+/// reconnect under way, or when a reconnect gives up.
+async fn convert_state(
+    mut cached_state: TvState,
+    mut feed: Option<Feed>,
+    resubscriptions: mpsc::UnboundedReceiver<Resubscribe>,
+    state_tx: mpsc::UnboundedSender<TvState>,
+) {
+    let mut resubscriptions = Some(resubscriptions);
+    let mut pending = false;
+    loop {
+        tokio::select! {
+            // A reconnect's notice is queued before the old link drops, so
+            // it's read before that link's subscription ending.
+            biased;
+            message = recv_some(&mut resubscriptions) => match message {
+                Some(Resubscribe::Pending) => pending = true,
+                Some(Resubscribe::Ready { updates, id_to_uri, initial }) => {
+                    pending = false;
+                    let mut changed = false;
+                    for (uri, response) in &initial {
+                        changed |= update_state_from_subscription(&mut cached_state, uri, &response.payload);
+                    }
+                    feed = Some((updates, id_to_uri));
                     if changed && state_tx.send(cached_state.clone()).is_err() {
-                        // Receiver dropped — stop processing.
                         break;
                     }
                 }
-            }
-            trace!("Subscription state converter task exited");
-        });
+                // The connection is gone or its reconnect failed: no new
+                // subscription is coming.
+                None => {
+                    resubscriptions = None;
+                    if pending {
+                        break;
+                    }
+                }
+            },
+            response = recv_feed(&mut feed) => match response {
+                Some((response, id_to_uri)) => {
+                    let uri = response
+                        .id
+                        .as_ref()
+                        .and_then(|id| id_to_uri.get(id))
+                        .map(String::as_str);
+                    if let Some(uri) = uri {
+                        let changed =
+                            update_state_from_subscription(&mut cached_state, uri, &response.payload);
+                        if changed && state_tx.send(cached_state.clone()).is_err() {
+                            // Receiver dropped — stop processing.
+                            break;
+                        }
+                    }
+                }
+                None => {
+                    feed = None;
+                    if !pending {
+                        break;
+                    }
+                }
+            },
+        }
+    }
+    trace!("Subscription state converter task exited");
+}
 
-        Ok(state_rx)
+/// The next message, or never once the channel is gone.
+async fn recv_some<T>(channel: &mut Option<mpsc::UnboundedReceiver<T>>) -> Option<T> {
+    match channel {
+        Some(channel) => channel.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The next update with its id map, `None` when the subscription ends, or
+/// never while there is none.
+async fn recv_feed(feed: &mut Option<Feed>) -> Option<(Response, &HashMap<String, String>)> {
+    match feed {
+        Some((updates, id_to_uri)) => updates.recv().await.map(|response| (response, &*id_to_uri)),
+        None => std::future::pending().await,
     }
 }
 
@@ -390,7 +520,11 @@ pub(crate) fn parse_power_state_payload(payload: &Value) -> Option<PowerState> {
 /// Update a cached [`TvState`] from an SSAP subscription response.
 ///
 /// Returns `true` if the state was actually modified.
-fn update_state_from_subscription(state: &mut TvState, uri: &str, payload: &Value) -> bool {
+pub(crate) fn update_state_from_subscription(
+    state: &mut TvState,
+    uri: &str,
+    payload: &Value,
+) -> bool {
     if uri.contains("getPowerState") {
         let parsed = parse_power_state_payload(payload);
         // The raw report alongside its reading: which fields flip when LG
@@ -988,6 +1122,114 @@ mod tests {
         // retried command succeeds.
         let state = conn.get_state().await.expect("reconnected and retried");
         assert!(state.is_on);
+    }
+
+    /// An `LgConnection` on the fake server whose first link answers within
+    /// `timeout`, its reconnect aimed back at the server.
+    async fn retrying_connection(
+        server: &crate::test_server::FakeSsapHandle,
+        timeout: std::time::Duration,
+    ) -> LgConnection {
+        let mut client = WebOsClient::connect_url(&server.ws_url(), None)
+            .await
+            .unwrap();
+        client.set_request_timeout(timeout);
+        let mut config = LgVendorConfig::new(server.addr().ip().to_string());
+        config.client_key = Some("test-client-key".into());
+        let mut conn = LgConnection::new(client, config, None);
+        conn.reconnect_url = Some(server.ws_url());
+        conn
+    }
+
+    fn volume_payload(volume: u8) -> Value {
+        json!({ "returnValue": true, "volumeStatus": { "volume": volume, "muteStatus": false } })
+    }
+
+    #[tokio::test]
+    async fn a_retried_command_keeps_the_state_stream() {
+        use crate::endpoints::audio;
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let mut conn = retrying_connection(&server, std::time::Duration::from_millis(300)).await;
+        let mut states = conn.subscribe_state().await.unwrap();
+        let first = states.recv().await.unwrap();
+        assert_eq!(first.volume, Some(30));
+
+        // The link goes stale; a command times out on it, reconnects and
+        // is retried. The new link's subscription reads the volume as
+        // it is now.
+        server.stall();
+        server.set_command_payload(audio::GET_VOLUME, volume_payload(55));
+        conn.screen_on().await.expect("retried on a fresh link");
+        let state = tokio::time::timeout(std::time::Duration::from_secs(5), states.recv())
+            .await
+            .expect("a snapshot within 5 s")
+            .expect("the state stream outlives the link it began on");
+        assert_eq!(state.volume, Some(55));
+    }
+
+    #[tokio::test]
+    async fn a_state_read_on_a_stale_link_reconnects() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let mut conn = retrying_connection(&server, std::time::Duration::from_millis(300)).await;
+        server.stall();
+        // The power read times out on the stale link, which fails the read
+        // and sends it through the retry, instead of reporting a snapshot
+        // with nothing in it.
+        let state = conn.get_state().await.expect("read on a fresh link");
+        assert!(state.is_on);
+        assert_eq!(state.volume, Some(30));
+    }
+
+    #[tokio::test]
+    async fn a_dropped_link_ends_the_state_stream() {
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let mut conn = retrying_connection(&server, std::time::Duration::from_secs(10)).await;
+        let mut states = conn.subscribe_state().await.unwrap();
+        states.recv().await.unwrap();
+        // The TV closes the link with no command under way: the world must
+        // hear it.
+        server.drop_connection();
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), states.recv())
+            .await
+            .expect("the stream ends within 5 s");
+        assert!(end.is_none());
+    }
+
+    #[tokio::test]
+    async fn power_off_is_retried_on_a_stale_link() {
+        use crate::endpoints::power;
+        let server = crate::test_server::FakeSsapServer::start().await;
+        let mut conn = retrying_connection(&server, std::time::Duration::from_millis(300)).await;
+        let mut states = conn.subscribe_state().await.unwrap();
+        states.recv().await.unwrap();
+        server.stall();
+        conn.power_off()
+            .await
+            .expect("turnOff retried on a fresh link");
+        assert_eq!(
+            server.answered(power::TURN_OFF),
+            1,
+            "the TV got the turnOff"
+        );
+        assert!(!conn.is_connected());
+        // The link closes after a power-off, which ends the stream.
+        let end = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while states.recv().await.is_some() {}
+        })
+        .await;
+        assert!(end.is_ok(), "the stream ends after the power-off");
+    }
+
+    #[tokio::test]
+    async fn a_refused_power_off_counts_as_off() {
+        use crate::endpoints::power;
+        let server = crate::test_server::FakeSsapServer::start().await;
+        server.set_command_error(power::TURN_OFF, "500 already off");
+        let mut conn = retrying_connection(&server, std::time::Duration::from_secs(10)).await;
+        conn.power_off()
+            .await
+            .expect("a refusal is the TV already off");
+        assert!(!conn.is_connected());
     }
 
     #[tokio::test]

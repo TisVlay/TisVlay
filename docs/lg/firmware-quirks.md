@@ -124,7 +124,7 @@ The instinctive fix is "shorten the wait" — either by adding a tighter timeout
 
 ### Why each bypass loses
 
-The LG client's `with_retry` wrapper ([connection.rs](../../crates/tisvlay-lg/src/connection.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s.
+The LG client's `with_retry` wrapper ([connection.rs](../../crates/tisvlay-lg/src/connection.rs)) responds to `Error::RequestTimeout` (i.e., `REQUEST_MS` expiring) by tearing down the current WebSocket, opening a fresh one with `register`, and retrying the command. That fresh-WS handshake **physically rouses the TV** — by the time the second attempt also fails and the dispatch escalates to `power_on`, the TV is already warm enough that the subsequent WoL → Registration happens in <1 s. The reconnect also re-subscribes the state endpoints on the fresh link and hands them to the same state stream, so a retry that succeeds reads as a live TV to the world, not as a dropped link.
 
 Any approach that *bypasses* `screen_on` to avoid the 10 s wait skips this accidental knock. The TV slips deeper into standby, and full WoL recovery now takes 9-12 s instead of <1 s. The arithmetic: ~7-10 s saved on the bypassed wait, ~9-12 s lost on slower recovery. Net pessimization in every case.
 
@@ -276,6 +276,16 @@ The router announces the full IGD service catalog (`InternetGatewayDevice`, `WAN
 - The `Capabilities::IPV6` bit on the LG backend means *control* over v6, not *discovery*. The two are independent and have to be evaluated separately for every vendor backend.
 - A future vendor that does join `ff02::c` (e.g., a hypothetical Sony/Samsung backend that follows the UPnP spec more literally) is what would justify lifting `Ipv6Unsupported` and threading v6 through `tisvlay-ssdp`. Until then, the v4-only stance is correct.
 - Toggling other TV settings that *sound* related — DLNA, "TV On via Mobile", LG ConnectApp — does not flip this behavior on G4 firmware as of 2026-05. Could change with future firmware; rerun the capture protocol if a new revision claims UPnP-over-v6.
+
+## An LG that is off, and one behind an outage
+
+From the checks in [the outage bug](../bugs/network-tv-not-redialed-after-outage.md) (2026-11-15, OLED42C3PUA and OLED65G4SUB), what the redial rules rest on:
+
+- **An LG that is off still answers on the network.** With its network standby on it answers ping, accepts the TCP connection to its SSAP port and then closes it, so a dial fails in tens of milliseconds with `Connection closed`, now and then with a request timeout. It is a refusal by behavior and no different on the wire from a link closing under the dial, which is why the world counts it as "nothing answered" and keeps dialing: the same dial connects once the TV is on.
+- **Dialing it doesn't wake it.** A dial a minute for four minutes (C3) and for about twenty-five (G4) left both off, with no pairing prompt; the C3's CEC entry read standby throughout. Whether the dials keep it out of a deeper standby can't be told from outside, since it answers ping either way.
+- **Turned on, it is back on the next dial**: 36 s after a CEC power-on in the check, bounded by the dial backoff's cap and not by the TV.
+- **It announces a standby before closing**, by a power report in an off state, and does not announce an outage. A three-and-a-half-minute loss of its client left a blanked C3 in screen-off, so the drift into its own screen saver seen in the incident takes longer than that or has another cause.
+- **A forgotten key prompts.** A dial with a client key the TV no longer knows gets the pairing prompt as its first answer and then waits out the pairing timeout; the client reports that as a pairing timeout, an answer, so the world stops after its usual three dials instead of prompting once a minute. Checked against the fake SSAP server only.
 
 ## `connectionmanager` reports each NIC's MAC and which one carries the TV's IP
 

@@ -21,7 +21,7 @@ export global EditPane {
     in-out property <string> tv-uuid;
 
     /// Editable display name. Two-way bound to a `LineEditField` in
-    /// edit mode; Rust-seeded from `Tv1.GetConfig` on `start()`.
+    /// edit mode; Rust-seeded from the get-config rpc on `start()`.
     in-out property <string> name;
 
     /// Schema-driven vendor-config field rows. Same shape as the
@@ -34,7 +34,7 @@ export global EditPane {
     /// `name-edited` / `field-edited` callback.
     in-out property <bool> valid;
 
-    /// Generic error banner copy — populated when `Tv1.UpdateConfig`
+    /// Generic error banner copy — populated when the update-config rpc
     /// fails for reasons that don't map to a single field
     /// (network, daemon-side I/O, etc.). Cleared on next `start()`
     /// or `cancel()`.
@@ -58,7 +58,7 @@ export global EditPane {
     }
 
     /// Begin an edit session for the given TV. Rust prefetches
-    /// `Tv1.GetConfig`, populates `name` + `fields` from the
+    /// the get-config rpc, populates `name` + `fields` from the
     /// vendor's `config_schema`, and sets `tv-uuid` last so the
     /// view doesn't flash a half-populated form.
     callback start(string);
@@ -66,7 +66,7 @@ export global EditPane {
     /// Discard the draft and exit edit mode. No daemon call.
     callback cancel();
 
-    /// Submit the draft to `Tv1.UpdateConfig`. On success, clears
+    /// Submit the draft to the update-config rpc. On success, clears
     /// the session. On per-field failure, marks the offending row
     /// invalid and stays in edit mode so the user can correct it.
     callback save();

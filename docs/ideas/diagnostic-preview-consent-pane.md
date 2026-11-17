@@ -1,6 +1,6 @@
 # Diagnostic preview-and-consent pane
 
-Today's "Diagnostics" button copies the blob immediately. Once the blob grows beyond the current 4-field stub (peers + runtime + tvs + log tail), the user should be able to *see* what's about to leave their machine and toggle off categories they'd rather not share.
+Today's "Diagnostics" button copies the blob immediately. Once the blob grows beyond its current sections (gui, components, runtime, tvs, vendors_supported), the user should be able to *see* what's about to leave their machine and toggle off categories they'd rather not share.
 
 Path forward:
 
@@ -9,4 +9,4 @@ Path forward:
 - Category toggle chips: System info, Log tail, Vendor data, Build provenance. Each gates a top-level section in the captured payload.
 - Three action buttons in the sheet footer: Copy, Save File, Open Issue (URL-prefill via `https://github.com/.../issues/new?body=<urlencoded>`, with truncation when over GitHub's URL cap).
 
-Builds on the support-bundle CLI work below — both share the same `Diagnostic::redact_categories(&[Category])` helper.
+Builds on the [support-bundle CLI](support-bundle-cli.md) — both share the same `Diagnostic::redact_categories(&[Category])` helper.

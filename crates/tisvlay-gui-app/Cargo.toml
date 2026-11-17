@@ -24,8 +24,7 @@ path = "src/main.rs"
 # The Slint-generated UI, compiled in its own crate so its large generated
 # code builds in parallel with the zenoh/SDK chain below.
 tisvlay-gui = { workspace = true }
-# Transport-free core types (profiles, schema, capabilities, helpers);
-# the D-Bus client surface is replaced by tisvlay.
+# Transport-free core types (profiles, schema, capabilities, helpers).
 tisvlay-core = { workspace = true }
 tisvlay-runtime = { workspace = true, features = ["logging", "access", "client", "fs"] }
 tisvlay = { workspace = true }
@@ -49,8 +48,8 @@ gettext-rs = "0.8"
 webbrowser = "1"
 tempfile = { workspace = true }
 os_info = { version = "3", default-features = false }
-rustix = { version = "1", features = ["system"] }
-libc = "0.2"
+rustix = { workspace = true, features = ["system"] }
+libc = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]

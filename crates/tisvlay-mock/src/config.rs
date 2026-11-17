@@ -111,12 +111,10 @@ pub struct MockVendorConfig {
     /// Make this mock TV behave like a poll-only backend.
     ///
     /// When `true`, the mock connection's `subscribe_state` returns
-    /// `NotSupported` instead of a push channel — modeling a backend
-    /// (e.g. an Epson projector over a request/response transport) that
-    /// has no real-time state stream. The daemon then drives the TV
-    /// through its periodic `state_poll_loop` / `get_state` path and
-    /// the reliable-dispatch active-verify path instead of subscription
-    /// pushes. Default `false` (push, like LG) so existing mock-based
+    /// `NotSupported` instead of a push channel — modeling a backend over
+    /// a request/response transport with no real-time state stream. Its
+    /// state then refreshes only on reconnect and through the world's
+    /// verify reads after its own power and screen commands. Default `false` (push, like LG) so existing mock-based
     /// tests are unaffected.
     #[serde(default)]
     pub disable_subscription: bool,

@@ -14,16 +14,14 @@ use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{
-    BackendCmd, SleepRequest, StoreSnapshot, SystemEvent, TransportInfo, WakeList, WireEffect,
-};
+use crate::events::{BackendCmd, SleepRequest, StoreSnapshot, TransportInfo, WakeList, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 ///
 /// Immutable, and its hooks keep [`TvIndex`] in step with the live TV
 /// entities: inserting it indexes the TV, and removing it (despawn
 /// included) unindexes it, deletes every key the TV published, and
-/// releases its route monitoring. No spawn or despawn path can forget
+/// releases its route and device monitoring. No spawn or despawn path can forget
 /// either. Hooks run when `Commands` flush, so within one system the
 /// index lags that system's own spawns and despawns.
 #[derive(Component, Debug)]
@@ -59,10 +57,7 @@ fn retire_tv(mut world: DeferredWorld, ctx: HookContext) {
     world.resource_mut::<PowerEdges>().0.remove(&id);
     let site = world.resource::<Site>().0.clone();
     let mut outbox = world.resource_mut::<Outbox>();
-    for path in payload::TV_PATHS
-        .iter()
-        .chain(payload::TV_EXTRA_PATHS.iter())
-    {
+    for path in payload::TV_PATHS {
         outbox.0.push(Effect::Wire(WireEffect::Delete {
             key: keys::tv_path(&site, &id, path),
         }));
@@ -164,15 +159,24 @@ pub(crate) struct LatestDial(pub u64);
 pub(crate) struct DialSeq(pub u64);
 
 /// A connect request is outstanding: reconcile dials until it succeeds or
-/// the attempt budget is spent. Inserted by AddTv / Reconnect / a wake-path
-/// PowerOn — never by a disconnect (a TV that goes down stays down until
-/// asked).
+/// the attempt budget is spent, or without end for a TV in an [`Outage`].
+/// Inserted by AddTv / Reconnect / a wake-path PowerOn, and by a drop the
+/// TV didn't announce; a TV that announced its standby stays down until
+/// asked.
 #[derive(Component, Debug)]
 pub(crate) struct PendingConnect {
     pub attempts: u8,
     /// Dial via `wake_and_connect` (WoL/CEC wake) instead of plain connect.
     pub wake: bool,
 }
+
+/// A network TV that may well be on and can't be reached: its link dropped
+/// with no standby announced, or it never answered a whole dial budget.
+/// Its redial has no budget: it goes on at the capped backoff until a
+/// dial connects. A marker of its own because `redial` replaces
+/// [`PendingConnect`], and the outage has to outlive that.
+#[derive(Component, Debug)]
+pub(crate) struct Outage;
 
 /// Backoff gate: no new dial before this instant.
 #[derive(Component, Debug)]
@@ -410,57 +414,6 @@ pub(crate) enum ProfileAction {
     ScreenOn,
     PowerOff,
     PowerOn,
-}
-
-/// Event → `(action, restore_input, while_streaming)` mapping applied when
-/// a TV has no assigned profile or its profile leaves the event's field
-/// unset — the inheritance base the `profile/rpc/defaults` projection
-/// serves. The trailing bool is the resolved stream gate: `true`
-/// fires while the TV is armed, `false` suppresses.
-#[derive(Resource, Debug)]
-pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool, bool)>);
-
-impl SystemProfile {
-    /// Stock mapping — parity with the root stack's hard-coded resolved
-    /// defaults: full power-off on sleep/shutdown, wake-on-LAN on resume,
-    /// screen-blank mirroring for DPMS and the login greeter's idle timer.
-    /// The session-start wakes restore the primary input (mirrors
-    /// `ResolvedSystemProfile::default`).
-    ///
-    /// The `while_streaming` floor splits by event direction, mirroring
-    /// [`tisvlay_core::ResolvedSystemProfile::default`]: off-going events
-    /// fire while armed (a blank is always safe to let through, and the
-    /// machine going away turns the TV off for the empty room), so sleep,
-    /// shutdown, and the DPMS-off/greeter-idle blanks are ungated; the
-    /// wake-ish events (startup, resume, DPMS-on, greeter-resume) stay
-    /// gated. Greeter events run before any session, so their gate never
-    /// bites either way (the armed set is empty at the login screen).
-    pub(crate) fn stock() -> Self {
-        Self(HashMap::from([
-            // WoL at boot; a reboot deliberately has no stock action
-            // (the TV stays on across a quick restart).
-            (SystemEvent::Startup, (ProfileAction::PowerOn, true, false)),
-            (SystemEvent::Sleep, (ProfileAction::PowerOff, false, true)),
-            (SystemEvent::Resume, (ProfileAction::PowerOn, true, false)),
-            (
-                SystemEvent::Shutdown,
-                (ProfileAction::PowerOff, false, true),
-            ),
-            (
-                SystemEvent::DpmsOff,
-                (ProfileAction::ScreenOff, false, true),
-            ),
-            (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false, false)),
-            (
-                SystemEvent::GreeterIdle,
-                (ProfileAction::ScreenOff, false, true),
-            ),
-            (
-                SystemEvent::GreeterResume,
-                (ProfileAction::ScreenOn, false, false),
-            ),
-        ]))
-    }
 }
 
 /// The set of TVs a stream currently arms — mirrored from the

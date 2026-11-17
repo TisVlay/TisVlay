@@ -10,8 +10,7 @@
 //! Each node is then *probed*, best-effort: the scanner opens it and queries
 //! the TV's OSD name + vendor over the bus, so the wizard's list shows the
 //! real set (`OLED42C3PU` / LG) and its name field prefills. A node that
-//! doesn't answer (or can't be opened — e.g. already held by an active
-//! connection) falls back to the bare `HDMI CEC (/dev/cecN)` entry. The
+//! doesn't answer (or can't be opened — e.g. busy) falls back to the bare `HDMI CEC (/dev/cecN)` entry. The
 //! identity queries are bounded (see [`crate::link`]) so a silent TV can't
 //! stall the scan.
 
@@ -114,20 +113,14 @@ impl TvDiscovery for CecDiscovery {
             }
             // Carry the resolved canonical vendor so the wizard tile brands by
             // it (`lg`) instead of the backend id (`cec`). `vendor_data` is the
-            // free-form channel that already crosses D-Bus to the wizard;
-            // adding a `DiscoveredTv` field would change its wire signature.
+            // free-form channel that already reaches the wizard in the
+            // `DiscoveredTv` payload, so the brand needs no new field.
             if let Some(brand) = identity.brand {
                 tv.vendor_data.insert("brand".to_string(), brand);
             }
         }
         Ok(tvs)
     }
-}
-
-/// Is `name` a CEC device node — `cec` followed by one or more digits?
-fn is_cec_device(name: &str) -> bool {
-    name.strip_prefix("cec")
-        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Synchronous enumeration core: read the directory and map each CEC node
@@ -139,7 +132,7 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
     };
     let mut tvs: Vec<DiscoveredTv> = entries
         .flatten()
-        .filter(|e| is_cec_device(&e.file_name().to_string_lossy()))
+        .filter(|e| crate::wakeup::is_cec_node(&e.file_name().to_string_lossy()))
         .map(|e| {
             let device = e.path().to_string_lossy().into_owned();
             DiscoveredTv {
@@ -166,7 +159,7 @@ fn enumerate(dir: &Path) -> Vec<DiscoveredTv> {
 }
 
 /// The `N` in a `/dev/cecN` path, for numeric ordering. Unparsable paths
-/// sort last (they shouldn't occur — `is_cec_device` gates enumeration).
+/// sort last (they shouldn't occur — `is_cec_node` gates enumeration).
 fn cec_index(address: &str) -> u32 {
     address
         .rsplit("cec")
@@ -186,18 +179,6 @@ mod tests {
     /// leaves each node as its bare `/dev/cecN` entry.
     fn no_identity_opener() -> Arc<dyn CecLinkOpener> {
         Arc::new(FakeCecLinkOpener::new(PowerStatus::Standby))
-    }
-
-    #[test]
-    fn is_cec_device_matches_cec_n() {
-        assert!(is_cec_device("cec0"));
-        assert!(is_cec_device("cec1"));
-        assert!(is_cec_device("cec12"));
-        assert!(!is_cec_device("cec")); // no number
-        assert!(!is_cec_device("cecx")); // non-digit suffix
-        assert!(!is_cec_device("ceca0")); // letter then digit
-        assert!(!is_cec_device("video0"));
-        assert!(!is_cec_device("dri"));
     }
 
     #[tokio::test]

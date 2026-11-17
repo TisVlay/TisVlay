@@ -12,17 +12,20 @@
 //! The pairing flow is modeled as a state machine:
 //!
 //! ```text
-//! [Started] ──► [AwaitingTvPrompt] ──► [Complete]
-//!                     │                    ▲
-//!                     ▼                    │
-//!              [AwaitingUserInput] ────────┘
-//!                     │
-//!                     ▼
-//!                 [Failed]
+//! [AwaitingTvPrompt] ──► [Complete]
+//!        │                   ▲
+//!        ▼                   │
+//! [AwaitingUserInput] ───────┘
+//!        │
+//!        ▼
+//!    [Failed]
 //! ```
 //!
-//! GUI/CLI clients subscribe to state changes via [`PairingSession::subscribe`]
-//! and respond to input requests via [`PairingSession::submit_input`].
+//! The daemon owns each session: it follows the state through
+//! [`PairingSession::subscribe`] and relays it as the protocol's
+//! `pairing/<tv>/progress`, which clients follow. No rpc carries user
+//! input yet, so a backend that waits in `AwaitingUserInput` waits until
+//! its own timeout.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -357,40 +360,30 @@ pub enum PairingCommand {
 ///
 /// # Usage
 ///
-/// ```ignore
-/// let session = backend.start_pairing("192.168.1.100");
+/// A backend creates the session and drives it from its own task; the
+/// daemon follows the state until it's terminal:
 ///
-/// // Subscribe to state changes
-/// let mut state_rx = session.subscribe();
+/// ```no_run
+/// # async fn demo(
+/// #     connector: &dyn tisvlay_core::TvConnector,
+/// #     config: &tisvlay_core::VendorConfig,
+/// # ) -> tisvlay_core::Result<()> {
+/// use tisvlay_core::PairingState;
 ///
-/// // Monitor state in a separate task
-/// tokio::spawn(async move {
-///     while state_rx.changed().await.is_ok() {
-///         let state = state_rx.borrow();
-///         match &*state {
-///             PairingState::AwaitingTvPrompt { message } => {
-///                 println!("Please accept on TV: {}", message);
-///             }
-///             PairingState::AwaitingUserInput { prompt, input_type } => {
-///                 println!("Enter {}: {}", input_type, prompt);
-///             }
-///             PairingState::Complete { credentials } => {
-///                 println!("Pairing complete! Key: {:?}", credentials.data);
-///                 break;
-///             }
-///             PairingState::Failed { error } => {
-///                 println!("Pairing failed: {}", error);
-///                 break;
-///             }
-///         }
+/// let session = connector.start_pairing(config)?;
+/// let mut states = session.subscribe();
+/// while !states.borrow_and_update().is_terminal() {
+///     if states.changed().await.is_err() {
+///         break; // The backend dropped the session.
 ///     }
-/// });
-///
-/// // If PIN is requested, submit it
-/// session.submit_input("1234").await?;
-///
-/// // Or cancel if needed
-/// session.cancel().await?;
+/// }
+/// match &*states.borrow() {
+///     PairingState::Complete { credentials } => { /* persist them */ }
+///     PairingState::Failed { error } => { /* report the error */ }
+///     _ => {}
+/// }
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct PairingSession {
@@ -401,20 +394,6 @@ pub struct PairingSession {
 }
 
 impl PairingSession {
-    /// Create a new pairing session.
-    ///
-    /// This is typically called by backend implementations, not by users.
-    /// Use [`TvConnector::start_pairing`](crate::TvConnector::start_pairing) instead.
-    pub fn new(
-        command_tx: mpsc::Sender<PairingCommand>,
-        state_rx: watch::Receiver<PairingState>,
-    ) -> Self {
-        Self {
-            command_tx,
-            state_rx,
-        }
-    }
-
     /// Create a pairing session with its channel endpoints.
     ///
     /// Returns the session and the backend-side channel endpoints.
@@ -429,7 +408,10 @@ impl PairingSession {
         let (command_tx, command_rx) = mpsc::channel(8);
         let (state_tx, state_rx) = watch::channel(PairingState::default());
 
-        let session = Self::new(command_tx, state_rx);
+        let session = Self {
+            command_tx,
+            state_rx,
+        };
         (session, command_rx, state_tx)
     }
 
@@ -454,47 +436,6 @@ impl PairingSession {
     /// Get the current pairing state.
     pub fn state(&self) -> PairingState {
         self.state_rx.borrow().clone()
-    }
-
-    /// Submit user input (PIN, password, etc.).
-    ///
-    /// This should be called when the state is [`PairingState::AwaitingUserInput`].
-    pub async fn submit_input(&self, input: impl Into<String>) -> Result<(), PairingError> {
-        self.command_tx
-            .send(PairingCommand::SubmitInput(input.into()))
-            .await
-            .map_err(|_| PairingError::new(PairingErrorCode::Unknown, "Pairing session closed"))
-    }
-
-    /// Cancel the pairing process.
-    pub async fn cancel(&self) -> Result<(), PairingError> {
-        self.command_tx
-            .send(PairingCommand::Cancel)
-            .await
-            .map_err(|_| PairingError::new(PairingErrorCode::Unknown, "Pairing session closed"))
-    }
-
-    /// Wait for the pairing to complete (success or failure).
-    ///
-    /// Returns the final credentials on success, or an error on failure.
-    pub async fn wait_for_completion(&mut self) -> Result<Credentials, PairingError> {
-        loop {
-            // Check current state first
-            let state = self.state_rx.borrow().clone();
-            match state {
-                PairingState::Complete { credentials } => return Ok(credentials),
-                PairingState::Failed { error } => return Err(error),
-                _ => {}
-            }
-
-            // Wait for next change
-            if self.state_rx.changed().await.is_err() {
-                return Err(PairingError::new(
-                    PairingErrorCode::Unknown,
-                    "Pairing session closed unexpectedly",
-                ));
-            }
-        }
     }
 }
 
@@ -578,7 +519,11 @@ mod tests {
             .unwrap();
 
         // Submit input
-        session.submit_input("1234").await.unwrap();
+        session
+            .command_sender()
+            .send(PairingCommand::SubmitInput("1234".into()))
+            .await
+            .unwrap();
 
         // Verify command received
         let cmd = command_rx.recv().await.unwrap();

@@ -1,5 +1,5 @@
-//! Desktop identity probe (ported from the root daemon): parse each
-//! connected DRM connector's EDID into a `HardwareId`, match against TV
+//! Desktop identity probe: parse each connected DRM connector's EDID
+//! into a `HardwareId`, match against TV
 //! identities — consumed from our own wire, the identity keys — and feed
 //! matches back into the world, where they scope DPMS events per TV.
 //!
@@ -20,9 +20,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use serde_json::Value;
 use tisvlay_core::HardwareId;
 use tisvlay_protocol::keys;
+use tisvlay_protocol::payload::{self, StatePayload};
 use tisvlay_world::{InEvent, WorldClient};
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
@@ -119,7 +119,7 @@ fn match_score(tv: &HardwareId, edid: &HardwareId) -> u32 {
     score
 }
 
-/// Deterministic greedy matcher (ported): displays sort by connector name,
+/// Deterministic greedy matcher: displays sort by connector name,
 /// each TV claims its best-scoring unclaimed display.
 pub(crate) fn match_displays_to_tvs<'a>(
     displays: &'a [ProbedDisplay],
@@ -171,7 +171,7 @@ pub(crate) async fn probe_task(
     dpms_period: Duration,
 ) {
     let subscriber = match session
-        .declare_subscriber(keys::tv_all(&site))
+        .declare_subscriber(keys::tv_path_wild(&site, payload::Identity::PATH))
         .history(HistoryConfig::default().detect_late_publishers())
         .await
     {
@@ -191,26 +191,29 @@ pub(crate) async fn probe_task(
         tokio::select! {
             sample = subscriber.recv_async() => {
                 let Ok(sample) = sample else { break };
-                let Some((tv, path)) = keys::parse_tv_path(&site, sample.key_expr().as_str())
+                let Some((tv, _)) = keys::parse_tv_path(&site, sample.key_expr().as_str())
                 else {
                     continue;
                 };
-                if path != "meta/identity" {
-                    continue;
-                }
                 match sample.kind() {
                     SampleKind::Delete => {
                         tvs.remove(&tv);
                         assigned.remove(&tv);
                     }
                     SampleKind::Put => {
-                        let value: Value =
-                            serde_json::from_slice(&sample.payload().to_bytes())
-                                .unwrap_or(Value::Null);
+                        let identity = match serde_json::from_slice::<payload::Identity>(
+                            &sample.payload().to_bytes(),
+                        ) {
+                            Ok(identity) => identity,
+                            Err(e) => {
+                                warn!(%tv, %e, "undecodable identity sample");
+                                continue;
+                            }
+                        };
                         let hw = HardwareId {
-                            manufacturer: value.get("make").and_then(Value::as_str).map(str::to_string),
-                            model: value.get("model").and_then(Value::as_str).map(str::to_string),
-                            serial: value.get("serial").and_then(Value::as_str).map(str::to_string),
+                            manufacturer: identity.make,
+                            model: identity.model,
+                            serial: identity.serial,
                         };
                         if hw.manufacturer.is_some() {
                             tvs.insert(tv, hw);

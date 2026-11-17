@@ -25,7 +25,7 @@
 
 #![expect(
     unsafe_code,
-    reason = "libc xattr calls that read and write the socket's POSIX ACL, and getgrnam_r to resolve group names"
+    reason = "libc xattr calls that read and write the socket's POSIX ACL"
 )]
 
 use std::collections::BTreeSet;
@@ -110,7 +110,7 @@ fn resolve_gids(access: &GreeterAccess) -> BTreeSet<u32> {
     match access {
         GreeterAccess::Disabled => BTreeSet::new(),
         GreeterAccess::Group(name) => {
-            let gid = gid_of(name);
+            let gid = tisvlay_runtime::access::gid_of(name);
             if gid.is_none() && !MISSING_GROUP_WARNED.swap(true, Ordering::Relaxed) {
                 warn!(name, "greeter group not found; no greeter socket ACL");
             }
@@ -119,7 +119,7 @@ fn resolve_gids(access: &GreeterAccess) -> BTreeSet<u32> {
         GreeterAccess::Auto => {
             let gids: BTreeSet<u32> = KNOWN_GREETER_GROUPS
                 .iter()
-                .filter_map(|g| gid_of(g))
+                .filter_map(|g| tisvlay_runtime::access::gid_of(g))
                 .collect();
             if gids.is_empty() {
                 // Absent under an unknown DM is the normal case for the
@@ -128,42 +128,6 @@ fn resolve_gids(access: &GreeterAccess) -> BTreeSet<u32> {
             }
             gids
         }
-    }
-}
-
-/// Resolve a group name to its gid via the reentrant `getgrnam_r`: the
-/// daemon is multi-threaded and its adapters touch NSS elsewhere, so the
-/// static buffer behind plain `getgrnam` is unsafe to share.
-fn gid_of(name: &str) -> Option<u32> {
-    let cname = CString::new(name).ok()?;
-    let mut buflen = 1024usize;
-    loop {
-        let mut buf = vec![0u8; buflen];
-        // SAFETY: `libc::group` is a plain C struct; an all-zero value is
-        // a valid empty initializer that getgrnam_r overwrites before any
-        // field is read.
-        let mut grp: libc::group = unsafe { std::mem::zeroed() };
-        let mut result: *mut libc::group = std::ptr::null_mut();
-        // SAFETY: getgrnam_r fills `grp` and `result` out of `buf`; on a
-        // missing group it returns 0 with a null `result`. `grp` is read
-        // only when the call succeeds and `result` is non-null.
-        let ret = unsafe {
-            libc::getgrnam_r(
-                cname.as_ptr(),
-                &raw mut grp,
-                buf.as_mut_ptr().cast::<libc::c_char>(),
-                buflen,
-                &raw mut result,
-            )
-        };
-        if ret == 0 {
-            return (!result.is_null()).then_some(grp.gr_gid);
-        }
-        if ret == libc::ERANGE && buflen < (1 << 20) {
-            buflen *= 2;
-            continue;
-        }
-        return None;
     }
 }
 

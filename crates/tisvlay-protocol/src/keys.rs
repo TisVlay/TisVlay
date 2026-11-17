@@ -25,6 +25,12 @@ pub fn tv_path(site: &str, tv: &Uuid, path: &str) -> String {
     format!("tisvlay/{site}/tv/{tv}/{path}")
 }
 
+/// One per-TV path across every TV: `tisvlay/<site>/tv/*/<path>`, e.g.
+/// every TV's identity with [`StatePayload::PATH`](crate::payload::StatePayload::PATH).
+pub fn tv_path_wild(site: &str, path: &str) -> String {
+    format!("tisvlay/{site}/tv/*/{path}")
+}
+
 /// Observability tap: `tisvlay/<site>/event/<name>`.
 pub fn event(site: &str, name: &str) -> String {
     format!("tisvlay/{site}/event/{name}")
@@ -50,15 +56,15 @@ pub fn session_event(site: &str, name: &str) -> String {
     format!("tisvlay/{site}/event/session/{name}")
 }
 
-/// Greeter idle transitions, published by `tisvlay-greeter`:
-/// `tisvlay/<site>/greeter/idle` with `{idle: bool}`.
+/// Greeter idle transitions, published by `tisvlay-greeter`, carrying a
+/// [`GreeterIdle`](crate::payload::GreeterIdle).
 pub fn greeter_idle(site: &str) -> String {
     format!("tisvlay/{site}/greeter/idle")
 }
 
-/// The daemon-computed greeter idle timeout (shortest enabled across
-/// automated TVs, `{seconds}`; 0 = disabled): cached pub the greeter
-/// subscribes to.
+/// The daemon-computed greeter idle timeout, a
+/// [`GreeterTimeout`](crate::payload::GreeterTimeout): a cached publish
+/// the greeter follows.
 pub fn greeter_timeout(site: &str) -> String {
     format!("tisvlay/{site}/greeter/timeout")
 }
@@ -69,13 +75,19 @@ pub fn user_profile(site: &str, id: &Uuid) -> String {
     format!("tisvlay/{site}/user/profile/{id}")
 }
 
-/// Per-TV user-profile assignment on the user socket.
+/// Every user profile body: the catalog wildcard over [`user_profile`].
+pub fn user_profile_wild(site: &str) -> String {
+    format!("tisvlay/{site}/user/profile/*")
+}
+
+/// Per-TV user-profile assignment on the user socket, a
+/// [`UserTvProfile`](crate::payload::UserTvProfile).
 pub fn user_tv_profile(site: &str, tv: &Uuid) -> String {
     format!("tisvlay/{site}/user/tv/{tv}/profile")
 }
 
 /// User-profile RPC key + the wildcard its queryable declares.
-pub fn user_profile_rpc(site: &str, verb: &str) -> String {
+pub(crate) fn user_profile_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/profile/rpc/{verb}")
 }
 
@@ -86,7 +98,7 @@ pub fn user_profile_rpc_wild(site: &str) -> String {
 
 /// Parse a [`user_profile_rpc`] key into its verb (the rest of `key` after
 /// the family's prefix); `None` when `key` lacks that prefix.
-pub fn parse_user_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub(crate) fn parse_user_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
         .strip_prefix("/user/profile/rpc/")
@@ -103,7 +115,7 @@ pub fn user_tray_settings(site: &str) -> String {
 }
 
 /// Tray settings rpcs + the wildcard their queryable declares.
-pub fn user_tray_rpc(site: &str, verb: &str) -> String {
+pub(crate) fn user_tray_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/tray/rpc/{verb}")
 }
 
@@ -114,7 +126,7 @@ pub fn user_tray_rpc_wild(site: &str) -> String {
 
 /// Parse a [`user_tray_rpc`] key into its verb (the rest of `key` after
 /// the family's prefix); `None` when `key` lacks that prefix.
-pub fn parse_user_tray_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub(crate) fn parse_user_tray_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
         .strip_prefix("/user/tray/rpc/")
@@ -144,18 +156,18 @@ pub fn stream_state(site: &str) -> String {
 
 /// Stream rpcs + the wildcard their queryable declares (own
 /// family, not folded into the profile rpc queryable).
-pub fn user_stream_rpc(site: &str, verb: &str) -> String {
+pub(crate) fn user_stream_rpc(site: &str, verb: &str) -> String {
     format!("tisvlay/{site}/user/stream/rpc/{verb}")
 }
 
 /// Wildcard the session's stream rpc queryable is declared on.
-pub fn user_stream_rpc_wild(site: &str) -> String {
+pub(crate) fn user_stream_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/user/stream/rpc/*")
 }
 
 /// Parse a [`user_stream_rpc`] key into its verb (the rest of `key` after
 /// the family's prefix); `None` when `key` lacks that prefix.
-pub fn parse_user_stream_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub(crate) fn parse_user_stream_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
         .strip_prefix("/user/stream/rpc/")
@@ -165,17 +177,6 @@ pub fn parse_user_stream_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
 /// the system socket (gateway isolation invariant).
 pub fn user_all(site: &str) -> String {
     format!("tisvlay/{site}/user/**")
-}
-
-/// Every TV's `meta/config` key — the session service's fleet mirror.
-pub fn tv_meta_wild(site: &str) -> String {
-    format!("tisvlay/{site}/tv/*/meta/config")
-}
-
-/// Every TV's `state/power` key — the session service's screen
-/// mirror (idle drift re-assert).
-pub fn tv_power_wild(site: &str) -> String {
-    format!("tisvlay/{site}/tv/*/state/power")
 }
 
 /// All system-profile bodies.
@@ -232,13 +233,13 @@ pub fn profile_rpc(site: &str, verb: &str) -> String {
 }
 
 /// Wildcard the daemon's system-profile rpc queryable is declared on.
-pub fn profile_rpc_wild(site: &str) -> String {
+pub(crate) fn profile_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/profile/rpc/*")
 }
 
 /// Parse a [`profile_rpc`] key into its verb (the rest of `key` after
 /// the family's prefix); `None` when `key` lacks that prefix.
-pub fn parse_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub(crate) fn parse_profile_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
         .strip_prefix("/profile/rpc/")
@@ -258,7 +259,7 @@ pub fn vendor_schema(site: &str, vendor: &str) -> String {
 /// Wildcard the daemon's vendor-catalog queryable is declared on;
 /// `**` spans zero chunks too, so it matches the bare [`vendors`] key
 /// as well as every [`vendor_schema`] key.
-pub fn vendors_wild(site: &str) -> String {
+pub(crate) fn vendors_wild(site: &str) -> String {
     format!("tisvlay/{site}/manager/vendors/**")
 }
 
@@ -317,7 +318,7 @@ pub fn manager_rpc_wild(site: &str) -> String {
 }
 
 /// Wildcard the daemon's per-TV-RPC queryable is declared on.
-pub fn tv_rpc_wild(site: &str) -> String {
+pub(crate) fn tv_rpc_wild(site: &str) -> String {
     format!("tisvlay/{site}/tv/*/rpc/*")
 }
 
@@ -343,19 +344,19 @@ pub fn parse_tv_path<'a>(site: &str, key: &'a str) -> Option<(Uuid, &'a str)> {
 }
 
 /// Parse a per-TV RPC key into `(uuid, verb)`.
-pub fn parse_tv_rpc<'a>(site: &str, key: &'a str) -> Option<(Uuid, &'a str)> {
+pub(crate) fn parse_tv_rpc<'a>(site: &str, key: &'a str) -> Option<(Uuid, &'a str)> {
     let (id, path) = parse_tv_path(site, key)?;
     Some((id, path.strip_prefix("rpc/")?))
 }
 
 /// Parse a manager RPC key into its verb.
-pub fn parse_manager_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
+pub(crate) fn parse_manager_rpc<'a>(site: &str, key: &'a str) -> Option<&'a str> {
     key.strip_prefix("tisvlay/")?
         .strip_prefix(site)?
         .strip_prefix("/manager/rpc/")
 }
 
-/// Parse a pairing-progress key into the pairing uuid.
+/// Parse a pairing-progress key into the TV's id.
 pub fn parse_pairing_progress(site: &str, key: &str) -> Option<Uuid> {
     let rest = key
         .strip_prefix("tisvlay/")?

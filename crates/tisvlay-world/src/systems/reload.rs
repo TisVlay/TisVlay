@@ -146,6 +146,22 @@ pub(crate) fn reload_store(
             return Err(WireError::profile_reserved(id));
         }
     }
+    // A TV's profile must exist once the edit applies, as
+    // set-system-profile requires: a dangling id would silently run the
+    // default profile.
+    let profile_exists = |id: Uuid| {
+        (profiles.contains(&id) && !diff.profiles_removed.contains(&id))
+            || diff.profiles_added.iter().any(|p| p.id == id)
+    };
+    let assignments = diff.tvs_added.iter().map(|tv| tv.system_profile).chain(
+        diff.tvs_changed
+            .iter()
+            .filter(|(old, new)| old.system_profile != new.system_profile)
+            .map(|(_, new)| new.system_profile),
+    );
+    if let Some(id) = assignments.flatten().find(|&id| !profile_exists(id)) {
+        return Err(WireError::profile_not_found(id));
+    }
     // A TV mid-pairing belongs to its pairing flow; the edit leaves it be.
     let pairing_flow = |id: Uuid| {
         pairing.index.contains(&id)
@@ -325,9 +341,7 @@ fn apply_tv_edit(
         .get(entity)
         .unwrap_or((None, false, None, None, None, None));
     if handle.is_some() || pending {
-        let mut e = commands.entity(entity);
-        e.remove::<(ConnectionHandle, RetryAt)>();
-        redial(&mut e, false);
+        redial_on_new_config(&mut commands.entity(entity));
     }
 }
 

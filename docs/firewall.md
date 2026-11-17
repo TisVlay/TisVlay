@@ -5,7 +5,7 @@ LG TVs are discovered over SSDP, and a default-deny Linux firewall drops their r
 ## How the replies arrive
 
 1. TisVlay sends an M-SEARCH to the multicast group `239.255.255.250:1900`.
-2. Each TV replies by unicast, from its own IP, **from a high ephemeral port**, to our source port. The daemon pins that source port to 1901 by default (`--ssdp-port`), so a single destination-port rule matches every reply.
+2. Each TV replies by unicast, from its own IP, **from a high ephemeral port**, to our source port. The daemon pins that source port (`--ssdp-port`; the default and its rule are in the book's Firewall & Discovery), so a single destination-port rule matches every reply.
 
 A `--sport 1900` rule doesn't help: the replies don't come from 1900.
 

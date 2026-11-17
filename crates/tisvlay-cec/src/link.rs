@@ -245,9 +245,9 @@ fn identity_query_timeout() -> Timeout {
 /// Production [`CecLink`] wrapping a `linux_cec::AsyncDevice`.
 ///
 /// `AsyncDevice` runs a dedicated worker thread that it joins on drop.
-/// Since the daemon drops a connection (and thus this link) while holding
-/// the per-TV mutex, that join is bounded by the in-flight ioctl — CEC
-/// message timeouts cap at one second.
+/// The connection's task drops this link with the connection, so that
+/// join is bounded by the in-flight ioctl — CEC message timeouts cap at
+/// one second.
 #[derive(Debug)]
 struct LinuxCecLink {
     device: AsyncDevice,
@@ -626,6 +626,8 @@ mod fake {
         vendor_id: Option<linux_cec::VendorId>,
         /// The adapter has `CEC_CAP_RC` (default: it does).
         rc: bool,
+        /// `query_power` fails, like a TV that doesn't answer in time.
+        power_query_fails: bool,
     }
 
     impl FakeCecLink {
@@ -638,7 +640,15 @@ mod fake {
                 osd_name: String::new(),
                 vendor_id: None,
                 rc: true,
+                power_query_fails: false,
             }
+        }
+
+        /// A TV whose power query goes unanswered.
+        #[must_use]
+        pub fn with_failing_power_query(mut self) -> Self {
+            self.power_query_fails = true;
+            self
         }
 
         /// A TV that drops the first `ignored` Image View On sends before
@@ -672,6 +682,9 @@ mod fake {
     #[async_trait]
     impl CecLink for FakeCecLink {
         async fn query_power(&self) -> Result<PowerStatus> {
+            if self.power_query_fails {
+                return Err(Error::RequestTimeout);
+            }
             Ok(*self.power.lock())
         }
 
@@ -897,6 +910,7 @@ mod fake {
                 osd_name,
                 vendor_id,
                 rc: true,
+                power_query_fails: false,
             }))
         }
 

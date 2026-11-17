@@ -2,17 +2,19 @@
 //!
 //! Each vendor backend declares (via `TvConnector::pairing_schema`)
 //! the form fields its pairing flow needs from the user. The daemon
-//! exposes the schema over D-Bus as JSON; the GUI renders the form
-//! dynamically — no backend-specific UI code lives in the wizard.
+//! serves the schema over the protocol (the vendor's schema rpc); the
+//! GUI renders the form dynamically — no backend-specific UI code lives
+//! in the wizard.
 //!
 //! Modeled loosely on Home Assistant's [config_flow][1] schema and
 //! NetworkManager's per-connection-type setting groups: one schema
-//! per backend, generic UI consumer, server-side canonical
-//! validation.
+//! per backend, generic UI consumer. The format checks run client-side
+//! ([`PairingField::validate`]); the daemon checks that required fields
+//! are present, and the backend parses the values when it dials.
 //!
 //! Scope is the *pairing* form only (fields the user enters
-//! BEFORE pairing). A separate `GetConfigSchema` for editing
-//! already-paired TVs is on the roadmap.
+//! BEFORE pairing); a paired TV's editable config comes from the
+//! connector's `config_schema`.
 //!
 //! [1]: https://developers.home-assistant.io/docs/data_entry_flow_index/
 //!
@@ -55,7 +57,7 @@ use serde::{Deserialize, Serialize};
 pub enum FieldVisibility {
     /// User types it during pairing (`ip`, `mac`). Shown in the
     /// pairing wizard, surfaced in the INFO pane, editable in the
-    /// future edit-properties pane. The default — backends without
+    /// edit pane. The default — backends without
     /// a reason to mark otherwise get this implicitly.
     #[default]
     UserInput,
@@ -65,16 +67,15 @@ pub enum FieldVisibility {
     /// — re-pair to refresh.
     Diagnostic,
     /// Sensitive backend-discovered value (`client_key`, OAuth
-    /// tokens, PSKs). Never displayed, never sent to the GUI's
-    /// `display_info` projection. The default `display_info`
-    /// implementation skips these unconditionally.
+    /// tokens, PSKs). Never displayed: the default `display_config`
+    /// and `display_diagnostics` projections skip these
+    /// unconditionally.
     Secret,
 }
 
 /// Input type for a [`PairingField`]. The wizard picks the right
-/// Slint widget based on this; the daemon's submit-validation also
-/// dispatches on it for canonical format checks (IP / MAC / port
-/// range).
+/// Slint widget based on this, and [`PairingField::validate`] dispatches
+/// on it for the format checks (IP / MAC / port range).
 ///
 /// Add a variant when a new backend genuinely needs it; don't
 /// reuse `String` as a catch-all when a typed variant fits.
@@ -134,12 +135,11 @@ pub struct PairingField {
     /// - The JSON key in the pairing-config payload sent back on
     ///   the `add-tv` / `pair` rpcs.
     /// - The `field` token in
-    ///   [`ConfigError::InvalidVendorConfig`][1] so the GUI can
-    ///   route validation errors back to the originating widget.
+    ///   [`ConfigError::InvalidVendorConfig`](crate::errors::ConfigError::InvalidVendorConfig)
+    ///   so the GUI can route validation errors back to the
+    ///   originating widget.
     /// - The autofill match key (`autofill: "discovery.address"`
     ///   matches `vendor_data["address"]`).
-    ///
-    /// [1]: ../errors/config/enum.ConfigError.html
     pub name: String,
 
     /// User-facing label (English source). When `translation_key`
@@ -158,8 +158,7 @@ pub struct PairingField {
     #[serde(default)]
     pub translation_key: Option<String>,
 
-    /// Input type — drives both UI rendering and server-side
-    /// canonical validation.
+    /// Input type — drives both UI rendering and the format check.
     #[serde(default)]
     pub field_type: PairingFieldType,
 
@@ -189,23 +188,24 @@ pub struct PairingField {
     #[serde(default)]
     pub options: Vec<String>,
 
-    /// Optional client-side validation regex. The daemon also
-    /// validates server-side; the regex is just for early
-    /// feedback in the form-validation lifecycle.
+    /// Optional client-side validation regex, for early feedback in
+    /// the form-validation lifecycle.
     #[serde(default)]
     pub validation: Option<String>,
 
     /// Where the value comes from + whether it's safe to display.
     /// Drives projection: pairing wizard shows `UserInput` only,
-    /// `display_info` shows `UserInput + Diagnostic`, future edit
-    /// pane edits `UserInput`. Defaults to `UserInput` so existing
+    /// the INFO pane shows `UserInput + Diagnostic`, the edit pane
+    /// edits `UserInput`. Defaults to `UserInput` so existing
     /// pairing-form fields don't need to opt in.
     #[serde(default)]
     pub visibility: FieldVisibility,
 }
 
 impl PairingField {
-    /// Server-side canonical validation of a submitted value.
+    /// Canonical format validation of a submitted value, run by the
+    /// clients that build the form (the daemon checks only that required
+    /// fields are present).
     ///
     /// Checks `required` + the type-specific format (IP / MAC /
     /// port-range / select-options). Empty `value` means

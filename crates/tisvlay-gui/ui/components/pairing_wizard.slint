@@ -326,7 +326,7 @@ component StepDiscover {
         // step heading — the stepper above already names the step, so a
         // static title plus separate status line would say the same
         // thing twice. Radar PulseDot while scanning, still dot at rest
-        // (`tv-pulse` keyframe — `.claude/ui/pairing-wizard-motion.md` § 1).
+        // (the `PulseDot` motion in widgets.slint).
         HorizontalLayout {
             spacing: Design.gap-stack;
             alignment: start;
@@ -383,8 +383,8 @@ component StepDiscover {
         }
         // Discovered list / empty-state. A single region with a stable
         // `min-height` so the layout doesn't shift the moment the first
-        // TV arrives — that shift previously pushed the manual-entry
-        // panel off-screen at minimum window sizes. The branch swap
+        // TV arrives, which would push the manual-entry panel
+        // off-screen at minimum window sizes. The branch swap
         // (empty placeholder ↔ populated list) happens *inside* the
         // region, so the wizard's overall height stays constant.
         // `vertical-stretch: 1` is set as forward-compat for a future
@@ -538,6 +538,7 @@ component StepDiscover {
                             }
                         }
                         if root.supported-vendors.length > 1: ThemedSelect {
+                            accessible-label: @tr("Vendor");
                             nav-row: root.manual-row;
                             model: root.supported-vendor-names;
                             // Clamp: the vendor set can shrink under a stale
@@ -566,6 +567,7 @@ component StepDiscover {
                             font-weight: 500;
                         }
                         address-field := LineEditField {
+                            accessible-label: root.supported-vendors.length > root.manual-vendor-index ? root.supported-vendors[root.manual-vendor-index].primary-label : @tr("Address");
                             nav-row: root.manual-row;
                             placeholder-text:
                                 root.supported-vendors.length > root.manual-vendor-index
@@ -616,16 +618,17 @@ component StepConfigure {
     in property <string> selected-hw-model;
     in-out property <string> tv-name;
     in-out property <string> system-profile;
+    in-out property <string> system-profile-id;
     in-out property <bool> managed;
     in property <[string]> system-profiles;
+    in property <[string]> system-profile-ids;
     /// Vendor's pairing-form schema rows (driven by Rust through
-    /// `Manager1.GetPairingSchema`, autofilled from the selected
+    /// the vendor's schema rpc, autofilled from the selected
     /// TV's `vendor_data`). Empty schema → the field-renderer block
     /// disappears and the user just confirms name/profile/managed.
     in property <[PairingFieldRow]> schema-fields;
+    in property <string> schema-error;
     callback name-edited(string);
-    callback profile-selected(string);
-    callback managed-toggled(bool);
     callback field-value-edited(int, string);
 
     VerticalLayout {
@@ -657,6 +660,7 @@ component StepConfigure {
                 font-weight: 500;
             }
             LineEditField {
+                accessible-label: @tr("Friendly name");
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> root.tv-name;
                 edited(value) => { root.name-edited(value); }
@@ -704,9 +708,18 @@ component StepConfigure {
             }
         }
 
-        // Vendor pairing-form schema (dynamic — driven by
-        // `Manager1.GetPairingSchema`). Shared with the TVs-pane
-        // edit-mode form via the same `SchemaForm` component.
+        // The schema couldn't load: say why, since the form stays empty
+        // and Pair stays disabled.
+        if root.schema-error != "": Text {
+            text: @tr("Couldn't load the pairing form: {}", root.schema-error);
+            color: Theme.danger-text;
+            font-size: Design.font-helper;
+            wrap: word-wrap;
+        }
+
+        // Vendor pairing-form schema (dynamic — driven by the vendor's
+        // schema rpc). Shared with the TVs-pane edit-mode form via the
+        // same `SchemaForm` component.
         SchemaForm {
             schema-fields: root.schema-fields;
             value-edited(i, v) => { root.field-value-edited(i, v); }
@@ -722,10 +735,12 @@ component StepConfigure {
                 font-weight: 500;
             }
             ThemedSelect {
+                accessible-label: @tr("Initial system profile");
                 model: root.system-profiles;
                 current-value: root.system-profile == "" ? "default" : root.system-profile;
                 enabled: root.system-profiles.length > 0;
-                selected(v) => { root.profile-selected(v); }
+                selected(v) => { root.system-profile = v; }
+                selected-index(i) => { root.system-profile-id = root.system-profile-ids[i]; }
             }
             Text {
                 text: @tr("Drives boot/shutdown/sleep behavior. You can change this later.");
@@ -748,7 +763,7 @@ component StepConfigure {
                 ThemedCheckBox {
                     text: @tr("Managed by TisVlay");
                     checked: root.managed;
-                    toggled => { root.managed-toggled(self.checked); }
+                    toggled => { root.managed = self.checked; }
                 }
                 Text {
                     text: @tr("The daemon will power-cycle this TV in response to desktop session events (lock, unlock, sleep, shutdown). Untick to keep it paired but ignored by automation.");
@@ -765,6 +780,8 @@ component StepPair {
     in property <string> phase;        // "awaiting_tv" / "complete" / "failed" / ""
     in property <string> message;
     in property <string> tv-address;
+    /// False while re-pairing, which has no discovery to go back to.
+    in property <bool> can-go-back: true;
     callback retry();
     callback back-to-discovery();
     // The failed phase's two buttons are a row for the arrows.
@@ -788,9 +805,8 @@ component StepPair {
             alignment: center;
 
             // Status icon. Terminal phases (complete / failed) render
-            // as still ✓ / ✕ in a soft-tinted circle — per
-            // `.claude/ui/pairing-wizard-motion.md`, *"stillness on
-            // resolution states is its own design choice"*. Anything
+            // as still ✓ / ✕ in a soft-tinted circle: stillness marks a
+            // resolved state. Anything
             // else is in-flight and gets the std-widgets `Spinner`
             // (the `tv-spin` indeterminate-progress role).
             HorizontalLayout {
@@ -873,7 +889,7 @@ component StepPair {
                     primary: true;
                     clicked => { root.retry(); }
                 }
-                ThemedButton {
+                if root.can-go-back: ThemedButton {
                     nav-row: root.actions-row;
                     text: @tr("Back to discovery");
                     clicked => { root.back-to-discovery(); }
@@ -1017,7 +1033,7 @@ component StepDone {
                 }
                 Text {
                     // Vendor display name — supplied by the daemon via
-                    // `Manager1.GetSupportedVendors` and looked up
+                    // the vendor catalog and looked up
                     // Rust-side at every setter site. Falls back to
                     // the id (machine identifier) if the model is empty.
                     text: root.tv-vendor-name == "" ? root.tv-vendor : root.tv-vendor-name;
@@ -1072,6 +1088,7 @@ export component PairingWizardPane inherits Rectangle {
     /// TvDetail's profile dropdown. Not wizard-specific, so kept as
     /// an in-property rather than hosted on the global.
     in property <[string]> system-profiles;
+    in property <[string]> system-profile-ids;
     // The footer's buttons are a row for the arrows.
     property <int> footer-row;
     init => {
@@ -1113,12 +1130,6 @@ export component PairingWizardPane inherits Rectangle {
     }
 
     background: Theme.surface-alt;
-
-    // Currently-selected discovered TV (or empty struct).
-    property <WizardDiscoveredTv> selected-tv:
-        PairingWizard.selected-index >= 0 && PairingWizard.selected-index < PairingWizard.discovered.length
-            ? PairingWizard.discovered[PairingWizard.selected-index]
-            : { id: "", name: "", vendor: "", address: "", hw-model: "" };
 
     // Whether the primary action button is enabled at the current step.
     property <bool> next-enabled:
@@ -1179,19 +1190,21 @@ export component PairingWizardPane inherits Rectangle {
                     selected-address: PairingWizard.selected-address;
                     selected-hw-model: PairingWizard.selected-hw-model;
                     tv-name <=> PairingWizard.tv-name;
-                    system-profile: PairingWizard.system-profile;
-                    managed: PairingWizard.managed;
+                    system-profile <=> PairingWizard.system-profile;
+                    system-profile-id <=> PairingWizard.system-profile-id;
+                    managed <=> PairingWizard.managed;
                     system-profiles: root.system-profiles;
+                    system-profile-ids: root.system-profile-ids;
                     schema-fields: PairingWizard.schema-fields;
+                    schema-error: PairingWizard.schema-error;
                     name-edited(v) => { PairingWizard.name-edited(v); }
-                    profile-selected(v) => { PairingWizard.profile-selected(v); }
-                    managed-toggled(v) => { PairingWizard.managed-toggled(v); }
                     field-value-edited(i, v) => { PairingWizard.field-value-edited(i, v); }
                 }
                 if PairingWizard.step == 3: StepPair {
                     phase: PairingWizard.pair-phase;
                     message: PairingWizard.pair-message;
                     tv-address: PairingWizard.selected-address;
+                    can-go-back: !PairingWizard.re-pair;
                     retry => { PairingWizard.retry-pair(); }
                     back-to-discovery => { PairingWizard.back-to-discovery(); }
                 }

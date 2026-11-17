@@ -340,9 +340,12 @@ async fn a_refused_sleep_reaches_dispatch_failed() {
 
     let f = fixture().await;
     f.fake.set_refuse_sleep(true).await;
+    // With history: the event can be put before a plain subscription
+    // reaches the daemon (under load), and its cached publisher replays it.
     let failed = f
         ._client
         .declare_subscriber(keys::event("t", "dispatch-failed"))
+        .history(HistoryConfig::default().detect_late_publishers())
         .await
         .unwrap();
     let (requests, rx) = tokio::sync::mpsc::unbounded_channel();

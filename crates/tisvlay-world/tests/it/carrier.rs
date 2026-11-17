@@ -9,7 +9,7 @@ use tisvlay_world::{Command, InEvent, Reply, SystemEvent};
 use uuid::Uuid;
 
 /// Carrier down parks network-dependent connections; carrier up redials.
-/// No auto-redial in between — parked is parked. Both directions scope
+/// No dial in between — parked is parked. Both directions scope
 /// to the TV's monitored (route-resolved) interface: transitions on
 /// other NICs pass it by.
 #[tokio::test]

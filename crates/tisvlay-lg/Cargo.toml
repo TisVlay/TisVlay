@@ -24,7 +24,6 @@ futures-util = { workspace = true }
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
-toml = { workspace = true }
 
 # Logging
 tracing = { workspace = true }
@@ -40,6 +39,7 @@ url = { workspace = true, optional = true }
 [dev-dependencies]
 proptest = { workspace = true }
 rstest = { workspace = true }
+toml = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 
 [features]

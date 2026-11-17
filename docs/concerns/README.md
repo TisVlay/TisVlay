@@ -4,7 +4,7 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 ## Architecture
 
-- [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12; triage done, its "don't fix these" list still applies)](zenoh-idiom-audit.md)
+- [Zenoh idiom audit against zenoh 1.9.0 (2026-07-12)](zenoh-idiom-audit.md) — its fixes landed; what remains is the "don't fix these" list and the accepted smells
 - [A poll-only network backend can't confirm its screen actions (no such backend yet)](poll-only-screen-verify.md)
 - [MAC enrichment doesn't check the address's IP family](enrich-no-family-check.md)
 

@@ -7,9 +7,8 @@
 //! - Bridge-level filtering of noisy `log::warn!()` calls from
 //!   transitive deps (via `LogTracer::builder().ignore_crate(...)`)
 
-use tracing::Subscriber;
 use tracing_log::LogTracer;
-use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::LookupSpan};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 
 /// Initialize tracing with journald support, EnvFilter directives, and
 /// per-crate bridge-level suppression for noisy `log::warn!()` callers.
@@ -30,8 +29,7 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::
 /// `tracing-log`'s bridge: the bridged tracing event's target becomes
 /// the literal string `"log"`, so EnvFilter directives on the original
 /// module path can't match. `ignore_crate` matches the original
-/// `log::Metadata::target()`, so it works as expected. See
-/// tokio-rs/tracing#3059 for the open-but-unresolved upstream paper-cut.
+/// `log::Metadata::target()`, so it works as expected.
 ///
 /// Detects whether stderr is a terminal to choose the logging backend:
 /// - **Not a TTY + journald available**: native journald via Unix socket
@@ -49,16 +47,9 @@ use tracing_subscriber::{EnvFilter, Layer, fmt, layer::SubscriberExt, registry::
 /// win globally. We use `tracing::subscriber::set_global_default`
 /// instead, which doesn't touch `LogTracer`, leaving ours intact.
 ///
-/// The previous fix at `d93a535` ("fix: Disable tracing-log bridge to
-/// suppress netlink-packet-route noise") solved the same problem by
-/// setting `default-features = false` on `tracing-subscriber` to drop
-/// the `tracing-log` feature outright. That approach regressed silently
-/// when `tracing-test` joined the workspace as a regular dep — cargo
-/// unifies features across the workspace, and `tracing-test 0.2.6`
-/// requests `tracing-subscriber = { features = ["env-filter"] }`
-/// without `default-features = false`, re-enabling the bridge in every
-/// binary. This file's approach is robust to that — the filter happens
-/// at the bridge regardless of who else turns the bridge on.
+/// Filtering at the bridge, rather than turning `tracing-subscriber`'s
+/// `tracing-log` feature off, holds whichever dependency turns the
+/// feature on: cargo unifies features across the workspace.
 pub fn init(
     identifier: &str,
     directives: &[&str],
@@ -91,8 +82,7 @@ pub fn init(
     match (interactive, journald_layer) {
         // TTY: stderr with timestamps + journald if available
         (true, journald) => {
-            let layered = with_optional(subscriber.with(fmt::layer()), journald);
-            tracing::subscriber::set_global_default(layered)?;
+            tracing::subscriber::set_global_default(subscriber.with(fmt::layer()).with(journald))?;
         }
         // Non-TTY with journald: journald only (systemd service)
         (false, Some(journald)) => {
@@ -105,15 +95,4 @@ pub fn init(
     }
 
     Ok(())
-}
-
-fn with_optional<S, L>(subscriber: S, layer: Option<L>) -> Box<dyn Subscriber + Send + Sync>
-where
-    S: Subscriber + Send + Sync + for<'a> LookupSpan<'a> + 'static,
-    L: Layer<S> + Send + Sync + 'static,
-{
-    match layer {
-        Some(l) => Box::new(subscriber.with(l)),
-        None => Box::new(subscriber),
-    }
 }

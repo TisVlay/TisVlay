@@ -152,8 +152,8 @@ pub enum InEvent {
     },
     /// A fact reported by a pairing task (or the reactor's pairing glue).
     PairingUpdate { id: Uuid, update: PairingUpdate },
-    /// A desktop/power event from an adapter (logind, DPMS, lock),
-    /// dispatched through the system profile to per-TV actions. A
+    /// A desktop/power event from an adapter (logind, DPMS, the greeter's
+    /// idle), dispatched through the system profile to per-TV actions. A
     /// `connector` scopes the event to the TV mirroring that DRM
     /// connector; TVs without a mapping treat every event as global.
     System {
@@ -311,8 +311,9 @@ pub enum Command {
         reply: Option<Reply<tv::Remove>>,
     },
     /// Request a (re)connect attempt for a TV that is down. Connection
-    /// dials are event-driven — a TV that disconnects stays down until
-    /// asked (a powered-off TV must not be fought back on).
+    /// dials are event-driven — a TV that turns off stays down until
+    /// asked (a powered-off TV must not be fought back on). For a TV
+    /// already being dialed, the next dial comes at once.
     Reconnect {
         id: Uuid,
         reply: Option<Reply<tv::Reconnect>>,
@@ -454,10 +455,9 @@ pub enum StoreMsg {
 }
 
 /// A dial failure with its typed reason preserved across the task
-/// boundary. Root parity: `failure_reason` composed the pairing
-/// `failed` phase from the connect error's typed variant; carrying
-/// only a display string here is what lost `PermissionDenied { path }`
-/// on the way to clients.
+/// boundary: the pairing `failed` phase is composed from the connect
+/// error's typed variant, and a display string alone would lose
+/// `PermissionDenied { path }` on the way to clients.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialFailure {
     /// The reason when the error carries one (a device-access failure);
@@ -468,11 +468,25 @@ pub struct DialFailure {
     pub path: Option<String>,
     /// Human-readable English message (the log/fallback text).
     pub message: String,
+    /// What stood between the dial and a connection, which decides
+    /// whether trying again can help. World-side only, never on the wire.
+    pub cause: DialFailureCause,
+}
+
+/// Why a dial failed, as far as retrying is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialFailureCause {
     /// The local device couldn't be opened or set up (permission, missing,
-    /// busy, claim refused), as opposed to the TV not answering. A
-    /// local-device TV keeps retrying these past its budget; world-side
-    /// only, never on the wire.
-    pub device_level: bool,
+    /// busy, claim refused). A local-device TV keeps retrying these past
+    /// its budget: a busy adapter frees up.
+    Device,
+    /// Nothing answered: the network refused the dial, it timed out, or
+    /// the link closed under it. An outage looks like this.
+    NoAnswer,
+    /// Everything else: the TV answered and turned the dial down (a
+    /// rejected key, a TV-side error), or the config can't be dialed.
+    /// Asking again changes nothing.
+    Refused,
 }
 
 impl DialFailure {
@@ -483,13 +497,13 @@ impl DialFailure {
                 code: Some(tisvlay_core::errors::DeviceErrorCode::PermissionDenied.into()),
                 path: Some(path.clone()),
                 message: error.to_string(),
-                device_level: true,
+                cause: DialFailureCause::Device,
             },
             _ => Self {
                 code: None,
                 path: None,
                 message: error.to_string(),
-                device_level: matches!(error, tisvlay_core::Error::DeviceUnavailable { .. }),
+                cause: DialFailureCause::of(error),
             },
         }
     }
@@ -500,7 +514,24 @@ impl DialFailure {
             code: None,
             path: None,
             message: message.into(),
-            device_level: false,
+            cause: DialFailureCause::Refused,
+        }
+    }
+}
+
+impl DialFailureCause {
+    /// Sort a connect error. Anything not named here is a refusal, a new
+    /// error variant included: a wrong "no answer" redials a TV forever,
+    /// a wrong "refused" stops after the usual three dials.
+    fn of(error: &tisvlay_core::Error) -> Self {
+        use tisvlay_core::Error;
+        match error {
+            Error::PermissionDenied { .. } | Error::DeviceUnavailable { .. } => Self::Device,
+            Error::Io(_)
+            | Error::Connection(_)
+            | Error::RequestTimeout
+            | Error::ConnectionClosed => Self::NoAnswer,
+            _ => Self::Refused,
         }
     }
 }
@@ -547,9 +578,10 @@ pub enum BackendEvent {
     ConnectFailed { reason: DialFailure },
     /// A state snapshot pushed by the device (subscription update).
     State(Box<TvState>),
-    /// The connection ended (device closed it, or `power_off` on a
-    /// network-style transport).
-    Disconnected,
+    /// The connection ended: the device or the network closed it, or it
+    /// closed behind the daemon's own `power_off` on a network-style
+    /// transport, which `after_power_off` tells apart.
+    Disconnected { after_power_off: bool },
     /// An in-place power-on met a closing link after its rpc had acked,
     /// whether or not the backend noticed. Sent ahead of the task's
     /// `Disconnected`, so the world re-arms it as a wake dial before the
@@ -611,7 +643,7 @@ pub enum BackendCmd {
     Drain(DrainToken),
 }
 
-/// The wake list: every TV's local device node with its system profile's
+/// The wake list: every managed TV's local device node with its system profile's
 /// `on_tv_power_on`, for the daemon to write where the wakeup unit reads it.
 pub type WakeList = std::collections::BTreeMap<std::path::PathBuf, tisvlay_core::SystemWakeAction>;
 

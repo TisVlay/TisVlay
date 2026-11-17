@@ -7,9 +7,10 @@
 //! the user's own session, authenticated once through the desktop's polkit
 //! agent, which knows exactly who to enroll.
 //!
-//! Raw `libc` (not `nix`) mirrors the daemon's `acl.rs` reentrant group
-//! resolution; the outcome is returned, not printed, so each surface renders
-//! it its own way (the CLI prints, the GUI shows a dialog).
+//! Raw `libc` (not `nix`) for the reentrant user and group lookups, which
+//! the daemon's socket ACLs share ([`gid_of`]); the outcome is returned,
+//! not printed, so each surface renders it its own way (the CLI prints,
+//! the GUI shows a dialog).
 
 #![expect(
     unsafe_code,
@@ -186,8 +187,11 @@ fn group_name(gid: u32) -> Option<String> {
     }
 }
 
-/// Resolve a group name to its gid via the reentrant `getgrnam_r`.
-fn gid_of(name: &str) -> Option<u32> {
+/// Resolve a group name to its gid via the reentrant `getgrnam_r`: the
+/// services are multi-threaded and touch NSS elsewhere, so the static
+/// buffer behind plain `getgrnam` is unsafe to share. `None` when the
+/// group doesn't exist or can't be read.
+pub fn gid_of(name: &str) -> Option<u32> {
     let cname = std::ffi::CString::new(name).ok()?;
     let mut buf = vec![0u8; 1024];
     loop {

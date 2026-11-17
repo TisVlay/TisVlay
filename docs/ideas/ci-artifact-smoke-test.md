@@ -6,7 +6,7 @@ A release-flow survey of comparable Rust projects found that even the strongest 
 
 ## Where it would live
 
-A step in [`release.yml`](../../.github/workflows/release.yml)'s Phase 1 `build` job, after `just package-all` and before attaching to the draft (fail the job — and thus the draft — if the smoke check fails). This sits entirely on the tag-build side; it does **not** touch the human promote → `release: released` → crates.io chain, which stays as the gate trigger. It only upgrades what the maintainer is promoting on top of.
+A step in [`build-packages.yml`](../../.github/workflows/build-packages.yml)'s build job, after `just package-all` and before attaching to the draft (fail the job — and thus the draft — if the smoke check fails). This sits entirely on the tag-build side; it does **not** touch the human promote → `release: released` → crates.io chain, which stays as the gate trigger. It only upgrades what the maintainer is promoting on top of.
 
 ## How deep to smoke-test
 

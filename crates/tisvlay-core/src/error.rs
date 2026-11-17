@@ -32,10 +32,6 @@ pub enum Error {
     #[error("Config error: {0}")]
     Config(#[from] toml::de::Error),
 
-    /// Configuration validation error (valid TOML but invalid semantics).
-    #[error("Config validation error: {0}")]
-    ConfigValidation(String),
-
     /// TV rejected the registration/pairing request.
     #[error("TV rejected pairing request")]
     PairingRejected,
@@ -97,18 +93,6 @@ pub enum Error {
     #[error("Invalid MAC address: {0}")]
     InvalidMacAddress(String),
 
-    /// TV not found in configuration.
-    #[error("TV not found: {0}")]
-    TvNotFound(String),
-
-    /// No TVs configured.
-    #[error("No TVs configured")]
-    NoTvsConfigured,
-
-    /// SSDP discovery failed.
-    #[error("Discovery failed: {0}")]
-    Discovery(String),
-
     // =========================================================================
     // Multi-vendor errors
     // =========================================================================
@@ -123,10 +107,6 @@ pub enum Error {
         capability: String,
     },
 
-    /// Unknown vendor/backend.
-    #[error("Unknown vendor: {0}")]
-    UnknownVendor(String),
-
     /// Backend-specific error.
     ///
     /// Wraps vendor-specific errors that don't fit into the common error types.
@@ -140,22 +120,6 @@ pub enum Error {
         #[source]
         source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
-
-    /// Profile not found.
-    #[error("Profile not found: {0}")]
-    ProfileNotFound(String),
-
-    /// Pairing is already in progress.
-    #[error("Pairing already in progress for TV: {0}")]
-    PairingInProgress(String),
-
-    /// Pairing was cancelled.
-    #[error("Pairing was cancelled")]
-    PairingCancelled,
-
-    /// Invalid input provided during pairing.
-    #[error("Invalid pairing input: {0}")]
-    InvalidPairingInput(String),
 }
 
 impl Error {
@@ -182,43 +146,9 @@ impl Error {
         }
     }
 
-    /// Create a backend-specific error with a source error.
-    pub fn backend_with_source<E>(
-        vendor: impl Into<String>,
-        message: impl Into<String>,
-        source: E,
-    ) -> Self
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        Self::Backend {
-            vendor: vendor.into(),
-            message: message.into(),
-            source: Some(Box::new(source)),
-        }
-    }
-
-    /// Check if this error indicates a timeout.
-    pub fn is_timeout(&self) -> bool {
-        matches!(self, Self::RequestTimeout | Self::PairingTimeout)
-    }
-
     /// Check if this error indicates an unsupported operation.
     pub fn is_not_supported(&self) -> bool {
         matches!(self, Self::NotSupported { .. })
-    }
-
-    /// Check if this is a pairing-related error.
-    pub fn is_pairing_error(&self) -> bool {
-        matches!(
-            self,
-            Self::PairingRejected
-                | Self::PairingTimeout
-                | Self::NotRegistered
-                | Self::PairingInProgress(_)
-                | Self::PairingCancelled
-                | Self::InvalidPairingInput(_)
-        )
     }
 }
 
@@ -241,21 +171,5 @@ mod tests {
 
         assert!(err.to_string().contains("lg"));
         assert!(err.to_string().contains("WebSocket handshake"));
-    }
-
-    #[test]
-    fn test_is_timeout() {
-        assert!(Error::RequestTimeout.is_timeout());
-        assert!(Error::PairingTimeout.is_timeout());
-        assert!(!Error::ConnectionClosed.is_timeout());
-    }
-
-    #[test]
-    fn test_is_pairing_error() {
-        assert!(Error::PairingRejected.is_pairing_error());
-        assert!(Error::PairingTimeout.is_pairing_error());
-        assert!(Error::PairingCancelled.is_pairing_error());
-        assert!(Error::PairingInProgress("tv1".to_string()).is_pairing_error());
-        assert!(!Error::ConnectionClosed.is_pairing_error());
     }
 }

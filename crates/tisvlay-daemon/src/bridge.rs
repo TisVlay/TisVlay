@@ -7,6 +7,7 @@
 //! exhaustively: a new rpc without a route here doesn't compile.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use tisvlay_protocol::endpoint::Rpc;
 use tisvlay_protocol::endpoint::{manager, profile, tv, vendors};
 use tisvlay_protocol::serve::{ParkedReply, Responder};
 use tisvlay_protocol::{keys, rpc};
-use tisvlay_world::{Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
+use tisvlay_world::{AnyReply, Command, Reply, ReplyTo, WireEffect, WireError, WorldClient};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -188,33 +189,33 @@ impl Bridge {
     }
 
     async fn publish(&mut self, key: &str, payload: &Value) {
-        if !self.publishers.contains_key(key) {
-            let depth = if keys::parse_pairing_progress(&self.site, key).is_some() {
-                PAIRING_HISTORY
-            } else {
-                1
-            };
-            let declared = self
-                .session
-                .declare_publisher(key.to_string())
-                .encoding(Encoding::APPLICATION_JSON)
-                .cache(CacheConfig::default().max_samples(depth))
-                .sample_miss_detection(
-                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
-                )
-                .publisher_detection()
-                .await;
-            match declared {
-                Ok(publisher) => {
-                    self.publishers.insert(key.to_string(), publisher);
-                }
-                Err(e) => {
-                    warn!(%key, %e, "declare publisher failed, sample dropped");
-                    return;
+        let publisher = match self.publishers.entry(key.to_owned()) {
+            Entry::Occupied(declared) => declared.into_mut(),
+            Entry::Vacant(slot) => {
+                let depth = if keys::parse_pairing_progress(&self.site, key).is_some() {
+                    PAIRING_HISTORY
+                } else {
+                    1
+                };
+                let declared = self
+                    .session
+                    .declare_publisher(key.to_string())
+                    .encoding(Encoding::APPLICATION_JSON)
+                    .cache(CacheConfig::default().max_samples(depth))
+                    .sample_miss_detection(
+                        MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                    )
+                    .publisher_detection()
+                    .await;
+                match declared {
+                    Ok(publisher) => slot.insert(publisher),
+                    Err(e) => {
+                        warn!(%key, %e, "declare publisher failed, sample dropped");
+                        return;
+                    }
                 }
             }
-        }
-        let publisher = self.publishers.get(key).expect("just inserted");
+        };
         match serde_json::to_vec(payload) {
             Ok(bytes) => {
                 if let Err(e) = publisher.put(bytes).await {
@@ -311,14 +312,17 @@ impl Bridge {
                 // The store writer reads the file and hands the world the
                 // edit; the world answers.
                 match self.reloads.clone() {
-                    // A writer that's gone (the daemon shutting down)
-                    // would never answer a filed reply, so refuse at once.
-                    Some(reloads) if reloads.is_closed() => {
-                        responder.err(&WireError::daemon_shutting_down()).await;
-                    }
                     Some(reloads) => {
                         let reply = self.file(responder);
-                        let _ = reloads.send(ReloadRequest { reply });
+                        // A writer that's gone (the daemon shutting down)
+                        // would never answer the filed reply: refuse it.
+                        if let Err(mpsc::error::SendError(ReloadRequest { reply: Some(reply) })) =
+                            reloads.send(ReloadRequest { reply })
+                        {
+                            let refusal =
+                                AnyReply::from(reply).err(WireError::daemon_shutting_down());
+                            self.handle_effect(refusal).await;
+                        }
                     }
                     None => responder.err(&WireError::no_store()).await,
                 }
@@ -565,6 +569,9 @@ impl Bridge {
             responder.err(&WireError::unknown_vendor(vendor)).await;
             return;
         }
+        // Sessions that ended themselves (below) leave a finished handle.
+        self.discovery_sessions
+            .retain(|_, handle| !handle.is_finished());
         let session_id = Uuid::new_v4();
         let discoveries = Arc::clone(&self.discoveries);
         let zenoh = self.session.clone();
@@ -576,6 +583,17 @@ impl Bridge {
                 .await;
             if let Err(e) = &alive {
                 warn!(%e, "discovery session liveliness failed");
+            }
+            // Never put to: its matching status says whether anyone still
+            // subscribes to this session's findings. Its callers subscribe
+            // before starting it and stop it when done, but one that dies
+            // first (a crashed GUI, a killed CLI) can't, so the session
+            // ends itself once nothing listens.
+            let listeners = zenoh
+                .declare_publisher(keys::discovery_found(&site, &session_id, "listeners"))
+                .await;
+            if let Err(e) = &listeners {
+                warn!(%e, "discovery session can't watch for its listeners");
             }
             loop {
                 for (vendor, discovery) in discoveries.iter() {
@@ -606,6 +624,15 @@ impl Bridge {
                         }
                         Err(error) => warn!(vendor, %error, "discovery scan failed"),
                     }
+                }
+                if let Ok(listeners) = &listeners
+                    && listeners
+                        .matching_status()
+                        .await
+                        .is_ok_and(|status| !status.matching())
+                {
+                    debug!(session = %session_id, "discovery session has no listener left; ending it");
+                    return;
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
@@ -745,7 +772,6 @@ impl Bridge {
     }
 }
 
-/// Map a system-profile rpc onto its world command.
 /// Vendor configs are JSON on the wire and a [`VendorConfig`] at the backend
 /// seam — a pure serde transcode (a JSON `null` has no TOML form and
 /// errors).

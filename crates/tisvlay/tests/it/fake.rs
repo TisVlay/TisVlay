@@ -101,6 +101,11 @@ impl FakeService {
     }
 
     /// Publish `body` on `key`, declaring its publisher on first use.
+    /// How many peers this service's session has a link to.
+    pub(crate) async fn peers(&self) -> usize {
+        self.session.info().peers_zid().await.count()
+    }
+
     pub(crate) async fn put(&mut self, key: &str, body: &Value) {
         if !self.publishers.contains_key(key) {
             let publisher = self

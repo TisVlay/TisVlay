@@ -6,7 +6,7 @@ The idea: keep the background poll rate low, and additionally do an on-demand `/
 
 ## Session-side: implemented
 
-The session gate (`Core::action_for` / dispatch) and the Sunshine detector live in the **same process**, so a session-side gated wake event (unlock, lock-wake, idle-resume) can trigger a **synchronous, tightly-bounded** `/serverinfo` pull and decide fresh — stream ended → wake immediately. This is the responsive path for session-driven wakes and is implemented (a bounded `probe_once` consulted when a wake would otherwise be suppressed by a live Sunshine source).
+The session gate (`Core::action_for` / dispatch) and the Sunshine detector live in the **same process**, so a session-side gated wake event (unlock, lock-wake, idle-resume) can trigger a **synchronous, tightly-bounded** `/serverinfo` pull and decide fresh — stream ended → wake immediately. This is the responsive path for session-driven wakes and is implemented (a bounded `/serverinfo` read, `Core::eager_refresh_sunshine` through `SunshineProbe::observe`, consulted when a wake would otherwise be suppressed by a live Sunshine source).
 
 ## World-side (DPMS-on / resume): deferred — this idea
 

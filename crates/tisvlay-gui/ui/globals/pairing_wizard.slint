@@ -75,7 +75,7 @@ export struct VendorOption {
 //   "invalid"  — current `value` fails canonical validation
 // `error` is a human-readable failure reason, populated either by
 // client-side validation or by routing a server-side
-// `ConfigInvalidVendorConfig` D-Bus error back to the row whose
+// `invalid-field` refusal back to the row whose
 // `name` matches.
 export struct PairingFieldRow {
     name: string,
@@ -102,15 +102,23 @@ export global PairingWizard {
     /// `Daemon.request-pair()` and false on cancel/finish.
     in-out property <bool> active;
     in-out property <int> step: 1;
+    /// The session re-pairs the TV in `pair-tv-id` rather than adding
+    /// one: Retry re-pairs it, and there is no configure step or
+    /// discovery to go back to.
+    in-out property <bool> re-pair;
     /// The footer's Back and Cancel, which Escape mirrors: Back on the
-    /// configure step and on a pair step that isn't mid-handshake,
-    /// Cancel on every step but the last.
-    out property <bool> back-enabled: root.step == 2
-        || (root.step == 3 && root.pair-phase != "awaiting_tv" && root.pair-phase != "awaiting_input");
+    /// configure step and on a failed pair step (not mid-handshake, and
+    /// not once paired, where a second Pair would add the TV twice),
+    /// never while re-pairing; Cancel on every step but the last.
+    out property <bool> back-enabled: !root.re-pair
+        && (root.step == 2 || (root.step == 3 && root.pair-phase == "failed"));
     out property <bool> cancel-enabled: root.step != 4;
     in-out property <[WizardDiscoveredTv]> discovered;
     in-out property <bool> discovery-streaming;
     in-out property <string> discovery-error;
+    /// Why the configure step's pairing form couldn't load; empty while
+    /// it loads or once it has.
+    in-out property <string> schema-error;
     /// True while a manual-entry MAC enrichment RPC is in flight
     /// (after the user clicks Add manually, before the wizard
     /// transitions to step 2). Drives a distinct loading state —
@@ -121,13 +129,13 @@ export global PairingWizard {
     in-out property <string> pair-phase;
     in-out property <string> pair-message;
     /// TV id of the currently-running pair handshake, used by the
-    /// wizard's `cancel` callback to invoke `Manager1.CancelPair`.
+    /// wizard's `cancel` callback to invoke the cancel-pair rpc.
     /// Set immediately at handshake invoke time on both flows:
     /// - For re-pair, from the caller-provided argument (the GUI
     ///   knows the tv_id before opening the wizard).
-    /// - For AddTv, from the `Manager1.AddTv` RPC return — since
-    ///   AddTv is async-spawn, the RPC returns the reserved tv_id
-    ///   right after sync validation, before any progress signal
+    /// - For a new TV, from the pair rpc's return — the pairing runs
+    ///   asynchronously, so the rpc returns the reserved tv_id
+    ///   right after sync validation, before any progress sample
     ///   would arrive. No "first signal wins" race window.
     /// Cleared by `reset_wizard`. Empty means no pair in flight.
     in-out property <string> pair-tv-id;
@@ -141,7 +149,7 @@ export global PairingWizard {
     /// Inline error when adopting the reported MAC fails.
     in-out property <string> mac-error;
     /// Vendors registered on the running daemon, fetched via
-    /// `Manager1.GetSupportedVendors`. Pushed once at startup.
+    /// the vendor catalog. Pushed once at startup.
     in-out property <[VendorOption]> supported-vendors;
     in-out property <[string]> supported-vendor-names;
     /// Mirrors the currently-selected discovered TV's fields.
@@ -160,7 +168,7 @@ export global PairingWizard {
 
     /// Dynamic pairing-form schema for the currently-selected vendor.
     /// Populated by Rust on entry to step 2 by fetching
-    /// `Manager1.GetPairingSchema(vendor)` and applying autofill
+    /// the vendor's schema rpc and applying autofill
     /// from each row's `vendor_data` map (per
     /// `PairingField::autofill = "discovery.<key>"`).
     /// `field-value-edited(index, value)` is the writeback channel
@@ -185,6 +193,8 @@ export global PairingWizard {
     // the previous TV's name.
     in-out property <string> tv-name-autofilled;
     in-out property <string> system-profile;
+    // The picked profile's UUID; empty is the default profile.
+    in-out property <string> system-profile-id;
     in-out property <bool> managed: true;
     // Index into `supported-vendors` for the vendor the user picked
     // in the manual-add path's vendor select. Default 0 = first
@@ -193,8 +203,7 @@ export global PairingWizard {
     // `supported-vendor-names[manual-vendor-index]` and writes picks
     // back here via its `selected-index` callback; Rust at `manual-add`
     // time reads `supported-vendors[manual-vendor-index]` to recover the
-    // id + display name. Single source of truth replaces the prior
-    // `manual-vendor` (id) + `manual-vendor-name` (display) pair.
+    // id + display name, so the index is the one source of truth.
     in-out property <int> manual-vendor-index: 0;
     in-out property <string> manual-ip;
 
@@ -211,8 +220,6 @@ export global PairingWizard {
     callback finish();
     callback selected-changed(int);
     callback name-edited(string);
-    callback profile-selected(string);
-    callback managed-toggled(bool);
     callback manual-ip-edited(string);
     callback manual-add();
 }

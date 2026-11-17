@@ -104,14 +104,62 @@ pub(super) fn arm_screen_verify(
     target_on: bool,
     escalated: bool,
 ) {
+    commands
+        .entity(entity)
+        .insert(screen_verify(clock, retry, target_on, escalated));
+}
+
+/// A screen dispatch's first verify, one verify delay from now.
+fn screen_verify(
+    clock: &Clock,
+    retry: Option<&DispatchRetry>,
+    target_on: bool,
+    escalated: bool,
+) -> DispatchVerify {
     let delay = retry
         .map(|r| r.0.verify_delay)
         .unwrap_or_else(|| tisvlay_core::RetryConfig::default().verify_delay);
-    commands.entity(entity).insert(DispatchVerify {
+    DispatchVerify {
         target_on,
         attempts: 1,
         verify_at: clock.0 + delay,
         escalated,
+    }
+}
+
+/// Refuse a screen-off to a TV being redialed through an outage, ahead of
+/// [`dispatch_screen`]. Nothing is held for such a TV: when it is back,
+/// whoever wanted it dark decides again from what is true then. This
+/// reads the marker, not the pending dial, so a screen-off behind a boot
+/// dial or a wake still latches.
+///
+/// The refused off is still the last word: a wake an earlier screen-on
+/// left armed is cancelled, with its screen intent and input restore, so
+/// the network returning in time doesn't light a TV last asked to go dark.
+pub(super) fn refuse_off_during_outage(
+    commands: &mut Commands,
+    entity: Entity,
+    id: Uuid,
+    on: bool,
+    in_outage: bool,
+) -> Result<(), WireError> {
+    if !on && in_outage {
+        drop_on_intent(commands, entity);
+        return Err(WireError::not_connected(id));
+    }
+    Ok(())
+}
+
+/// An off that can't reach the TV still supersedes a pending on: cancel a
+/// held wake, and drop a screen-on intent and input restore riding one
+/// already dialing.
+pub(super) fn drop_on_intent(commands: &mut Commands, entity: Entity) {
+    cancel_held_wake(commands, entity);
+    commands.entity(entity).queue(|mut e: EntityWorldMut| {
+        if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
+            e.remove::<DispatchVerify>();
+        }
+        e.remove::<DesiredInput>();
     });
 }
 
@@ -140,7 +188,9 @@ pub(super) fn dispatch_screen(
     row: ScreenRow,
     restore_to: Option<String>,
 ) -> Result<(), WireError> {
-    let (handle, pending, traits, link, retry, power) = row;
+    // The row's pending dial is the state before this batch; the
+    // screen-off below checks for one when its commands apply.
+    let (handle, _, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
             return power_on_tv(
@@ -154,8 +204,10 @@ pub(super) fn dispatch_screen(
         }
         if let Some(handle) = handle {
             let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
-        } else if pending {
-            // Screen off is power off here: it cancels a held wake.
+        } else {
+            // Screen off is power off here: it cancels a held wake. The
+            // cancel checks for one when it applies, so an on earlier in
+            // this batch (whose dial the query can't see yet) counts.
             cancel_held_wake(commands, entity);
         }
         // Otherwise a satisfied no-op: a dark, unreachable TV already is
@@ -231,15 +283,21 @@ pub(super) fn dispatch_screen(
             arm_screen_verify(commands, entity, clock, retry, true, true);
             armed
         }
-        None if !on && pending => {
-            // A dial is in flight: latch the intent so the reconnect
-            // re-asserts `screen_off` over the fresh link — the locked-
-            // idle timer racing a boot wake must not be swallowed.
-            arm_screen_verify(commands, entity, clock, retry, false, false);
+        None if !on => {
+            // A dial in flight latches the intent, so the reconnect
+            // re-asserts `screen_off` over the fresh link: the locked-idle
+            // timer racing a boot wake must not be swallowed. The dial is
+            // checked when the commands apply, so one an on earlier in this
+            // batch started counts. With none, it's a satisfied no-op: a
+            // dark, disconnected TV already is screen-off.
+            let verify = screen_verify(clock, retry, false, false);
+            commands.entity(entity).queue(move |mut e: EntityWorldMut| {
+                if e.contains::<PendingConnect>() {
+                    e.insert(verify);
+                }
+            });
             Ok(())
         }
-        // Satisfied no-op: a dark, disconnected TV already is screen-off.
-        None if !on => Ok(()),
         _ => Err(WireError::not_connected(id)),
     }
 }
@@ -435,13 +493,8 @@ pub(super) fn publish_dispatch_failed(
     clippy::type_complexity,
     reason = "bevy system: its Query types spell out the components it reads"
 )]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
-)]
 pub(super) fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
-    profile: Res<SystemProfile>,
     mut commands: Commands,
     clock: Res<Clock>,
     q: Query<
@@ -456,6 +509,7 @@ pub(super) fn dispatch_system_events(
             Option<&State<payload::Power>>,
             Option<&MirrorsConnector>,
             Option<&State<payload::Meta>>,
+            Has<Outage>,
         ),
         With<Managed>,
     >,
@@ -467,7 +521,9 @@ pub(super) fn dispatch_system_events(
         let InEvent::System { event, connector } = msg else {
             continue;
         };
-        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta) in &q {
+        for (entity, id, handle, pending, traits, link, retry, power, mirrors, meta, in_outage) in
+            &q
+        {
             if let Some(scope) = connector
                 && mirrors.is_none_or(|MirrorsConnector(mapped)| mapped != scope)
             {
@@ -477,13 +533,9 @@ pub(super) fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore, while_streaming)) = resolve_action(
-                event,
-                meta.map(|meta| &meta.0),
-                &profile_index,
-                &bodies,
-                &profile,
-            ) else {
+            let Some((action, restore, while_streaming)) =
+                resolve_action(event, meta.map(|meta| &meta.0), &profile_index, &bodies)
+            else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };
@@ -506,7 +558,12 @@ pub(super) fn dispatch_system_events(
             let row = (handle, pending, traits, link, retry, power);
             let dispatched = match action {
                 ProfileAction::ScreenOff => {
-                    dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
+                    match refuse_off_during_outage(&mut commands, entity, id.0, false, in_outage) {
+                        Ok(()) => {
+                            dispatch_screen(&mut commands, &clock, entity, id.0, false, row, None)
+                        }
+                        refused => refused,
+                    }
                 }
                 ProfileAction::ScreenOn => {
                     dispatch_screen(&mut commands, &clock, entity, id.0, true, row, restore_to)
@@ -514,10 +571,20 @@ pub(super) fn dispatch_system_events(
                 ProfileAction::PowerOff => {
                     if let Some(handle) = handle {
                         let _ = handle.cmd_tx.send(BackendCmd::PowerOff(None));
-                    } else if pending {
+                        Ok(())
+                    } else {
+                        // The cancel checks for a held wake when it applies,
+                        // so an on earlier in this batch counts too.
                         cancel_held_wake(&mut commands, entity);
+                        // An off TV is off; one behind an outage isn't,
+                        // and this couldn't reach it.
+                        if in_outage {
+                            drop_on_intent(&mut commands, entity);
+                            Err(WireError::not_connected(id.0))
+                        } else {
+                            Ok(())
+                        }
                     }
-                    Ok(())
                 }
                 ProfileAction::PowerOn => power_on_tv(
                     &mut commands,
@@ -528,8 +595,17 @@ pub(super) fn dispatch_system_events(
                     restore_to,
                 ),
             };
-            if let Err(error) = dispatched {
-                tracing::debug!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action not dispatched");
+            match dispatched {
+                Err(error)
+                    if in_outage
+                        && error.code == tisvlay_protocol::error::ErrorCode::NotConnected =>
+                {
+                    tracing::info!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action refused: the TV can't be reached");
+                }
+                Err(error) => {
+                    tracing::debug!(tv = %id.0, ?event, ?action, code = ?error.code, "profile action not dispatched");
+                }
+                Ok(()) => {}
             }
         }
     }

@@ -141,17 +141,23 @@ impl TvConnector for LgConnector {
         &self,
         vendor_config: &VendorConfig,
     ) -> Result<Box<dyn TvConnection>> {
+        // Counted from the first WoL send, which retries while the desktop's
+        // network comes back after a resume.
+        let deadline = tokio::time::Instant::now() + crate::wake::WAKE_DEADLINE;
         self.wake(vendor_config).await?;
         let config = vendor_config.parse::<LgVendorConfig>(crate::VENDOR_ID)?;
         let mac = config
             .mac
             .as_deref()
             .and_then(|mac| MacAddress::parse(mac).ok());
-        let woke = crate::wake::wake_and_confirm(&mut LiveWake {
-            config: &config,
-            mac,
-            registered: false,
-        })
+        let woke = crate::wake::wake_and_confirm(
+            &mut LiveWake {
+                config: &config,
+                mac,
+                registered: false,
+            },
+            deadline,
+        )
         .await?;
         if woke.confirmed {
             info!(ip = %config.ip, "LG TV reports on after the wake");

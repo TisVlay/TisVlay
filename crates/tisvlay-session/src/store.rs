@@ -138,7 +138,9 @@ pub(crate) async fn store_task(
                 }
                 None => {
                     if let Some(snapshot) = pending.take() {
-                        write_blocking(&path, snapshot, base).await;
+                        // A failure was logged where it happened; there's
+                        // no later write to keep the snapshot for.
+                        let _ = write_blocking(&path, snapshot, base).await;
                     }
                     return;
                 }
@@ -156,10 +158,14 @@ pub(crate) async fn store_task(
                 tokio::time::sleep_until(due.expect("the branch is enabled only while due is Some")).await;
             }, if due.is_some() && !reloading => {
                 due = None;
-                if let Some(snapshot) = pending.take()
-                    && let Some(written) = write_blocking(&path, snapshot, base.clone()).await
-                {
-                    base = written;
+                if let Some(snapshot) = pending.take() {
+                    match write_blocking(&path, snapshot, base.clone()).await {
+                        Ok(written) => base = written,
+                        // The core won't send this snapshot again, so keep
+                        // it: its next snapshot replaces it, or the final
+                        // flush retries it.
+                        Err(snapshot) => pending = Some(snapshot),
+                    }
                 }
             }
         }
@@ -168,29 +174,28 @@ pub(crate) async fn store_task(
 
 /// [`write_store`] off the async runtime, since the fsyncs block, after
 /// keeping aside a hand edit nobody reloaded (the file no longer holds
-/// `base`, what the writer last wrote). Returns the snapshot once it's on
-/// disk.
+/// `base`, what the writer last wrote). Returns the snapshot: `Ok` once
+/// it's on disk, `Err` when it isn't (the failure is logged).
 async fn write_blocking(
     path: &Path,
     snapshot: UserStoreSnapshot,
     base: UserStoreSnapshot,
-) -> Option<UserStoreSnapshot> {
+) -> Result<UserStoreSnapshot, UserStoreSnapshot> {
     let path = path.to_path_buf();
-    match tokio::task::spawn_blocking(move || {
+    let attempt = snapshot.clone();
+    let written = tokio::task::spawn_blocking(move || {
         let may_write =
             tisvlay_runtime::fs::keep_unreloaded_edit::<UserStoreSnapshot>(&path, |disk| {
                 same_content(disk, &base)
             });
-        (may_write && write_store(&path, &snapshot)).then_some(snapshot)
+        may_write && write_store(&path, &attempt)
     })
     .await
-    {
-        Ok(written) => written,
-        Err(e) => {
-            error!(%e, "user store write task failed");
-            None
-        }
-    }
+    .unwrap_or_else(|e| {
+        error!(%e, "user store write task failed");
+        false
+    });
+    if written { Ok(snapshot) } else { Err(snapshot) }
 }
 
 /// The same profiles and assignments, whatever their order in the file.
@@ -274,6 +279,48 @@ mod tests {
             ..UserStoreSnapshot::default()
         };
         assert!(read_for_reload(&path, &base).is_err());
+    }
+
+    /// The core won't send a snapshot again once it's sent it, so one
+    /// whose write failed waits for the final flush instead of being lost.
+    #[tokio::test]
+    async fn a_failed_write_keeps_the_snapshot_for_the_flush() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("session.toml");
+        let (persist_tx, persist_rx) = mpsc::unbounded_channel();
+        let (_reload_tx, reload_rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(store_task(
+            path.clone(),
+            UserStoreSnapshot::default(),
+            persist_rx,
+            reload_rx,
+        ));
+
+        // A directory where the write's temp file goes fails the write.
+        let blocker = dir.path().join("session.toml.tmp");
+        std::fs::create_dir(&blocker).unwrap();
+        let snapshot = UserStoreSnapshot {
+            profile: vec![UserProfileRecord {
+                id: Uuid::new_v4(),
+                body: UserProfileConfig {
+                    name: "Late night".into(),
+                    ..Default::default()
+                },
+            }],
+            ..UserStoreSnapshot::default()
+        };
+        persist_tx.send(StoreMsg::Persist(snapshot)).unwrap();
+        tokio::time::sleep(DEBOUNCE * 2).await;
+        assert!(!path.exists(), "the write should have failed");
+
+        std::fs::remove_dir(&blocker).unwrap();
+        drop(persist_tx);
+        task.await.unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Late night")
+        );
     }
 
     #[test]

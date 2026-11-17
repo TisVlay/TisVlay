@@ -18,8 +18,7 @@ use tokio::sync::mpsc;
 use crate::backend;
 use crate::components::{
     Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, GoingOff, KnownVendors, LastPersisted,
-    Outbox, PairingIndex, PowerEdges, ProfileIndex, Site, SleepPending, StreamArmed, SystemProfile,
-    TvIndex,
+    Outbox, PairingIndex, PowerEdges, ProfileIndex, Site, SleepPending, StreamArmed, TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
@@ -97,7 +96,6 @@ impl Reactor {
         world.insert_resource(KnownVendors(
             connectors.keys().cloned().collect::<HashSet<_>>(),
         ));
-        world.insert_resource(SystemProfile::stock());
         world.init_resource::<StreamArmed>();
         world.init_resource::<PowerEdges>();
         world.init_resource::<GoingOff>();
@@ -167,8 +165,8 @@ impl Reactor {
         self.sleep_tx = Some(tx);
     }
 
-    /// Hand the wake list to `tx`: every TV's device node with whether its
-    /// system profile lets it wake the PC, sent whenever it changes (and
+    /// Hand the wake list to `tx`: every managed TV's device node with its
+    /// system profile's `on_tv_power_on`, sent whenever it changes (and
     /// once at the first step). The daemon writes it for the wakeup unit,
     /// which arms or blocks those adapters for each sleep.
     pub fn set_wake_list(&mut self, tx: mpsc::UnboundedSender<WakeList>) {
@@ -179,9 +177,10 @@ impl Reactor {
     /// snapshot loaded from the store, if any) becomes the persist
     /// baseline, then `commands` apply as one synchronous step. Replaying
     /// the store writes nothing back, and no step ever runs against a
-    /// half-replayed table. Attach the store and route outlets first, so
-    /// a real difference (a migrated record, the default profile on a
-    /// fresh store) and the boot dials reach them.
+    /// half-replayed table. Attach the store, route and device outlets
+    /// first, so a real difference (a migrated record, the default profile
+    /// on a fresh store) and the boot dials reach them: the device outlet
+    /// gates a local-device TV's first dial.
     pub fn seed(&mut self, stored: Option<StoreSnapshot>, commands: Vec<Command>) {
         self.world.resource_mut::<LastPersisted>().0 = stored;
         self.step(commands.into_iter().map(InEvent::Command).collect());

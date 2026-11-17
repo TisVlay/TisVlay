@@ -95,41 +95,47 @@ pub(crate) fn open_notices_html() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Static catalogue of every binary that ships in the package.
-/// `name` is the binary identifier (kept for diagnostic-blob lookup);
-/// `friendly` is the human-readable label shown as the row title;
-/// `description` is the rich one-line sentence describing what the
-/// component does. The monospace parens text (each peer's wire
-/// identity: its liveliness key, or the GUI's real D-Bus activation
-/// name) is computed per row in [`make_about_components`] — it
-/// carries the runtime site, so it can't live in this const.
-const COMPONENT_CATALOGUE: &[(&str, &str, &str)] = &[
-    (
-        "tisvlay-daemon",
-        "Daemon",
-        "Device management, WoL at boot, system profiles.",
-    ),
-    (
-        "tisvlay-session",
-        "Session",
-        "User-profile assignments and session-event dispatch.",
-    ),
-    (
-        "tisvlay-tray",
-        "Tray",
-        "Tray icon, menu actions, real-time TV state.",
-    ),
-    (
-        "tisvlay-gui",
-        "GUI",
-        "Graphical interface for TisVlay management.",
-    ),
-    (
-        "tisvlay",
-        "CLI",
-        "Command-line interface for TisVlay management.",
-    ),
+/// Every binary that ships in the package, by its identifier (kept for
+/// diagnostic-blob lookup). [`component_text`] gives each row's title and
+/// description; the monospace parens text (each peer's wire identity: its
+/// liveliness key, or the GUI's real D-Bus activation name) is computed
+/// per row in [`make_about_components`], since it carries the runtime
+/// site.
+const COMPONENTS: &[&str] = &[
+    "tisvlay-daemon",
+    "tisvlay-session",
+    "tisvlay-tray",
+    "tisvlay-gui",
+    "tisvlay",
 ];
+
+/// A component's translated row title and one-line description. Literal
+/// msgids, one arm per component, so xgettext extracts them.
+fn component_text(name: &str) -> (String, String) {
+    match name {
+        "tisvlay-daemon" => (
+            gettext("Daemon"),
+            gettext("Device management, WoL at boot, system profiles."),
+        ),
+        "tisvlay-session" => (
+            gettext("Session"),
+            gettext("User-profile assignments and session-event dispatch."),
+        ),
+        "tisvlay-tray" => (
+            gettext("Tray"),
+            gettext("Tray icon, menu actions, real-time TV state."),
+        ),
+        "tisvlay-gui" => (
+            gettext("GUI"),
+            gettext("Graphical interface for TisVlay management."),
+        ),
+        "tisvlay" => (
+            gettext("CLI"),
+            gettext("Command-line interface for TisVlay management."),
+        ),
+        _ => (name.to_owned(), String::new()),
+    }
+}
 
 /// A peer process's release and config path, from its client's release
 /// check (`service_info`). `config_path` is empty when the peer has no
@@ -279,9 +285,10 @@ pub(crate) fn make_about_components(
         }
     };
 
-    COMPONENT_CATALOGUE
+    COMPONENTS
         .iter()
-        .map(|(name, friendly, description)| {
+        .map(|name| {
+            let (friendly, description) = component_text(name);
             // The wire identity shown in monospace parens: the peer's
             // liveliness key (presence on the zenoh bus), except the
             // GUI, whose identity is its real D-Bus activation name.
@@ -289,7 +296,7 @@ pub(crate) fn make_about_components(
                 "tisvlay-daemon" => tisvlay_protocol::keys::daemon_alive(site),
                 "tisvlay-session" => tisvlay_protocol::keys::user_alive_session(site),
                 "tisvlay-tray" => tisvlay_protocol::keys::user_alive_tray(site),
-                "tisvlay-gui" => "org.tisvlay.Gui".to_string(),
+                "tisvlay-gui" => crate::dbus::GUI_BUS_NAME.to_string(),
                 _ => String::new(),
             };
             let cells = match *name {
@@ -333,9 +340,9 @@ pub(crate) fn make_about_components(
             };
             AboutComponentRow {
                 name: SharedString::from(*name),
-                friendly_name: SharedString::from(*friendly),
+                friendly_name: SharedString::from(friendly),
                 bus_address: SharedString::from(parens(identity)),
-                description: SharedString::from(*description),
+                description: SharedString::from(description),
                 version: SharedString::from(cells.version),
                 health: cells.health,
                 online: cells.online,

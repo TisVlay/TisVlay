@@ -139,7 +139,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// # Errors
 ///
 /// Returns immediately with `Err(Error::Io(_))` if the socket fails
-/// to bind or any of the initial M-SEARCH sends fails. Per-response
+/// to bind or any of the initial M-SEARCH sends fails, and with
+/// `Err(Error::Ipv6Unsupported)` for an IPv6 bind address or destination. Per-response
 /// parse errors are surfaced as `Err` items inside the stream — they
 /// don't terminate the stream, so a single malformed reply from
 /// device A won't hide a valid reply from device B.

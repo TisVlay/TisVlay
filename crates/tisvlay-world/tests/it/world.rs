@@ -84,6 +84,54 @@ async fn backend_push_becomes_state_publish() {
     assert_eq!(power["state"], "screenoff");
 }
 
+/// A config change during a dial supersedes it: the TV connects on the
+/// new config, not on the one it replaced.
+#[tokio::test]
+async fn a_config_change_mid_dial_dials_the_new_config() {
+    let (mut effects, client, handle) = spawn_reactor();
+    handle.set_connect_delay(Duration::from_millis(300));
+    let id = Uuid::new_v4();
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Den", mock_config("mock://old"))),
+        reply: None,
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.command(Command::UpdateConfig {
+        id,
+        patch: serde_json::from_value(serde_json::json!({ "address": "mock://new" })).unwrap(),
+        reply: Some(Reply::new(2)),
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    settle(&mut effects, &client, 3).await;
+    assert_eq!(handle.connect_call_count("mock://old"), 1);
+    assert_eq!(handle.connect_call_count("mock://new"), 1);
+}
+
+/// A command still running when its TV is removed answers its caller,
+/// which would otherwise wait out its timeout.
+#[tokio::test]
+async fn a_command_running_at_removal_still_answers() {
+    let (mut effects, client, _handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let mut config = mock_config("mock://slow-off");
+    config.insert("power_off_delay_ms", 300);
+    client.command(Command::AddTv {
+        record: Box::new(tv_record(id, "Den", config)),
+        reply: None,
+    });
+    collect_until(&mut effects, |e| link_connected(e, true)).await;
+    client.command(Command::PowerOff {
+        id,
+        reply: Some(Reply::new(2)),
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    client.command(Command::RemoveTv {
+        id,
+        reply: Some(Reply::new(3)),
+    });
+    collect_until(&mut effects, |e| reply_to(e, 2)).await;
+}
+
 /// The M1 exit criterion: remove-during-in-flight is a boring test.
 /// Removal despawns at a sync point; late commands and stale backend events
 /// for the dead uuid just miss the index — typed error out, silent drop in.
@@ -143,9 +191,9 @@ async fn remove_tv_is_boring() {
     );
 }
 
-/// A disconnect (power_off on a network-style transport) stays down — no
-/// auto-redial fighting a TV the user turned off. `Reconnect` brings it
-/// back on request.
+/// A link that closes behind the daemon's own power-off (a network-style
+/// transport) stays down — no auto-redial fighting a TV the user turned
+/// off. `Reconnect` brings it back on request.
 #[tokio::test]
 async fn disconnect_stays_down_until_reconnect_command() {
     let (mut effects, client, handle) = spawn_reactor();

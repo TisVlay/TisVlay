@@ -667,64 +667,6 @@ export component ProfileTile inherits Rectangle {
 }
 
 // =============================================================================
-// DangerBtn — destructive-action button (accent fill, white text).
-// =============================================================================
-//
-// Originally used `Theme.danger` (red) to signal "this is
-// destructive", but Plasma users now expect their DE-chosen accent
-// to drive filled buttons consistently — a red button next to
-// otherwise-accent-tinted UI looks alien. We rely on placement
-// (right side, after a Cancel) and explicit wording to convey
-// destructive intent, matching the std-widgets `Button { primary }`
-// look. Kept as a separate component so call sites are
-// self-documenting (`DangerBtn { text: "Remove TV" }` reads
-// destructive-by-name, even though the rendering matches a primary
-// button).
-
-export component DangerBtn inherits Focusable {
-    in property <string> text;
-    in property <length> min-button-width: 80px;
-    callback clicked();
-
-    accessible-label: root.text;
-    activated => {
-        root.clicked();
-    }
-
-    horizontal-stretch: 0;
-    vertical-stretch: 0;
-    min-height: Design.size-input;
-    min-width: min-button-width;
-
-    background: !root.enabled
-        ? Theme.surface2
-        : root.hovered ? Theme.accent-pressed
-        : Theme.accent;
-    border-color: !root.enabled
-        ? Theme.border
-        : root.hovered ? Theme.accent-pressed
-        : Theme.accent;
-    border-width: Design.border-thin;
-    border-radius: Design.radius-control;
-    animate background, border-color { duration: 150ms; }
-
-    HorizontalLayout {
-        width: 100%;
-        height: 100%;
-        padding-left: Design.gap-row;
-        padding-right: Design.gap-row;
-        alignment: center;
-        Text {
-            text: root.text;
-            color: !root.enabled ? Theme.text-faint : white;
-            font-size: Design.font-body;
-            font-weight: 500;
-            vertical-alignment: center;
-        }
-    }
-}
-
-// =============================================================================
 // UriBtn — neutral outlined button for opening URLs.
 // =============================================================================
 //
@@ -890,6 +832,20 @@ export component ThemedButton inherits Focusable {
             vertical-alignment: center;
         }
     }
+}
+
+// =============================================================================
+// DangerBtn — destructive-action button (accent fill, white text).
+// =============================================================================
+//
+// Accent fill, not danger red: Plasma users expect their DE-chosen
+// accent on filled buttons, and a red one next to accent-tinted UI
+// looks alien. Placement (right side, after a Cancel) and explicit
+// wording carry the destructive intent. A primary `ThemedButton` under
+// its own name, so call sites read destructive-by-name
+// (`DangerBtn { text: "Remove TV" }`).
+export component DangerBtn inherits ThemedButton {
+    primary: true;
 }
 
 // =============================================================================
@@ -1281,12 +1237,11 @@ export component InlineError inherits Rectangle {
     callback action-clicked();
     callback dismissed();
 
-    /// Inline messages are read-only diagnostics: AT clients should
-    /// announce the title + detail when the message becomes visible.
-    /// `accessible-live` (slint-ui/slint#11646) would mark this an
-    /// auto-announcing live region but landed post-1.16; revisit
-    /// when we bump.
+    /// Inline messages are read-only diagnostics: a live region has AT
+    /// announce the title + detail when the message becomes visible,
+    /// at once for an error.
     accessible-role: text;
+    accessible-live-region: root.tone == "error" ? AccessibleLiveness.assertive : AccessibleLiveness.polite;
     accessible-label: root.title != "" && root.message != ""
         ? root.title + ". " + root.message
         : (root.title != "" ? root.title : root.message);
@@ -1464,6 +1419,8 @@ export component InlineError inherits Rectangle {
 // flicker pattern doesn't apply.
 
 export component OptimisticSlider {
+    /// The row's label, for screen readers.
+    in property <string> label;
     /// Gated authoritative value from the model (Rust drives it
     /// through a reconciler; intermediate ramp echoes are dropped
     /// upstream).
@@ -1537,6 +1494,7 @@ export component OptimisticSlider {
                     reject
                 }
                 slider := Slider {
+                    accessible-label: root.label;
                     width: 100%;
                     height: 100%;
                     minimum: root.minimum;
@@ -1588,8 +1546,7 @@ export component OptimisticSlider {
 // `Theme.*` binding path and dims its chrome on unfocused windows —
 // so it can't be retinted, only replaced. Chrome mirrors `ThemedSelect`
 // (surface2 fill, accent focus ring, `size-input` height); width
-// behavior mirrors the old SpinBox (`min-width: 0` + stretch), so the
-// swap is width-neutral.
+// behavior is `min-width: 0` + stretch, as the std one's.
 //
 // Value model (mirrors `OptimisticSlider` above):
 //   - `value` is the gated authoritative value pushed by Rust (bound to
@@ -1865,6 +1822,48 @@ export component ThemedSpinBox inherits Rectangle {
 }
 
 // =============================================================================
+// SettingRow — a label with optional helper text, and its control.
+// =============================================================================
+//
+// Layout:
+//   [ label  (flex) ] [ control ]
+//   [ helper        ]
+//
+// The control is the row's child, centered against the text column.
+
+export component SettingRow {
+    in property <string> label;
+    in property <string> helper;
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// =============================================================================
 // Group — uppercase 11px title above a card.
 // =============================================================================
 //
@@ -1931,11 +1930,8 @@ export component Group {
 // SpinnerArc — track ring + rotating top-quarter arc (`tv-spin`).
 // =============================================================================
 //
-// Mirrors the design handoff's `Spinner` (CSS: full neutral border,
-// `border-top-color: accent`, `tv-spin 0.9s linear infinite`). Visual:
-// a still grey ring with one accent-colored quarter at the top,
-// rotating 360° every 0.9s linearly. See
-// `.claude/ui/pairing-wizard-motion.md` § 2 (`tv-spin`).
+// A still gray ring with one accent-colored quarter at the top,
+// rotating 360° every 0.9s linearly.
 //
 // Slint's std-widgets `Spinner` uses a Material-style growing/
 // shrinking arc with two simultaneous animations — visually busier
@@ -1978,14 +1974,10 @@ export component SpinnerArc inherits Rectangle {
 // PulseDot — radar-ping liveness indicator (10×10).
 // =============================================================================
 //
-// Mirrors the design handoff's `PulseDot` component
-// (`.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`)
-// and `tv-pulse` keyframe: a solid 6×6 dot in front of an animated
+// A solid 6×6 dot in front of an animated
 // 10×10 disc that scales 0.6 → 2.4 while fading 0.7 → 0 on a 1.4s
 // ease-out loop. Communicates ambient liveness ("the system is
-// listening") without consuming attention. See
-// `.claude/ui/pairing-wizard-motion.md` § 1 for the canonical motion
-// values.
+// listening") without consuming attention.
 
 export component PulseDot inherits Rectangle {
     width: 10px;
@@ -2026,12 +2018,8 @@ export component PulseDot inherits Rectangle {
 // =============================================================================
 //
 // 2px-tall track with a 40%-wide accent gradient that sweeps left to
-// right on a 1.6s ease-in-out loop. Matches the design handoff's
-// `tv-scan` CSS keyframe (`left: -40% → 100%`) — see
-// `.claude/ui/design_handoff_tisvlay_gui/wizard-components.jsx`
-// `ScanLine` and the `@keyframes tv-scan` block in `Pairing
-// Wizard.html`. Used during discovery scanning and the pair-step
-// "registering" phase.
+// right on a 1.6s ease-in-out loop (`left: -40% → 100%`). Used during
+// discovery scanning and the pair-step "registering" phase.
 
 export component ScanLine inherits Rectangle {
     height: 2px;
@@ -2078,7 +2066,7 @@ export component CopyBtn inherits Focusable {
     /// Spell out the action when the visible content is just a
     /// glyph. Caller-supplied `label` (the noun being copied) plus
     /// the universal verb makes for a useful screen-reader phrase.
-    accessible-label: root.label != "" ? "Copy " + root.label : "Copy";
+    accessible-label: root.label != "" ? @tr("Copy {}", root.label) : @tr("Copy");
     activated => {
         Clipboard.copy(root.value, root.label);
     }
@@ -2543,6 +2531,7 @@ export component NameInputDialog inherits Rectangle {
                     wrap: word-wrap;
                 }
                 name-field := LineEditField {
+                    accessible-label: root.title;
                     placeholder-text: root.placeholder;
                     text <=> root.name;
                     accessible-id: "dialog-name";

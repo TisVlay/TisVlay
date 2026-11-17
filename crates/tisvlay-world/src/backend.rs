@@ -257,7 +257,8 @@ pub(crate) async fn connect_flow(
                                 });
                             }
                         }
-                        let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
+                        let after_power_off = matches!(cmd, BackendCmd::PowerOff(_));
+                        let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected { after_power_off } });
                         return;
                     }
                 }
@@ -274,7 +275,7 @@ pub(crate) async fn connect_flow(
                     let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::State(Box::new(state)) });
                 }
                 None => {
-                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected });
+                    let _ = inbox.send(InEvent::Backend { tv, dial, event: BackendEvent::Disconnected { after_power_off: false } });
                     return;
                 }
             },

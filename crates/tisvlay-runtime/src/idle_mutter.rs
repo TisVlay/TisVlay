@@ -151,9 +151,6 @@ mod ffi {
         /// Fire once when the user is next active, then auto-remove.
         fn add_user_active_watch(&self) -> zbus::Result<u32>;
 
-        /// Remove a watch by id (unused: connection close removes all).
-        fn remove_watch(&self, id: u32) -> zbus::Result<()>;
-
         /// Emitted with the id of the watch that fired.
         #[zbus(signal)]
         fn watch_fired(&self, id: u32) -> zbus::Result<()>;

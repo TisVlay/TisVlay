@@ -8,7 +8,9 @@ tisvlay tracks network state per TV, straight from the kernel (netlink) — no N
 
 - **Cable pulls and software disconnects** are noticed in milliseconds, not on a timeout.
 - **Each TV is scoped to the interface that actually routes to it.** A Wi-Fi drop won't disconnect a TV reachable over Ethernet, and vice-versa; failover between Wi-Fi and wired reconnects on its own. This holds through VLANs, VPNs, and bridges.
-- A TV that goes down **stays down until asked** or until its network route returns — tisvlay doesn't hammer a TV that's genuinely gone, but it does resume the moment the path is back.
+- A TV that **turns off stays down until asked**: tisvlay doesn't keep knocking on a TV you switched off, and reconnects when you power it on again from the PC.
+- A TV whose connection drops **while it is still on** — a router reboot, a Wi-Fi outage — is tried again until it answers, a few times in quick succession and then at a slow, steady pace, however long the outage lasts. So is a TV that hasn't answered since the service started. Reconnecting never turns a TV on.
+- A TV that answers and turns the connection down, as one that has forgotten its pairing does, isn't asked again after a few tries: re-pair it.
 
 ## Wake-on-LAN only when the network is up
 
@@ -22,7 +24,8 @@ Screen commands are **verify-and-retry**, not fire-and-forget:
 
 - After sending `screen_on`/`screen_off`, tisvlay confirms the panel actually changed and retries if it didn't.
 - A `screen_on` that finds the TV in standby **escalates to a full power-on** (Wake-on-LAN for network TVs, a bus wake for CEC) — capped at one wake, so a TV that reports itself dark can't trigger an endless wake loop.
-- The **desired screen state is latched**, so it survives a TV reconnect or the login-screen→session handoff: if the connection drops mid-command, the reconnect re-asserts what you asked for rather than losing it.
+- The **desired screen state is latched** across a wake or the login-screen→session handoff: the reconnect that follows re-asserts what you asked for rather than losing it.
+- Nothing is held through an **outage**. While a TV that was on can't be reached, a screen-off or power-off is refused instead of being saved for later, so a request from hours ago can't blank a TV you have since started watching. When the TV is back, what happens to its screen follows from what is true then: if the PC is still idle and the TV's screen is on, the idle action goes out again after the idle timeout.
 
 Together these mean automation reaches the state you asked for from any starting point — TV off, TV on the wrong input, network still coming up — without per-case scripting.
 

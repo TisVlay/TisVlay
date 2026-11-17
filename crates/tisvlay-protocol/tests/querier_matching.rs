@@ -1,5 +1,4 @@
-//! Empirical pin for the querier-matching law the wire-v2 rpc design
-//! rests on: a declared `Querier`'s matching listener reports when
+//! Empirical pin for the querier-matching law the rpc design rests on: a declared `Querier`'s matching listener reports when
 //! queryables matching it become routable *from this session* — the
 //! client-side fact that liveliness tokens and daemon-side declaration
 //! order cannot provide (token arrival races queryable-route

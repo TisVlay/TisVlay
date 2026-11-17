@@ -1,4 +1,4 @@
-//! tisvlay-tray: the root ksni tray reshaped for zenoh. The menu renders
+//! tisvlay-tray: the ksni system tray. The menu renders
 //! from the SDK clients' mirrors of the daemon (plus the session
 //! service's user keys when its socket exists); every click is an rpc.
 
@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use ksni::TrayMethods;
-use tisvlay_protocol::payload::{self, PairingPhase};
+use tisvlay_protocol::payload::{self, PairingPhase, StatePayload as _};
 use tisvlay_protocol::{bootstrap, keys};
 use tisvlay_runtime::client::{Coalescer, ReconcilerMap};
 use tokio::sync::mpsc;
@@ -40,8 +40,8 @@ impl TrayHandle {
     }
 }
 
-/// Optimistic per-TV intent for the scroll targets — the root stack's
-/// reconciler pattern: scroll math bases on what the user last asked
+/// Optimistic per-TV intent for the scroll targets — the reconciler
+/// pattern: scroll math bases on what the user last asked
 /// for rather than the daemon cache bouncing during a TV-side ramp, and
 /// the observed echo releases the gate.
 #[derive(Clone)]
@@ -319,14 +319,14 @@ async fn snapshot(
     daemon: &tisvlay::DaemonClient,
     session: Option<&tisvlay::SessionClient>,
 ) -> state::View {
-    let tvs = daemon.list_tvs().await.unwrap_or_default();
-    let system_profiles = daemon.list_system_profile_bodies().await;
+    let tvs = daemon.list_tvs().unwrap_or_default();
+    let system_profiles = daemon.list_system_profile_bodies();
     let mut user_profiles = std::collections::HashMap::new();
     let mut assignments = std::collections::HashMap::new();
     if let Some(session) = session {
-        user_profiles = session.list_user_profile_bodies().await;
+        user_profiles = session.list_user_profile_bodies();
         for tv in &tvs {
-            if let Some(profile) = session.get_tv_user_profile(tv.uuid).await {
+            if let Some(profile) = session.get_tv_user_profile(tv.uuid) {
                 assignments.insert(tv.uuid, profile);
             }
         }
@@ -334,11 +334,10 @@ async fn snapshot(
     let mut view = state::View::new(&tvs, &system_profiles, &user_profiles, |tv| {
         assignments.get(&tv).copied()
     });
-    view.daemon_alive = daemon.is_available().await;
-    view.daemon_hydrated = daemon.is_hydrated().await;
+    view.daemon_alive = daemon.is_available();
+    view.daemon_hydrated = daemon.is_hydrated();
     view.daemon_mismatch = daemon
         .service_info()
-        .await
         .map(|info| info.version)
         .filter(|theirs| !tisvlay_protocol::compatible(tisvlay_protocol::VERSION, theirs));
     view
@@ -527,7 +526,7 @@ pub fn default_user_socket() -> PathBuf {
 }
 
 /// Terminal pairing phases become toasts — non-terminal progress is the
-/// wizard's job to surface, not the tray's (root stance).
+/// wizard's job to surface, not the tray's.
 async fn spawn_pairing_toasts(
     system: &Session,
     site: &str,
@@ -595,7 +594,7 @@ async fn spawn_power_cycle_toasts(
     notifier: notify::Notifier,
 ) -> Result<()> {
     let sub = system
-        .declare_subscriber(format!("tisvlay/{site}/tv/*/progress/power"))
+        .declare_subscriber(keys::tv_path_wild(site, payload::PowerProgress::PATH))
         .await
         .map_err(|e| anyhow!("subscribe power progress: {e}"))?;
     let site = site.to_string();
@@ -696,7 +695,7 @@ mod orchestration_tests {
             .unwrap();
         let mut watcher = tisvlay::StateWatcher::new(&daemon, None, None, Default::default());
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !daemon.is_available().await {
+            while !daemon.is_available() {
                 watcher.next().await.unwrap();
             }
         })
@@ -820,7 +819,7 @@ mod orchestration_tests {
         let mut session_events =
             tisvlay::StateWatcher::new(&daemon, Some(&session), None, Default::default());
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !session.is_available().await {
+            while !session.is_available() {
                 session_events.next().await.unwrap();
             }
         })

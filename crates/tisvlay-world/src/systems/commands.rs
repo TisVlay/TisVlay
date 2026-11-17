@@ -134,7 +134,7 @@ pub(crate) fn add_tv(
 }
 
 /// Remove a TV. Despawning it unindexes it, deletes its keys, and
-/// releases its route monitoring (`TvId`'s hooks).
+/// releases its route and device monitoring (`TvId`'s hooks).
 pub(crate) fn remove_tv(
     In(id): In<Uuid>,
     mut commands: Commands,
@@ -174,9 +174,13 @@ pub(crate) fn reconnect(
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let (handle, pending, _, _, _) = q.get(entity).unwrap_or((None, false, None, None, None));
-    if handle.is_none() && !pending {
+    if handle.is_none() {
+        // A redial already under way keeps its attempt count; either way
+        // the next dial doesn't wait out a backoff.
         let mut e = commands.entity(entity);
-        redial(&mut e, false);
+        if !pending {
+            redial(&mut e, false);
+        }
         e.remove::<RetryAt>();
     }
     Ok(Ack {})
@@ -295,19 +299,28 @@ pub(crate) fn backend_command(
 
 /// A power-off: in-band on a live connection, acked once the TV completes
 /// it. A disconnected TV holding a wake has that wake cancelled, which is
-/// the whole of the job (it stays off), so the rpc is answered here.
-/// Otherwise the TV isn't connected.
+/// the whole of the job (it stays off), so the rpc is answered here. One
+/// behind an outage has its pending wake cancelled too, but isn't off for
+/// that: the caller is told it couldn't be reached. Otherwise the TV isn't
+/// connected.
 pub(crate) fn power_off(
     In((id, reply)): In<(Uuid, Option<AckReply>)>,
     mut commands: Commands,
     index: Res<TvIndex>,
     q: Query<LinkQuery>,
     held: Query<&PendingConnect, Without<Reconnecting>>,
+    in_outage: Query<(), With<Outage>>,
     mut outbox: ResMut<Outbox>,
 ) -> Result<(), WireError> {
     let entity = tv_entity(&index, id)?;
     match q.get(entity).ok().and_then(|(handle, ..)| handle) {
         Some(handle) if handle.cmd_tx.send(BackendCmd::PowerOff(reply)).is_ok() => Ok(()),
+        // A TV behind an outage isn't off for having its wake cancelled:
+        // the off couldn't reach it, and the caller is told so.
+        None if in_outage.get(entity).is_ok() => {
+            drop_on_intent(&mut commands, entity);
+            Err(WireError::not_connected(id))
+        }
         None if held.get(entity).is_ok_and(|p| p.wake) => {
             cancel_held_wake(&mut commands, entity);
             reply_ok(&mut outbox, reply);
@@ -347,6 +360,7 @@ pub(crate) fn set_screen(
     clock: Res<Clock>,
     q: Query<LinkQuery>,
     metas: Query<&State<payload::Meta>>,
+    in_outage: Query<(), With<Outage>>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
     let row = q
@@ -357,6 +371,7 @@ pub(crate) fn set_screen(
     } else {
         None
     };
+    refuse_off_during_outage(&mut commands, entity, id, on, in_outage.get(entity).is_ok())?;
     dispatch_screen(&mut commands, &clock, entity, id, on, row, restore_to)?;
     Ok(Ack {})
 }
@@ -385,11 +400,23 @@ pub(crate) fn update_config(
     In((id, patch)): In<(Uuid, tisvlay_protocol::rpc::UpdateConfig)>,
     mut commands: Commands,
     index: Res<TvIndex>,
+    profiles: Res<ProfileIndex>,
     q: Query<LinkQuery>,
     mut writes: SettingsWrites,
     mut outbox: ResMut<Outbox>,
 ) -> Result<Ack, WireError> {
     let entity = tv_entity(&index, id)?;
+    // As set-system-profile refuses it: a dangling id would silently run
+    // the default profile. A malformed one is the patch's bad request.
+    if let Some(profile) = patch
+        .0
+        .get("system_profile")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| Uuid::parse_str(s).ok())
+        && profiles.get(&profile).is_none()
+    {
+        return Err(WireError::profile_not_found(profile));
+    }
     apply_config_patch(
         &mut commands,
         entity,
@@ -416,7 +443,7 @@ pub(super) fn apply_managed(
             redial(&mut e, false);
         }
     } else {
-        // Managed gates automation, not connectivity (root parity):
+        // Managed gates automation, not connectivity:
         // the connection stays up so state remains live and manual
         // control keeps working; only profile-driven actions stop.
         commands.entity(entity).remove::<Managed>();
@@ -535,9 +562,7 @@ pub(super) fn apply_config_patch(
             .get(entity)
             .unwrap_or((None, false, None, None, None, None));
         if handle.is_some() || pending {
-            let mut e = commands.entity(entity);
-            e.remove::<(ConnectionHandle, RetryAt)>();
-            redial(&mut e, false);
+            redial_on_new_config(&mut commands.entity(entity));
         }
     }
     Ok(())

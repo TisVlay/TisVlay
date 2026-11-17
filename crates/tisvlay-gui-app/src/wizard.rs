@@ -11,15 +11,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use gettextrs::gettext;
 use parking_lot::Mutex;
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use tisvlay::{
     DaemonClient, LinkMacOutcome, LinkMacReport, PairStarted, PairTerminal, PairingProgress,
 };
 use tisvlay::{FailureCode, PairingPhase};
-use tracing::warn;
+use tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID;
+use tracing::{debug, warn};
 
 use crate::edit_pane::extract_invalid_vendor_config;
-use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid};
+use crate::schema_form::{AutofilledRow, autofill_schema, compute_schema_valid, mark_row_invalid};
 use crate::{AppWindow, PairingFieldRow, PairingWizard, WizardDiscoveredTv, error_text, on_ui};
 
 /// One row of the pairing-wizard's discovery list, owned Rust-side.
@@ -200,6 +201,7 @@ pub(crate) fn reset_wizard(
     cancel_wizard_manual_lookup(manual_lookup_cancel);
     let wizard = app.global::<PairingWizard>();
     wizard.set_active(false);
+    wizard.set_re_pair(false);
     wizard.set_step(1);
     wizard.set_selected_index(-1);
     wizard.set_tv_name(SharedString::default());
@@ -209,6 +211,7 @@ pub(crate) fn reset_wizard(
     wizard.set_mac_configured(SharedString::default());
     wizard.set_mac_error(SharedString::default());
     wizard.set_system_profile(SharedString::default());
+    wizard.set_system_profile_id(SharedString::default());
     wizard.set_managed(true);
     // Reset to the alpha-first vendor (index 0) — `supported-vendors`
     // is sorted by display name in `state_watch::fetch_and_publish_vendors`.
@@ -222,6 +225,7 @@ pub(crate) fn reset_wizard(
     wizard.set_selected_hw_model(SharedString::default());
     wizard.set_discovery_streaming(false);
     wizard.set_discovery_error(SharedString::default());
+    wizard.set_schema_error(SharedString::default());
     wizard.set_manual_lookup_streaming(false);
     wizard.set_pair_phase(SharedString::default());
     wizard.set_pair_message(SharedString::default());
@@ -234,8 +238,8 @@ pub(crate) fn reset_wizard(
 /// Run a streaming discovery session against the daemon.
 ///
 /// Subscribes to the `discovery/*/found/*` keys first, then calls
-/// the `discover-start` rpc so the daemon loops M-SEARCH bursts
-/// at its configured `poll_interval` (default 8 s) until we stop it.
+/// the `discover-start` rpc so the daemon scans in bursts until we
+/// stop it.
 /// Each newly-seen TV is appended to `wizard_entries` and the Slint
 /// model is refreshed.
 ///
@@ -246,8 +250,7 @@ pub(crate) fn reset_wizard(
 /// - the `wizard_gen` counter drifting from the value captured at
 ///   start (defense in depth against late callbacks bleeding into a
 ///   reopened wizard)
-/// - the findings stream ending (daemon-side hard cap or daemon
-///   shutdown)
+/// - the findings stream ending (the daemon shutting down)
 ///
 /// Always calls the `discover-stop` rpc on exit, even if cancel
 /// happened mid-iteration, so the daemon promptly stops scanning.
@@ -271,8 +274,8 @@ pub(crate) async fn run_wizard_discovery(
         }
     };
 
-    // The session runs until stopped or the daemon's hard cap, its
-    // safety net for a crashed GUI.
+    // The daemon scans until the session is stopped: nothing else ends
+    // it, so every exit path calls `discover-stop`.
     let session_id = match daemon.start_discovery().await {
         Ok(sid) => sid,
         Err(e) => {
@@ -356,9 +359,8 @@ fn publish_discovery_error(app_weak: &slint::Weak<AppWindow>, e: &tisvlay::Error
 
 /// Fetch the vendor's pairing-form schema and publish autofilled
 /// rows into the wizard's `schema-fields` model. Failure leaves
-/// the model empty and surfaces the error in `discovery-error`
-/// (the closest existing inline-message slot — a dedicated
-/// `Errors.pairing` channel is on the roadmap).
+/// the model empty and says why in `schema-error`, which the
+/// configure step shows.
 ///
 /// `manual_entry: true` tells the helper-override logic that this
 /// schema fetch was triggered by the wizard's manual-add path
@@ -374,6 +376,10 @@ pub(crate) async fn fetch_and_publish_schema(
     entry: WizardEntry,
     manual_entry: bool,
 ) {
+    on_ui(&app_weak, |app| {
+        app.global::<PairingWizard>()
+            .set_schema_error(SharedString::default());
+    });
     match daemon.get_pairing_schema(&vendor).await {
         Ok(schema) => {
             let mut raw_rows = autofill_schema(&schema, &entry.vendor_data, &entry.address);
@@ -393,11 +399,11 @@ pub(crate) async fn fetch_and_publish_schema(
             });
         }
         Err(e) => {
-            warn!(vendor = %vendor, error = %e, "GetPairingSchema failed");
+            warn!(vendor = %vendor, error = %e, "pairing schema fetch failed");
             let msg = error_text(&e);
             on_ui(&app_weak, move |app| {
                 let wizard = app.global::<PairingWizard>();
-                wizard.set_discovery_error(SharedString::from(msg));
+                wizard.set_schema_error(SharedString::from(msg));
             });
         }
     }
@@ -415,6 +421,16 @@ fn apply_manual_entry_helper_overrides(rows: &mut [AutofilledRow]) {
             row.helper = gettext("MAC not detected. {0}").replace("{0}", &row.helper);
         }
     }
+}
+
+/// What the wizard asks the daemon to pair: the configure step's picks.
+pub(crate) struct PairForm {
+    pub(crate) name: String,
+    pub(crate) vendor: String,
+    pub(crate) config: serde_json::Map<String, serde_json::Value>,
+    pub(crate) managed: bool,
+    /// The system profile to assign once the pair completes.
+    pub(crate) system_profile: Option<uuid::Uuid>,
 }
 
 /// Run a `pair` rpc flow against the daemon's async-spawn
@@ -437,14 +453,12 @@ pub(crate) async fn run_wizard_pair(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
-    name: String,
-    vendor: String,
-    config: serde_json::Map<String, serde_json::Value>,
-    managed: bool,
+    captured_gen: u64,
+    form: PairForm,
 ) {
-    // Capture the generation at task start. Every callback below
-    // re-reads the live gen and skips if it has drifted.
-    let captured_gen = wizard_gen.load(Ordering::SeqCst);
+    // `captured_gen` is the generation when Pair was clicked: every
+    // callback below re-reads the live gen and skips if it has drifted,
+    // so a Cancel that lands before this task runs still counts.
 
     // Subscribe BEFORE the pair rpc so we don't miss any phase
     // updates (the daemon may publish `awaiting_tv` within
@@ -453,24 +467,21 @@ pub(crate) async fn run_wizard_pair(
         Ok(s) => s,
         Err(e) => {
             warn!(error = %e, "PairingProgress subscribe failed; falling back to phase-less pair");
-            run_pair_no_progress(
-                daemon,
-                app_weak,
-                wizard_gen,
-                captured_gen,
-                name,
-                vendor,
-                config,
-                managed,
-            )
-            .await;
+            run_pair_no_progress(daemon, app_weak, wizard_gen, captured_gen, form).await;
             return;
         }
     };
+    let PairForm {
+        name,
+        vendor,
+        config,
+        managed,
+        system_profile,
+    } = form;
 
     // `pair_tv` is sync-validation-only — it returns the reserved
     // tv_id immediately. Errors here are unknown-vendor /
-    // ConfigInvalidVendorConfig / etc. — route via the field-mapper
+    // an invalid-field refusal / etc. — route via the field-mapper
     // so per-field problems bounce back to step 2.
     let PairStarted { id: tv_id, attempt } =
         match daemon.pair_tv(&name, &vendor, config, managed).await {
@@ -486,6 +497,14 @@ pub(crate) async fn run_wizard_pair(
                 return;
             }
         };
+    // Cancelled while the rpc ran: the Cancel had no tv_id to route, so
+    // end the daemon's session here rather than let it enroll the TV.
+    if wizard_gen.load(Ordering::SeqCst) != captured_gen {
+        if let Err(e) = daemon.cancel_pair(tv_id).await {
+            debug!(%tv_id, error = %e, "cancel after an abandoned pair rpc failed");
+        }
+        return;
+    }
 
     // Set tv_id on the wizard so the Cancel button can route the
     // `cancel-pair` rpc. The same pair_tv_id is consumed
@@ -509,7 +528,25 @@ pub(crate) async fn run_wizard_pair(
     let outcome = DaemonClient::drain_pair_to_terminal(stream, tv_id, attempt, on_progress).await;
 
     let result = terminal_to_result(outcome);
+    if result.is_ok() {
+        assign_initial_profile(&daemon, tv_id, system_profile).await;
+    }
     publish_pair_outcome(app_weak, &wizard_gen, captured_gen, result, true);
+}
+
+/// Give a just-paired TV the system profile picked on the configure
+/// step. The picker lists display names, resolved here the way the TVs
+/// pane resolves its own picks; a paired TV already has the reserved
+/// default, so picking it needs no write. A failure leaves the TV on the
+/// default, which the TVs pane can change, and is only logged: the pair
+/// itself succeeded.
+async fn assign_initial_profile(daemon: &DaemonClient, tv: uuid::Uuid, picked: Option<uuid::Uuid>) {
+    let Some(profile) = picked.filter(|profile| *profile != DEFAULT_SYSTEM_PROFILE_UUID) else {
+        return;
+    };
+    if let Err(e) = daemon.set_tv_system_profile(tv, Some(profile)).await {
+        warn!(%tv, %profile, error = %error_text(&e), "couldn't assign the picked system profile");
+    }
 }
 
 /// Fallback pair flow when the PairingProgress subscription fails
@@ -520,23 +557,19 @@ pub(crate) async fn run_wizard_pair(
 /// convert RPC-success into an explicit error rather than risk
 /// showing a `complete` phase that lets the user click Done over
 /// a pair that may still be in flight or fail. Sync-validation
-/// errors (unknown vendor, ConfigInvalidVendorConfig) still
+/// errors (unknown vendor, an invalid field) still
 /// route through their normal field-mapping path.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a spawned task: the client handles plus the pair request's fields, each moved in once from the caller"
-)]
 async fn run_pair_no_progress(
     daemon: Arc<DaemonClient>,
     app_weak: slint::Weak<AppWindow>,
     wizard_gen: WizardGen,
     captured_gen: u64,
-    name: String,
-    vendor: String,
-    config: serde_json::Map<String, serde_json::Value>,
-    managed: bool,
+    form: PairForm,
 ) {
-    let result = match daemon.pair_tv(&name, &vendor, config, managed).await {
+    let result = match daemon
+        .pair_tv(&form.name, &form.vendor, form.config, form.managed)
+        .await
+    {
         Err(e) => Err(PairError::Rpc(e)),
         Ok(_) => {
             let msg = gettext(
@@ -797,22 +830,11 @@ pub(crate) fn publish_pair_outcome(
 /// should fall through to a generic pair-failed surface.
 fn mark_field_invalid(wizard: &PairingWizard<'_>, field: &str, reason: &str) -> bool {
     let model = wizard.get_schema_fields();
-    let Some(vec_model) = model.as_any().downcast_ref::<VecModel<PairingFieldRow>>() else {
+    if !mark_row_invalid(&model, field, reason) {
         return false;
-    };
-    for i in 0..model.row_count() {
-        let Some(mut row) = model.row_data(i) else {
-            continue;
-        };
-        if row.name == field {
-            row.state = SharedString::from("invalid");
-            row.error = SharedString::from(reason);
-            vec_model.set_row_data(i, row);
-            wizard.set_schema_valid(compute_schema_valid(&model));
-            return true;
-        }
     }
-    false
+    wizard.set_schema_valid(compute_schema_valid(&model));
+    true
 }
 
 #[cfg(test)]

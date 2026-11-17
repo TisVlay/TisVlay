@@ -224,6 +224,12 @@ mock.simulate_user_accept("mock://lr");
 - `inject_power_state(address, PowerState)` — push a power-state change onto a live mock connection. Mutates the in-flight `TvState` and pushes the snapshot through every active subscription for that address, so the world publishes the new state on the wire the same way it would for a real backend-initiated change.
 - `inject_power_state_silent(address, PowerState)` — same mutation, no subscription push — simulates a TV whose state drifted without telling us
 - `set_screen_on_noop(address, bool)` / `set_screen_off_noop(address, bool)` — make screen commands accept-but-do-nothing, for the retry/escalation dispatch tests
+- `cut_link(address)` — end a live connection's stream without a power change, as a network outage does to a TV that stays on
+- `set_unreachable(address, bool)` — fail dials with `NetworkUnreachable`, as during that outage
+- `set_key_rejected(address, bool)` — make the TV answer dials and turn them down with `NotRegistered`, which is a refusal and not an outage
+- `set_screen_off_closes(address, bool)` — make a `screen_off` find the link dead, the way a send is often the first to notice an outage
+- `set_switch_input_noop(address, bool)` — make `switch_input` accept the switch without acting on it, so an input restore stays pending
+- `set_power_off_unreported(address, bool)` — make `power_off` close the link without a standby report first
 - `set_initial_power_state_override(address, PowerState)` — power state the next connect reports (e.g., connect straight into standby, CEC-style)
 - `screen_on_call_count(address)` / `screen_off_call_count(address)` / `connect_call_count(address)` — assert how many times the backend was actually driven
 
@@ -360,13 +366,9 @@ relay.cut();
 relay.restore();
 ```
 
-### Tracing re-exports
-
-`tisvlay-test` re-exports `tracing_test::traced_test` and `tracing_mock` so consumers don't need separate dep entries.
-
 ## Wire-level integration tests
 
-Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tempfile::tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
+Each binary crate's `tests/` directory boots the real stack and drives it exactly like a production client: `tisvlay_daemon::serve()` (and `tisvlay_session::serve()` where the user subtree is involved) on a Unix socket inside a per-test `tisvlay_test::socket_tempdir()`, the mock backend registered via `VendorReg`, and one or more real zenoh client sessions opened against the socket. **The wire is the observable contract** — tests assert on published samples and rpc replies, never on world internals.
 
 ### Wiring
 
@@ -389,12 +391,13 @@ flowchart TD
     BUS --> WORLD
 ```
 
-The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template:
+The shared setup helper in `tisvlay-daemon/tests/it/wire.rs` is the template (`wire()` is `wire_with_store(false)`):
 
 ```rust
-async fn wire() -> Wire {
-    let dir = tempfile::tempdir().unwrap();
+async fn wire_with_store(store: bool) -> Wire {
+    let dir = tisvlay_test::socket_tempdir();
     let socket = dir.path().join("w.sock");
+    let store = store.then(|| dir.path().join("daemon.toml"));
     let (connector, discovery, handle) = new_test_parts();
     let stack = tisvlay_daemon::serve(
         &socket,
@@ -403,7 +406,7 @@ async fn wire() -> Wire {
             tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
                 .with_discovery(Arc::new(discovery)),
         ],
-        None,
+        store.as_deref(),
     )
     .await
     .unwrap();
@@ -416,11 +419,11 @@ async fn wire() -> Wire {
 
 ### Test inventory
 
-- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `device.rs`, `held_wake.rs`, `pairing_profiles.rs`, `power_edge.rs`, `reload.rs`, `remote_keys.rs`, `store.rs`, `wake_list.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
+- `tisvlay-world/tests/it/` (`world.rs`, `dispatch.rs`, `carrier.rs`, `device.rs`, `held_wake.rs`, `link_recovery.rs`, `pairing_profiles.rs`, `power_edge.rs`, `reload.rs`, `remote_keys.rs`, `store.rs`, `wake_list.rs`) — **headless world tests**, one level below the wire: drive the `Reactor` with commands and the mock handle, assert on the `WireEffect` tap (`spawn_reactor()` in `tests/it/support/mod.rs`). No zenoh at all — connect/backoff, dispatch escalation, carrier scoping, and pairing/profile logic without socket ceremony.
 - `tisvlay-daemon/tests/it/wire.rs` — the core wire contract: add-tv + late-client hydration via history, typed rpc errors, volume/input/backlight/screen round-trips, store-backed restart, settings rpcs, re-pair, streamed discovery replies, DPMS-driven profile actions, remove + delete samples, pairing progress liveliness + cancel.
 - `tisvlay-daemon/tests/it/profiles.rs` — system-profile CRUD with reference guarding, per-TV profile resolution, discovery sessions, vendor catalog queryables.
 - `tisvlay-daemon/tests/it/cec.rs` — CEC parity over the wire, driven by the real `CecConnector` against `FakeCecLink` (the `test-link` seam): Connected ≠ power, wake-in-place, no link flap through a power cycle. See [docs/cec/testing.md](cec/testing.md).
-- `tisvlay-daemon/tests/it/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions) and the `automate_when` gate.
+- `tisvlay-daemon/tests/it/greeter.rs` — the greeter contract (timeout key + idle puts driving system-profile actions, and a restarted daemon acting on an idle greeter's cached sample), the `automate_when` gate, and the session's stream mirror.
 - `tisvlay-daemon/tests/it/logind.rs` — consumed-D-Bus adapter: `FakeLogind` on a `PrivateBus` drives sleep/resume end to end (signal → system event → stock profile → mock backend → state publish on the wire).
 - `tisvlay-daemon/tests/it/liveliness.rs` — a client session over the daemon's socket sees the daemon's liveliness token.
 - `tisvlay-daemon/tests/it/access.rs` — socket-permission flips against a live daemon: granting or revoking access mid-run, the kernel-level path a seat ACL change takes.
@@ -435,6 +438,8 @@ async fn wire() -> Wire {
 - `tisvlay/tests/it/client.rs` — the GUI-facing SDK against a live daemon + session service: mirror hydration into `TvInfo`, watcher events, rpcs, profile bodies, connect-before-daemon resilience, the release check, and discarding cached TVs/profiles across daemon lifetimes.
 - `tisvlay/tests/it/conformance.rs` — the cases every mirror must pass, through a `Relay`: each SDK client against a fake service (`tests/it/fake.rs`) across a cut link, a stalled then cut link, a restart, a delete while down, a record re-created under its key, a sample lost within a lifetime, a TV key arriving before its identity, and an assignment for a TV the daemon doesn't have; and the services' mirrors of each other against the real daemon and session, with the session's system link through the relay. A case the code fails today is `#[ignore]`d with the reason, until the change that fixes it turns it on.
 - `tisvlay-cli/tests/it/workflows.rs` — the actual CLI binary against socket-scoped daemon/session stacks and the mock backend: command dispatch, pairing, TV controls, system/user profile operations, stream sources, JSON/human output, reload reporting, and unsuccessful exits for malformed input and RPC refusals. Each subprocess has a deadline and is killed if its test future is dropped.
+- `tisvlay-cli/tests/it/services.rs` — `tisvlay service daemon` and `tisvlay service session` as real processes, the way their units start them: the service entry points, the CLI's dispatch to them and the logging init.
+- `tisvlay-cli/tests/it/completions.rs` — each shell's completion registration script, so a `clap_complete` bump that changes the template fails here.
 
 ### Zenoh testing gotchas
 
@@ -504,6 +509,8 @@ The testing backend has no event loop and no public key helper, but `slint::Wind
 
 ## Test observability
 
+The world suite captures the reactor's own log lines with `spawn_reactor_capturing_logs()` (`tests/it/support/mod.rs`): a subscriber scoped to the reactor's task, returned as a `Logs` handle to assert on with `logs.contain("…")`. Scoped, so it works under plain `cargo test` too, where a process-wide subscriber is first come, first served.
+
 ### #[traced_test] — per-test log capture
 
 Installs a subscriber that captures all `tracing` events. On failure, dumps them to stderr. On success, discards.
@@ -523,10 +530,10 @@ The `no-env-filter` feature is pinned so events from dependency crates (tisvlay-
 
 ### tracing-mock — observability regression tests
 
-Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation.
+Assert that production code emits specific spans/events with the right fields. Catches refactors that silently remove instrumentation. They live next to the code they pin (the mock's in `tisvlay-mock/tests/it/tracing_regressions.rs`), with `tracing-mock` as that crate's dev-dependency.
 
 ```rust
-use tisvlay_test::tracing_mock::{expect, subscriber};
+use tracing_mock::{expect, subscriber};
 use tracing::subscriber::set_default;
 
 #[test]
@@ -549,7 +556,7 @@ fn publish_tv_emits_instrumented_debug_event() {
 
 ## Deterministic time
 
-`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps. Validated by the clock spike test (`tisvlay-test/tests/it/clock_spike.rs`).
+`tokio::time::pause()` + `advance()` enables tests to control the clock without real sleeps.
 
 Use `#[tokio::test(start_paused = true)]` — no explicit `pause()` needed.
 

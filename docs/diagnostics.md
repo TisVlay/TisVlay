@@ -23,7 +23,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
   },
   "runtime": {
     "bus": "user",
-    "desktop": "KDE",
+    "desktop": "kde",
     "session_type": "wayland",
     "locale": "en_US.UTF-8",
     "kernel": "6.18.24",
@@ -49,13 +49,13 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 | `schema_version` | constant `1` |
 | `gui.version` | `env!("CARGO_PKG_VERSION")` |
 | `gui.profile` | `cfg!(debug_assertions) ? "debug" : "release"` |
-| `gui.target` | `env!("VERGEN_CARGO_TARGET_TRIPLE")` |
-| `gui.rustc` | `env!("VERGEN_RUSTC_SEMVER")` |
-| `gui.git_sha` | `env!("VERGEN_GIT_SHA")` (short, 7 chars) |
+| `gui.target` | `env!("TISVLAY_BUILD_TARGET")` |
+| `gui.rustc` | `env!("TISVLAY_BUILD_RUSTC")` |
+| `gui.git_sha` | `env!("TISVLAY_BUILD_GIT_SHA")` (short, 7 chars) |
 | `components.{daemon,session,tray}.version` | `about_components` model rows (each service's `info` rpc) |
 | `components.{daemon,session,tray}.connected` | `row.online` (the service's liveliness token) |
 | `components.{daemon,session,tray}.config` | `row.config_path != ""` — bool only; the path itself is PII |
-| `runtime.bus` | always `"user"`: the GUI passes a constant |
+| `runtime.bus` | `"system"` when the GUI dialed the packaged daemon socket, `"user"` for a per-user dev socket |
 | `runtime.desktop` | `std::env::var("XDG_CURRENT_DESKTOP")`, lowercased |
 | `runtime.session_type` | `std::env::var("XDG_SESSION_TYPE")` ("wayland" / "x11" / "tty") |
 | `runtime.locale` | `std::env::var("LANG")` |
@@ -64,13 +64,13 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 | `runtime.os_id` | `os_info::get().os_type()` lowercased to match `/etc/os-release ID=` convention |
 | `runtime.os_version` | `os_info::get().version()` (see caveats — `Version::Semantic` normalizes the raw string) |
 | `tvs.configured` | TV model row count |
-| `tvs.connected` | filter on `power == "on" \|\| connected` |
+| `tvs.connected` | count of TVs whose link is up (`TvSnap.connected`) |
 | `tvs.by_vendor` | rollup of TV model `vendor_id`; empty vendors skipped |
 | `vendors_supported` | the cached `manager/vendors` catalog, sorted alphabetically for stable diffs |
 
 ## Caveats — what `null` means
 
-- **`gui.git_sha: null`** — build ran outside a git checkout (release tarball, Nix sandbox without git history). The GUI's build script falls back to a `VERGEN_IDEMPOTENT_OUTPUT` sentinel, which the renderer's `maybe_git_sha()` collapses to JSON `null`. Lets a maintainer tell tarball builds apart from real checkouts.
+- **`gui.git_sha: null`** — build ran outside a git checkout (release tarball, Nix sandbox without git history). The GUI's build script falls back to a `TISVLAY_BUILD_UNKNOWN` sentinel, which the renderer's `maybe_git_sha()` collapses to JSON `null`. Lets a maintainer tell tarball builds apart from real checkouts.
 - **`runtime.os_version` normalization** — `os_info` parses `VERSION_ID` into a typed `Version::Semantic(major, minor, patch)` enum and re-renders, which drops formatting from the original string. NixOS's YY.MM convention loses its leading zero: `VERSION_ID="26.05"` shows up as `"26.5.0"` in the blob. Acknowledged upstream as a bug ([stanislav-tkach/os_info#318](https://github.com/stanislav-tkach/os_info/issues/318), proposed string-based redesign in [#280](https://github.com/stanislav-tkach/os_info/issues/280)); fixes without a code change here when the upstream lands.
 - **`runtime.{kernel,glibc,os_id,os_version}: null`** — the corresponding probe returned `None` (musl builds for `glibc`; `Type::Unknown` / `Version::Unknown` for OS fields; non-UTF-8 syscall output for kernel — the last is theoretical).
 - **`runtime.{desktop,session_type,locale}: null`** — env var unset or empty (e.g., `$XDG_SESSION_TYPE` is sometimes unset under KDE-on-X11).
@@ -83,7 +83,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 
 ## Crate rationale
 
-- **A hand-rolled build script over the `vergen` crates.** `tisvlay-gui-app/build.rs` sets the `VERGEN_*` variables itself, from cargo's `TARGET` and `RUSTC` and one `git rev-parse`, keeping vergen's names so the renderer didn't change. The gitoxide backend of `vergen-gix` cost more build time than three values justify (`docs/build.md` § Build scripts).
+- **A hand-rolled build script over the `vergen` crates.** `tisvlay-gui-app/build.rs` sets the `TISVLAY_BUILD_*` variables itself, from cargo's `TARGET` and `RUSTC` and one `git rev-parse`. The gitoxide backend of `vergen-gix` cost more build time than three values justify (`docs/build.md` § Build scripts).
 - **`os_info` over `etc-os-release`** — `os_info` is more widely adopted (used by `cargo` itself), and its typed `Type::NixOS` enum defends against distro-detection typos. `etc-os-release` was the initial choice for its leanness; swapped after a reviewer flagged adoption signal. Net dep cost was zero — `os_info`'s direct deps (`log`, `nix`) are already transitive in our tree. The swap introduced the `os_version` normalization caveat above.
 - **`rustix::system::uname()` over `nix::sys::utsname::uname`** — `rustix` is already in the tree via `zbus`'s transitive surface; `nix` would add a fresh root. (Note: `os_info` later pulled `nix` into the tree anyway for its own purposes, but `rustix` is still the right choice for direct calls — its API is leaner and it's pure-Rust.)
 - **`libc::gnu_get_libc_version` direct FFI over the `glibc_version` crate** — the latter is build-time-only; we want runtime so the deployment glibc is captured (matters for cross-distro packaging triage). The FFI wrapper is ~10 lines with a documented `unsafe` block per the workspace's `undocumented_unsafe_blocks` lint, gated `cfg(target_env = "gnu")` so musl builds surface `null`.

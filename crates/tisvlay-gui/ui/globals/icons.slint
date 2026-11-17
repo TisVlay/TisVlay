@@ -1,6 +1,6 @@
 // Action-glyph icons resolved from the user's freedesktop icon
 // theme (Breeze on KDE, Adwaita on GNOME, hicolor as fallback).
-// Rust loads each at startup via `load_themed_icon` and pushes
+// Rust loads each at startup via `icon_theme::load_symbolic_icon` and pushes
 // them here so any component can reference them without prop
 // drilling through pane / row layouts.
 //
@@ -24,7 +24,7 @@ export global Icons {
     /// Reload glyph (circular arrow). Used by the sidebar's
     /// "Reload daemon config" affordance. Matches the `view-refresh`
     /// icon the Tray uses for the same action — both clients invoke
-    /// `Manager1.ReloadConfig`.
+    /// the reload rpc.
     in property <image> reload;
     /// Copy / duplicate glyph (`edit-copy`). Distinct from
     /// `Clipboard.copy-icon`, which carries the same visual but is

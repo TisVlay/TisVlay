@@ -30,15 +30,16 @@ use uuid::Uuid;
 use crate::components::{
     AwaitingDependency, Clock, ConnectionHandle, DesiredInput, DeviceAvailable, DeviceNode,
     DeviceWatch, DialSeq, DispatchRetry, DispatchVerify, Effect, GoingOff, GoingOffEvent, HeldWake,
-    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outbox,
-    PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked, PendingConnect,
-    PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting, RemoteKeysSent,
-    RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed, SystemProfile, TransportTraits,
-    TvId, TvIndex, VendorRef, WakingInPlace, dependency_absent,
+    KnownVendors, LastPersisted, LatestDial, Managed, MirrorsConnector, MonitoredInterface, Outage,
+    Outbox, PairVerifying, PairingEnroll, PairingFor, PairingIndex, PairingRef, Parked,
+    PendingConnect, PowerEdges, ProfileAction, ProfileBody, ProfileId, ProfileIndex, Reconnecting,
+    RemoteKeysSent, RetryAt, RetryPromptly, Site, SleepPending, State, StreamArmed,
+    TransportTraits, TvId, TvIndex, VendorRef, WakingInPlace, dependency_absent,
 };
 use crate::events::{
-    AckReply, AnyReply, BackendCmd, BackendEvent, InEvent, PairingUpdate, ProfileRecord, SleepMode,
-    SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList, WireEffect, WireError,
+    AckReply, AnyReply, BackendCmd, BackendEvent, DialFailureCause, InEvent, PairingUpdate,
+    ProfileRecord, SleepMode, SleepRequest, StoreSnapshot, SystemEvent, TvRecord, WakeList,
+    WireEffect, WireError,
 };
 
 /// Dial attempts per connect request before giving up.
@@ -144,6 +145,16 @@ fn redial(e: &mut EntityCommands, wake: bool) {
         .remove::<HeldWake>();
 }
 
+/// Redial a driven TV whose vendor config just changed. Clearing
+/// `Reconnecting` supersedes a dial still in flight on the old config:
+/// the new dial spawns now and becomes the TV's `LatestDial`, so the old
+/// one's outcome is dropped on arrival instead of connecting the TV on
+/// the config it no longer has.
+fn redial_on_new_config(e: &mut EntityCommands) {
+    e.remove::<(ConnectionHandle, RetryAt, Reconnecting)>();
+    redial(e, false);
+}
+
 /// Drop a screen-on intent riding a wake that won't happen: re-asserted
 /// over the reconnect, it would turn on the TV the wake no longer will
 /// (outright, where the screen is emulated as power). A screen-off latch
@@ -159,8 +170,9 @@ fn drop_screen_on_intent(e: &mut EntityCommands) {
 /// A newer off intent cancels a held wake: a pending wake dial that isn't
 /// in flight. The TV still reconnects, as a plain connect, which never
 /// powers it on, and the wake reports failed so a client following it
-/// stops waiting. A wake already dialing is left to finish: its outcome
-/// is already on its way.
+/// stops waiting. The wake's input restore goes with it: the reconnect
+/// may land hours later, on a TV someone is watching. A wake already
+/// dialing is left to finish: its outcome is already on its way.
 fn cancel_held_wake(commands: &mut Commands, entity: Entity) {
     commands.entity(entity).queue(|mut e: EntityWorldMut| {
         if e.contains::<Reconnecting>() {
@@ -173,7 +185,7 @@ fn cancel_held_wake(commands: &mut Commands, entity: Entity) {
             return;
         }
         pending.wake = false;
-        e.remove::<HeldWake>();
+        e.remove::<(HeldWake, DesiredInput)>();
         if e.get::<DispatchVerify>().is_some_and(|v| v.target_on) {
             e.remove::<DispatchVerify>();
         }
@@ -412,55 +424,6 @@ mod tests {
         );
         // `none` has no dispatchable action regardless of the gate.
         assert_eq!(session_action(EventAction::from(SessionAction::None)), None);
-    }
-
-    /// The world's stock floor and the root stack's resolved defaults are
-    /// two hand-written tables that must agree event-for-event, including
-    /// the `while_streaming` gate — a drift here silently diverges the
-    /// daemon's DPMS gate from what the session and GUI resolve. Derive
-    /// the expected tuple from `ResolvedSystemProfile::default` through the
-    /// same event-to-field map the dispatch path uses, and assert parity.
-    #[test]
-    fn stock_floor_matches_the_resolved_defaults() {
-        let resolved = tisvlay_core::ResolvedSystemProfile::default();
-        let field = |event: &SystemEvent| match event {
-            SystemEvent::Startup => resolved.on_startup,
-            SystemEvent::Sleep => resolved.on_sleep,
-            SystemEvent::Resume => resolved.on_wake,
-            SystemEvent::Shutdown => resolved.on_shutdown,
-            SystemEvent::Reboot => resolved.on_reboot,
-            SystemEvent::DpmsOff => resolved.on_dpms_off,
-            SystemEvent::DpmsOn => resolved.on_dpms_on,
-            SystemEvent::GreeterIdle => resolved.on_idle_timeout,
-            SystemEvent::GreeterResume => resolved.on_idle_resume,
-        };
-        for (event, tuple) in SystemProfile::stock().0 {
-            assert_eq!(
-                session_action(field(&event)),
-                Some(tuple),
-                "stock floor for {event:?} diverged from ResolvedSystemProfile::default"
-            );
-        }
-        // Every event the resolved defaults leave dispatchable must have a
-        // stock entry; a `none` field (e.g. reboot) legitimately has none.
-        let stock = SystemProfile::stock().0;
-        for event in [
-            SystemEvent::Startup,
-            SystemEvent::Sleep,
-            SystemEvent::Resume,
-            SystemEvent::Shutdown,
-            SystemEvent::Reboot,
-            SystemEvent::DpmsOff,
-            SystemEvent::DpmsOn,
-            SystemEvent::GreeterIdle,
-            SystemEvent::GreeterResume,
-        ] {
-            assert_eq!(
-                session_action(field(&event)).is_some(),
-                stock.contains_key(&event),
-                "stock presence for {event:?} disagrees with the resolved default's dispatchability"
-            );
-        }
     }
 
     #[test]

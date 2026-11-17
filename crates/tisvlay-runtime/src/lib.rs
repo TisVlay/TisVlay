@@ -4,7 +4,7 @@
 //! - `fs` — crash-safe atomic replacement of state files, and TOML writes
 //!   that keep a hand edit's comments
 //! - `client` — the GUI's and tray's shared helpers (coalescing,
-//!   reconciliation, deduplicated refreshes, profile references)
+//!   reconciliation, profile references)
 //! - `access` — one-click enrollment into the group that gates the daemon
 //!   socket
 //! - `wayland` — ext-idle-notify-v1 idle-detection transport

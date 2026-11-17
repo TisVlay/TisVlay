@@ -55,7 +55,7 @@ TisVlay TV control
 
 **Usage:** `tisvlay [OPTIONS] <COMMAND>`
 
-A TV setting or state reads when its value is left out and sets when it's given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` sets it. On/off settings take `--toggle`, and settings that can be unset take `--clear`. Commands that change something print nothing on success.
+A TV setting or state reads when its value is left out and sets when it's given: `tisvlay volume <TV>` prints the volume, `tisvlay volume <TV> 30` sets it. On/off settings take `--toggle`, and settings that can be unset take `--clear`. Setting a value prints nothing on success; `--toggle` prints the value it sent, and commands that create something print its UUID.
 
 ###### **Subcommands:**
 
@@ -89,7 +89,7 @@ A TV setting or state reads when its value is left out and sets when it's given:
 ###### **Options:**
 
 * `--socket <SOCKET>` — Daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
-* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile` and `stream` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
+* `--user-socket <USER_SOCKET>` — Session-service user socket for the `profile user`, `user-profile`, `stream` and `reload` verbs (default: $XDG_RUNTIME_DIR/tisvlay/session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions; leave it unless you run more than one daemon
 
   Default value: `main`
@@ -155,17 +155,15 @@ Scan for TVs: a bounded window, or with `--watch` until ctrl-c
 
 Pair a new TV, streaming the pairing progress (ctrl-c cancels)
 
-**Usage:** `tisvlay pair [OPTIONS] --params <PARAMS> <NAME>`
+**Usage:** `tisvlay pair [OPTIONS] --vendor <VENDOR> --params <PARAMS> <NAME>`
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The TV's display name
 
 ###### **Options:**
 
-* `--vendor <VENDOR>`
-
-  Default value: `lg`
+* `--vendor <VENDOR>` — The backend to pair with (`tisvlay vendor` lists them)
 * `--params <PARAMS>` — Vendor pairing params as JSON, e.g. '{"ip":"192.168.1.50"}'
 * `--unmanaged` — Enroll the TV unmanaged: the daemon won't automate it
 
@@ -179,7 +177,7 @@ Re-run the pairing handshake for an existing TV
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -191,7 +189,7 @@ Ask a downed TV to reconnect
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -203,7 +201,7 @@ Remove a TV (deletes all its keys)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 
 
 
@@ -227,7 +225,7 @@ Power a TV on or off, or print whether it's on (connected and awake)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -247,7 +245,7 @@ Blank or wake a TV's screen, or print whether it shows a picture
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -267,7 +265,7 @@ Mute or unmute a TV, or print whether it's muted
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -287,7 +285,7 @@ Set whether a TV's profiles act (on the TV, and on this PC for its events), or p
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<VALUE>` — Turn it on or off; leave it out to print the current value
 
   Possible values: `on`, `off`
@@ -307,7 +305,7 @@ Set a TV's volume, or print it
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<LEVEL>` — 0–100; leave it out to print the current level
 
 
@@ -320,7 +318,7 @@ Set a TV's backlight level, or print it
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<LEVEL>` — 0–100; leave it out to print the current level
 
 
@@ -333,7 +331,7 @@ Switch a TV's input, or print the current one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<INPUT>` — The input ID; leave it out to print the current one
 
 
@@ -346,7 +344,7 @@ Set a TV's primary input (the one automation restores and compares against), or 
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<INPUT>` — The input ID; leave it out to print the primary one
 
 ###### **Options:**
@@ -363,7 +361,7 @@ Rename a TV, or print its name
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<NAME>` — The new name; leave it out to print the current one
 
 
@@ -376,7 +374,7 @@ Patch a TV's config, or print it (vendor secrets redacted)
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PATCH>` — A JSON object merged into the config (null unsets a vendor key); leave it out to print the config
 
 
@@ -389,7 +387,7 @@ Assign a TV's system profile, or print the assigned one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
 
 ###### **Options:**
@@ -407,7 +405,7 @@ Assign a TV's user profile (via --user-socket), or print the assigned one
 
 ###### **Arguments:**
 
-* `<TV>`
+* `<TV>` — The TV's UUID (`tisvlay list` shows it; tab-completes from the daemon)
 * `<PROFILE>` — The profile to assign; leave it out to print the assigned one (the default profile's UUID when none is)
 
 ###### **Options:**
@@ -463,11 +461,11 @@ Create a profile, printing its UUID: `--body` is a SystemProfileConfig body
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The new profile's name
 
 ###### **Options:**
 
-* `--body <BODY>`
+* `--body <BODY>` — The profile body as JSON; unset fields inherit
 
 
 
@@ -479,8 +477,8 @@ Replace a profile's body (full JSON body; name required inside)
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<BODY>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<BODY>` — The full profile body as JSON, name included
 
 
 
@@ -492,8 +490,8 @@ Copy a profile under a new name, printing the copy's UUID
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<NAME>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<NAME>` — The copy's name
 
 
 
@@ -505,7 +503,7 @@ Delete a profile (assignments referring to it fall back to default)
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
 
 
 
@@ -550,11 +548,11 @@ Create a profile, printing its UUID: `--body` is a UserProfileConfig body
 
 ###### **Arguments:**
 
-* `<NAME>`
+* `<NAME>` — The new profile's name
 
 ###### **Options:**
 
-* `--body <BODY>`
+* `--body <BODY>` — The profile body as JSON; unset fields inherit
 
 
 
@@ -566,8 +564,8 @@ Replace a profile's body (full JSON body; name required inside)
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<BODY>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<BODY>` — The full profile body as JSON, name included
 
 
 
@@ -579,8 +577,8 @@ Copy a profile under a new name, printing the copy's UUID
 
 ###### **Arguments:**
 
-* `<ID>`
-* `<NAME>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
+* `<NAME>` — The copy's name
 
 
 
@@ -592,7 +590,7 @@ Delete a profile (assignments referring to it fall back to default)
 
 ###### **Arguments:**
 
-* `<ID>`
+* `<ID>` — The profile's UUID (`tisvlay profile … list` shows it)
 
 
 
@@ -626,7 +624,7 @@ Arm the named source
 
 ###### **Options:**
 
-* `--source <SOURCE>`
+* `--source <SOURCE>` — The source to arm or disarm: its name in the stream fact
 
   Default value: `manual`
 
@@ -640,7 +638,7 @@ Disarm the named source
 
 ###### **Options:**
 
-* `--source <SOURCE>`
+* `--source <SOURCE>` — The source to arm or disarm: its name in the stream fact
 
   Default value: `manual`
 
@@ -707,7 +705,7 @@ The per-user session service: user profiles, lock, idle and stream handling, on 
 
 ###### **Options:**
 
-* `--system-socket <SYSTEM_SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--system-socket <SYSTEM_SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--user-socket <USER_SOCKET>` — Per-user socket to listen on (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock)
 * `--site <SITE>` — Site chunk used in all key expressions
 
@@ -728,7 +726,7 @@ The system tray
 
 ###### **Options:**
 
-* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--user-socket <USER_SOCKET>` — Session-service user socket (default: $XDG_RUNTIME_DIR/tisvlay/ session.sock). Missing socket just hides user profiles
 * `--site <SITE>` — Site chunk used in all key expressions
 
@@ -745,7 +743,7 @@ The login-screen idle client, run inside the greeter session
 
 ###### **Options:**
 
-* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock)
+* `--socket <SOCKET>` — System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock, falling back to the packaged /run/tisvlay/zenoh.sock)
 * `--site <SITE>` — Site chunk used in all key expressions
 
   Default value: `main`

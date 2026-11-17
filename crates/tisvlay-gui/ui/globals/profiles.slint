@@ -157,20 +157,17 @@ export global Profiles {
     callback select(ProfileKind, string);
     /// "+" button on a section header → user typed a name in the
     /// `NameInputDialog` → Confirm. Rust dispatches to
-    /// `Manager1.CreateSystemProfile(name)` /
-    /// `Session1.CreateUserProfile(name)`. Duplicate-name rejection
+    /// the system or user profile create rpc. Duplicate-name rejection
     /// surfaces as a toast (Slint pure functions can't iterate
     /// existing names for client-side validation).
     callback confirm-create(ProfileKind, string);
     /// Detail-header Delete after the user clicks through the
     /// confirm-delete dialog. Argument 2 is the UUID. Rust routes
-    /// to `Manager1.DeleteSystemProfile` /
-    /// `Session1.DeleteUserProfile`.
+    /// to the system or user profile delete rpc.
     callback confirm-delete(ProfileKind, string);
     /// Confirm-duplicate from the name-input dialog. Args:
     /// `(kind, source_uuid, new_name)`. Rust routes to
-    /// `Manager1.DuplicateSystemProfile` /
-    /// `Session1.DuplicateUserProfile`. The new profile's locally-
+    /// the system or user profile duplicate rpc. The new profile's locally-
     /// set fields mirror the source; the daemon validates the new
     /// name (non-empty, reserved-name, uniqueness) and surfaces
     /// rejections as a toast.
@@ -225,8 +222,7 @@ export global Profiles {
     /// patch through `UpdateSystemProfile` / `UpdateUserProfile`. The
     /// daemon-side validation rules (empty / reserved / duplicate /
     /// rename-default) surface as a toast; the master list +
-    /// detail header redraw from the echoed `SystemProfileChanged` /
-    /// `UserProfileChanged` signal.
+    /// detail header redraw from the profile key's published update.
     callback rename-selected(string);
 
     in property <[ProfileRow]> system;
@@ -259,8 +255,7 @@ export global Profiles {
     /// Field-editor rows for the currently selected profile. Rust
     /// primes this whenever the selection changes (master-list
     /// click, auto-select after add, refresh after `ReloadConfig`),
-    /// and refreshes individual rows on a `SystemProfileChanged` /
-    /// `UserProfileChanged` signal echo. Empty when no profile is
+    /// and refreshes individual rows on the profile key's published update. Empty when no profile is
     /// selected.
     in property <[ProfileFieldEntry]> editor-fields;
     /// The FROM THE TV card's rows for the selected profile — what the

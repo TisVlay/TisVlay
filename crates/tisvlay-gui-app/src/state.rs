@@ -93,7 +93,7 @@ pub(crate) struct TvViewRaw {
     /// `Vec<(String, String)>` here so the snapshot crosses the
     /// tokio→Slint thread boundary as `Send`; the conversion to
     /// `[VendorInfoRow]` (a `ModelRc`-backed list) happens inside
-    /// the event-loop closure in `main.rs`.
+    /// the event-loop closure in `state_watch::push_snapshot`.
     pub vendor_config: Vec<(String, String)>,
     /// Backend-discovered diagnostic rows (`TvInfo::vendor_info`;
     /// LG: WebSocket scheme). Read-only; rendered in the INFO
@@ -142,8 +142,12 @@ pub(crate) struct StateSnapshot {
     /// Derived from the body catalog so the same fetch feeds both
     /// the Profiles pane (full rows) and the TVs pane (just names).
     pub system_profiles: Vec<SharedString>,
+    /// Each System-profile entry's UUID, index for index.
+    pub system_profile_ids: Vec<SharedString>,
     /// User-side counterpart for the TVs-pane User-profile ComboBox.
     pub user_profiles: Vec<SharedString>,
+    /// Each User-profile entry's UUID, index for index.
+    pub user_profile_ids: Vec<SharedString>,
     /// Master-list rows for the Profiles pane's System section.
     pub system_profile_rows: Vec<ProfileRowRaw>,
     /// Master-list rows for the Profiles pane's User section.
@@ -175,16 +179,16 @@ pub(crate) async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
 ) -> StateSnapshot {
-    let tvs = daemon.list_tvs().await.unwrap_or_else(|e| {
+    let tvs = daemon.list_tvs().unwrap_or_else(|e| {
         debug!(error = %e, "TV list unavailable");
         Vec::new()
     });
     debug!(count = tvs.len(), "Read TVs from the daemon mirror");
 
-    let system_profile_bodies = daemon.list_system_profile_bodies().await;
+    let system_profile_bodies = daemon.list_system_profile_bodies();
 
     let user_profile_bodies = match session {
-        Some(s) => s.list_user_profile_bodies().await,
+        Some(s) => s.list_user_profile_bodies(),
         None => HashMap::new(),
     };
 
@@ -192,7 +196,7 @@ pub(crate) async fn fetch_state(
     if let Some(s) = session {
         // Assignments come from the session client's mirror.
         for tv in &tvs {
-            if let Some(profile) = s.get_tv_user_profile(tv.uuid).await {
+            if let Some(profile) = s.get_tv_user_profile(tv.uuid) {
                 user_profile_by_uuid.insert(tv.uuid, profile);
             }
         }
@@ -213,7 +217,7 @@ pub(crate) async fn fetch_system_profile_body(
     daemon: &DaemonClient,
     uuid: Uuid,
 ) -> Option<SystemProfileBody> {
-    daemon.get_system_profile(uuid).await
+    daemon.get_system_profile(uuid)
 }
 
 /// User-side mirror of [`fetch_system_profile_body`].
@@ -221,7 +225,7 @@ pub(crate) async fn fetch_user_profile_body(
     session: &SessionClient,
     uuid: Uuid,
 ) -> Option<UserProfileBody> {
-    session.get_user_profile(uuid).await
+    session.get_user_profile(uuid)
 }
 
 /// A power state's wire token (`active`, `standby`, ...), which the Slint
@@ -376,13 +380,17 @@ pub(crate) fn convert_snapshot(inputs: SnapshotInputs) -> StateSnapshot {
     // ComboBox name lists for the TVs pane — friendly names from the
     // body catalogs, sorted with the reserved default first then
     // alphabetical so the picker always shows `default` on top.
-    let system_profiles = profile_name_list(&system_profile_bodies, DEFAULT_SYSTEM_PROFILE_UUID);
-    let user_profiles = profile_name_list(&user_profile_bodies, DEFAULT_USER_PROFILE_UUID);
+    let (system_profiles, system_profile_ids) =
+        profile_name_list(&system_profile_bodies, DEFAULT_SYSTEM_PROFILE_UUID);
+    let (user_profiles, user_profile_ids) =
+        profile_name_list(&user_profile_bodies, DEFAULT_USER_PROFILE_UUID);
 
     StateSnapshot {
         tvs: models,
         system_profiles,
+        system_profile_ids,
         user_profiles,
+        user_profile_ids,
         system_profile_rows,
         user_profile_rows,
     }
@@ -489,7 +497,10 @@ where
 /// emoji-aware). Synthesis at this layer keeps the wire clean.
 pub(crate) fn display_profile_name(uuid: Uuid, name: &str, default_uuid: Uuid) -> String {
     if uuid == default_uuid {
-        format!("{}\u{00A0}\u{2713}", gettext(name))
+        // The reserved default's name is always "default" on disk, so
+        // the literal is its msgid; a variable msgid never reaches the
+        // catalog.
+        format!("{}\u{00A0}\u{2713}", gettext("default"))
     } else {
         name.to_owned()
     }
@@ -520,11 +531,16 @@ where
         .unwrap_or_else(|| profile.to_string())
 }
 
-/// Slint-side ComboBox name list. The reserved default profile's
-/// label always sorts first so the picker reads consistently.
-/// Items are display names — the reserved-default entry carries
-/// the indicator glyph appended via [`display_profile_name`].
-fn profile_name_list<B>(bodies: &HashMap<Uuid, B>, default_uuid: Uuid) -> Vec<SharedString>
+/// Slint-side ComboBox name list and each entry's UUID, index for
+/// index: two profiles may share a name, so a pick sends the UUID. The
+/// reserved default profile's label always sorts first so the picker
+/// reads consistently, and equal names keep a stable order by UUID.
+/// Items are display names — the reserved-default entry carries the
+/// indicator glyph appended via [`display_profile_name`].
+fn profile_name_list<B>(
+    bodies: &HashMap<Uuid, B>,
+    default_uuid: Uuid,
+) -> (Vec<SharedString>, Vec<SharedString>)
 where
     B: HasName,
 {
@@ -539,13 +555,13 @@ where
             (true, true) => std::cmp::Ordering::Equal,
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => a.1.cmp(&b.1),
+            _ => a.1.cmp(&b.1).then(a.0.cmp(&b.0)),
         }
     });
     entries
         .into_iter()
-        .map(|(_, name)| SharedString::from(name))
-        .collect()
+        .map(|(id, name)| (SharedString::from(name), SharedString::from(id.to_string())))
+        .unzip()
 }
 
 /// Tiny trait so [`build_profile_rows`] and [`profile_name_list`]

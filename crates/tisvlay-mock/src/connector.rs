@@ -108,7 +108,7 @@ impl TvConnector for MockConnector {
         // pick up any test-seeded hardware identity keyed by address, and bump
         // the per-address connect counter so tests can assert an idempotent
         // `power_on` skipped the teardown/reconnect.
-        let (delay, hardware_id, connect_counter) = {
+        let (delay, hardware_id, connect_counter, unreachable, key_rejected) = {
             let mut state = self.state.lock();
             let counter = state
                 .connect_calls
@@ -119,6 +119,8 @@ impl TvConnector for MockConnector {
                 state.connect_delay,
                 state.hardware_ids.get(&config.address).cloned(),
                 counter,
+                state.unreachable.contains(&config.address),
+                state.key_rejected.contains(&config.address),
             )
         };
         connect_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -127,6 +129,12 @@ impl TvConnector for MockConnector {
             tokio::time::sleep(delay).await;
         }
 
+        if unreachable {
+            return Err(Error::Io(std::io::ErrorKind::NetworkUnreachable.into()));
+        }
+        if key_rejected {
+            return Err(Error::NotRegistered);
+        }
         if config.device_unavailable {
             return Err(Error::DeviceUnavailable {
                 path: config
@@ -184,9 +192,8 @@ impl TvConnector for MockConnector {
         //   2. A prior call to `MockHandle::simulate_user_*`, which set
         //      an outcome on the state directly.
         //
-        // If both are set, the handle wins: it's stored directly and the
-        // shorthand's would-be-seeded value is overwritten only if no
-        // outcome is already present.
+        // If both are set, the handle-seeded outcome wins over the
+        // shorthand.
         let config = vendor_config.parse::<MockVendorConfig>(crate::VENDOR_ID)?;
         let address = config.address.clone();
 
@@ -275,8 +282,7 @@ impl TvConnector for MockConnector {
         // settings, so they don't appear here. `pairing` is the
         // exception — surfaced so the GUI can drive a manual pairing
         // flow without a real TV (and exercise the wizard's
-        // reject/timeout paths). Tests that prefer handle-driven
-        // pairing pass `pairing = "manual"` in their TOML config.
+        // reject/timeout paths).
         vec![
             PairingField {
                 name: "address".into(),

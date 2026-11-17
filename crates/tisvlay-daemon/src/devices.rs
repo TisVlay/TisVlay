@@ -30,6 +30,8 @@ use anyhow::Context;
 use rtnetlink::sys::protocols::NETLINK_KOBJECT_UEVENT;
 use rtnetlink::sys::{AsyncSocket, AsyncSocketExt, SocketAddr, TokioSocket};
 use tisvlay_world::{DeviceRequest, InEvent, WorldClient};
+
+use crate::supervise::{Watch, supervise};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -51,50 +53,43 @@ const RECHECK_PERIOD: Duration = Duration::from_secs(60);
 /// hundreds of events.
 const RX_BUFFER: usize = 1 << 20;
 
-/// Reopen backoff after the udev socket fails, as in the network monitor.
-const RECONNECT_MIN: Duration = Duration::from_secs(1);
-const RECONNECT_MAX: Duration = Duration::from_secs(60);
-
 pub(crate) fn spawn_device_watcher(
     world: WorldClient,
     requests: mpsc::UnboundedReceiver<DeviceRequest>,
 ) {
-    tokio::spawn(supervise(world, requests));
+    let watcher = DeviceWatcher {
+        world,
+        state: WatcherState::default(),
+        udev: Path::new(UDEV_RUN),
+    };
+    tokio::spawn(supervise(watcher, requests));
 }
 
-/// Keep the watcher running for the world's lifetime. When the udev socket
-/// fails, requests are still served (each is a direct check) through a
-/// capped backoff, then the socket reopens. The view survives reopens.
-async fn supervise(world: WorldClient, mut requests: mpsc::UnboundedReceiver<DeviceRequest>) {
-    let udev = Path::new(UDEV_RUN);
-    let mut state = WatcherState::default();
-    let mut backoff = RECONNECT_MIN;
-    loop {
-        let started = tokio::time::Instant::now();
-        let error = match watch_devices(&world, &mut requests, &mut state, udev).await {
-            Ok(()) => return,
-            Err(error) => error,
-        };
-        if started.elapsed() >= RECONNECT_MAX {
-            backoff = RECONNECT_MIN;
-        }
-        warn!(error = %format!("{error:#}"), retry_in = ?backoff, "device watcher lost its udev socket; reopening");
-        let pause = tokio::time::sleep(backoff);
-        tokio::pin!(pause);
-        loop {
-            tokio::select! {
-                request = requests.recv() => match request {
-                    Some(request) => {
-                        if !handle_request(&world, &mut state, udev, request) {
-                            return;
-                        }
-                    }
-                    None => return,
-                },
-                () = &mut pause => break,
-            }
-        }
-        backoff = backoff.saturating_mul(2).min(RECONNECT_MAX);
+/// The device watcher, supervised for the world's lifetime: when the udev
+/// socket fails, requests are still served (each is a direct check) while
+/// it reopens.
+struct DeviceWatcher {
+    world: WorldClient,
+    state: WatcherState,
+    udev: &'static Path,
+}
+
+impl Watch for DeviceWatcher {
+    type Request = DeviceRequest;
+
+    async fn watch(
+        &mut self,
+        requests: &mut mpsc::UnboundedReceiver<DeviceRequest>,
+    ) -> anyhow::Result<()> {
+        watch_devices(&self.world, requests, &mut self.state, self.udev).await
+    }
+
+    async fn serve(&mut self, request: DeviceRequest) -> bool {
+        handle_request(&self.world, &mut self.state, self.udev, request)
+    }
+
+    fn lost(&self, error: &anyhow::Error, retry_in: Duration) {
+        warn!(error = %format!("{error:#}"), ?retry_in, "device watcher lost its udev socket; reopening");
     }
 }
 

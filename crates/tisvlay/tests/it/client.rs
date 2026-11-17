@@ -51,7 +51,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     // The resilient link dials in the background; wait for liveliness
     // before the first rpc (real clients ride availability the same way).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !daemon.is_available().await {
+    while !daemon.is_available() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "daemon never became available"
@@ -109,7 +109,6 @@ async fn sdk_mirrors_rpcs_and_watches() {
     .await;
     let info = daemon
         .list_tvs()
-        .await
         .unwrap()
         .into_iter()
         .find(|info| info.uuid == tv)
@@ -135,7 +134,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
     let profile = daemon.create_system_profile("Cinema").await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if daemon.get_system_profile(profile).await.is_some() {
+        if daemon.get_system_profile(profile).is_some() {
             break;
         }
         assert!(
@@ -154,7 +153,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         ))
     );
 
-    assert!(session.is_available().await);
+    assert!(session.is_available());
     let user_profile = session.create_user_profile("Quiet").await.unwrap();
     session
         .set_tv_user_profile(tv, Some(user_profile))
@@ -162,7 +161,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if session.get_tv_user_profile(tv).await == Some(user_profile) {
+        if session.get_tv_user_profile(tv) == Some(user_profile) {
             break;
         }
         assert!(
@@ -171,7 +170,7 @@ async fn sdk_mirrors_rpcs_and_watches() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let bodies = session.list_user_profile_bodies().await;
+    let bodies = session.list_user_profile_bodies();
     assert_eq!(
         bodies.get(&user_profile).map(|b| b.name.as_str()),
         Some("Quiet")
@@ -219,7 +218,7 @@ async fn sdk_stream_arms_and_mirrors() {
         StateWatcher::new(&daemon, Some(&session), None, StateWatcherConfig::default());
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !daemon.is_available().await || !session.is_available().await {
+    while !daemon.is_available() || !session.is_available() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "peers never became available"
@@ -258,7 +257,7 @@ async fn sdk_stream_arms_and_mirrors() {
     // stream as the other user deltas).
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(state) = session.stream_state().await
+        if let Some(state) = session.stream_state()
             && state
                 .sources
                 .iter()
@@ -291,7 +290,6 @@ async fn sdk_stream_arms_and_mirrors() {
     loop {
         if session
             .stream_state()
-            .await
             .is_some_and(|state| state.sources.is_empty() && state.armed.is_empty())
         {
             break;
@@ -353,7 +351,6 @@ async fn daemon_restart_discards_previous_lifetime_tvs_and_profiles() {
     assert!(
         daemon
             .list_system_profile_bodies()
-            .await
             .contains_key(&old_profile)
     );
     stack.run_until(std::future::ready(())).await.unwrap();
@@ -361,7 +358,7 @@ async fn daemon_restart_discards_previous_lifetime_tvs_and_profiles() {
         matches!(event, StateEvent::DaemonDisappeared)
     })
     .await;
-    assert!(daemon.list_system_profile_bodies().await.is_empty());
+    assert!(daemon.list_system_profile_bodies().is_empty());
     let (connector, discovery, _handle) = new_test_parts();
     let restarted = tisvlay_daemon::serve(
         &socket,
@@ -378,11 +375,10 @@ async fn daemon_restart_discards_previous_lifetime_tvs_and_profiles() {
         matches!(event, StateEvent::DaemonAppeared)
     })
     .await;
-    assert!(daemon.list_tvs().await.unwrap().is_empty());
+    assert!(daemon.list_tvs().unwrap().is_empty());
     assert!(
         !daemon
             .list_system_profile_bodies()
-            .await
             .contains_key(&old_profile)
     );
     let new_tv = daemon
@@ -405,7 +401,7 @@ async fn daemon_restart_discards_previous_lifetime_tvs_and_profiles() {
 async fn wait_for(daemon: &DaemonClient, pred: impl Fn(&[tisvlay::TvInfo]) -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let tvs = daemon.list_tvs().await.unwrap();
+        let tvs = daemon.list_tvs().unwrap();
         if pred(&tvs) {
             return;
         }
@@ -427,7 +423,7 @@ async fn client_before_daemon_connects_when_it_appears() {
     let socket = dir.path().join("late.sock");
 
     let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
-    assert!(!daemon.is_available().await, "nothing is listening yet");
+    assert!(!daemon.is_available(), "nothing is listening yet");
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     let (connector, discovery, _handle) = new_test_parts();
@@ -444,7 +440,7 @@ async fn client_before_daemon_connects_when_it_appears() {
     .unwrap();
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while !daemon.is_available().await {
+    while !daemon.is_available() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "client never noticed the daemon appearing"
@@ -455,10 +451,7 @@ async fn client_before_daemon_connects_when_it_appears() {
     // default profile is visible and editable-shaped.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        if let Some(body) = daemon
-            .get_system_profile(tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
-            .await
-        {
+        if let Some(body) = daemon.get_system_profile(tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID) {
             assert_eq!(body.name, "default");
             assert_eq!(
                 body.on_dpms_off,
@@ -531,6 +524,37 @@ async fn next_matching(
     .expect("the event never arrived")
 }
 
+/// Dropping every copy of a client releases its session: its link, and
+/// the tasks that follow the service, don't outlive it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dropped_client_closes_its_link() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("sys.sock");
+    let stub = FakeService::start(&socket, Family::Daemon, tisvlay_protocol::VERSION).await;
+    let daemon = DaemonClient::connect(&socket, "t").await.unwrap();
+    let copy = daemon.clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !daemon.is_hydrated() || stub.peers().await == 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the client never linked"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    drop(daemon);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(stub.peers().await, 1, "a remaining copy keeps the link");
+    drop(copy);
+    while stub.peers().await != 0 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the dropped client's link stayed up"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A daemon on another release line is refused, gated reads included,
 /// until it restarts on a matching release.
 #[tokio::test(flavor = "multi_thread")]
@@ -567,7 +591,7 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
         Err(tisvlay::Error::VersionMismatch { .. })
     ));
     assert!(matches!(
-        daemon.list_tvs().await,
+        daemon.list_tvs(),
         Err(tisvlay::Error::VersionMismatch { .. })
     ));
     assert!(matches!(
@@ -584,7 +608,7 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
         "version() is ungated"
     );
     assert_eq!(
-        daemon.service_info().await.unwrap().version,
+        daemon.service_info().unwrap().version,
         "99.0.0",
         "service_info() is ungated"
     );
@@ -594,7 +618,7 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     stub.stop().await;
     next_matching(&mut watcher, |e| matches!(e, StateEvent::DaemonDisappeared)).await;
     assert!(
-        daemon.service_info().await.is_none(),
+        daemon.service_info().is_none(),
         "the release clears before the disappearance is announced"
     );
     let _restarted = FakeService::start(&socket, Family::Daemon, tisvlay_protocol::VERSION).await;
@@ -604,11 +628,11 @@ async fn a_daemon_on_another_release_is_refused_until_it_restarts() {
     })
     .await;
     assert_eq!(
-        daemon.service_info().await.unwrap().version,
+        daemon.service_info().unwrap().version,
         tisvlay_protocol::VERSION
     );
     assert!(!daemon.reload_config().await.unwrap().changed);
-    assert!(daemon.list_tvs().await.is_ok());
+    assert!(daemon.list_tvs().is_ok());
 }
 
 /// A release check that fails is retried while the service stays up, so
@@ -632,7 +656,7 @@ async fn a_failed_release_check_is_retried() {
     // Outlast the first check, which waits out the matching deadline.
     tokio::time::sleep(tisvlay_protocol::caller::MATCHING_DEADLINE + Duration::from_millis(500))
         .await;
-    assert!(daemon.service_info().await.is_none());
+    assert!(daemon.service_info().is_none());
     let queryable = session
         .declare_queryable(tisvlay_protocol::keys::manager_rpc_wild("t"))
         .await
@@ -657,7 +681,7 @@ async fn a_failed_release_check_is_retried() {
         matches!(e, StateEvent::ReleaseChecked(tisvlay::Service::Daemon))
     })
     .await;
-    let info = daemon.service_info().await.unwrap();
+    let info = daemon.service_info().unwrap();
     assert_eq!(info.version, tisvlay_protocol::VERSION);
     assert_eq!(info.state_path, "/var/lib/tisvlay/state.toml");
 }
@@ -720,7 +744,7 @@ async fn the_session_and_tray_clients_refuse_another_release() {
         .await
         .unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !(session.is_available().await && tray.is_available().await) {
+    while !(session.is_available() && tray.is_available()) {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the stubs never appeared"
@@ -746,10 +770,10 @@ async fn the_session_and_tray_clients_refuse_another_release() {
             ..
         })
     ));
-    assert_eq!(session.service_info().await.unwrap().version, "99.0.0");
-    assert_eq!(tray.service_info().await.unwrap().version, "99.0.0");
+    assert_eq!(session.service_info().unwrap().version, "99.0.0");
+    assert_eq!(tray.service_info().unwrap().version, "99.0.0");
     assert!(
-        tray.notification_settings().await.is_none(),
+        tray.notification_settings().is_none(),
         "the settings mirror is gated like the others"
     );
 }

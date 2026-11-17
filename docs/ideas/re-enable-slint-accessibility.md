@@ -1,6 +1,6 @@
 # Re-enable Slint `accessibility` feature once upstream blockers clear
 
-`tisvlay-gui` ships with the slint `accessibility` Cargo feature off (rationale lives in the Cargo.toml comment block). The original blocker on our side was a runtime conflict — `accesskit_unix` spawns its own thread that uses zbus, and zbus's tokio backend panics with "no reactor running" in that thread because it's not part of our tokio runtime. That symptom isn't filed upstream; the work was deferred after surfacing three independent upstream blockers that need to clear first.
+`tisvlay-gui` ships with the slint `accessibility` Cargo feature off. The original blocker on our side was a runtime conflict — `accesskit_unix` spawns its own thread that uses zbus, and zbus's tokio backend panics with "no reactor running" in that thread because it's not part of our tokio runtime. That symptom isn't filed upstream; the work was deferred after surfacing three independent upstream blockers that need to clear first.
 
 Gating conditions before this work is worth picking up:
 

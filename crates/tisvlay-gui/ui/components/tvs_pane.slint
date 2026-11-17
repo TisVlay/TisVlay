@@ -1,14 +1,10 @@
-// TVs pane — master/detail layout.
-//
-// Implements the design at
-//   .claude/ui/design_handoff_tisvlay_gui/tvs-pane.jsx
-// using the global Theme tokens from ../theme.slint. Stick to stock
-// std-widgets (Button, Switch, Slider, ComboBox, ScrollView, ListView)
-// plus a handful of bespoke primitives — shared ones (Chip,
-// VendorTile, Group, …) come from ../widgets.slint; pane-local
-// helpers like `FormRow` and `LabeledRow` live further down.
+// TVs pane — master/detail layout, on the global Theme tokens from
+// ../theme.slint. Controls are the themed widgets (ThemedButton,
+// ThemedSwitch, ThemedSelect, OptimisticSlider); shared primitives
+// (Chip, VendorTile, Group, …) come from ../widgets.slint, and
+// pane-local helpers like `FormRow` and `LabeledRow` live further down.
 
-import { ListView, ScrollView, VerticalBox, HorizontalBox } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { ThemedSelect } from "../globals/select.slint";
 import { Theme } from "../theme.slint";
 import { Design } from "../design.slint";
@@ -27,7 +23,7 @@ import { ServiceHealth } from "../globals/health.slint";
 
 export { WizardDiscoveredTv, VendorOption, DangerBtn, Chip, Group }
 
-/// One vendor-specific diagnostic row from `Tv1.VendorInfo`.
+/// One vendor-specific diagnostic row from the TV's vendor info.
 /// Rendered in the TVs pane's INFO group alongside the cross-vendor
 /// identity columns (TV ID, manufacturer, model, …). Backends
 /// decide what to surface; LG returns IP + MAC.
@@ -40,7 +36,7 @@ export struct TvViewModel {
     uuid: string,
     name: string,
     vendor: string,
-    /// Canonical vendor for branding the tile (`Tv1.Brand`): the device's
+    /// Canonical vendor for branding the tile (the identity's brand): the device's
     /// resolved vendor for CEC (e.g. `lg`), else the backend vendor.
     brand: string,
     primary-descriptor: string,
@@ -59,9 +55,9 @@ export struct TvViewModel {
     /// (LG: has a MAC). The Power-on button is disabled when both
     /// `connected == false` AND `supports-wake == false` — that's
     /// the only state where Power-on has no path to succeed.
-    /// Sourced from `Tv1.Power.SupportsWake` D-Bus property.
+    /// Sourced from the link state's `supports_wake`.
     supports-wake: bool,
-    /// Per-capability flags from `Tv1.Capabilities`. Used to hide
+    /// Per-capability flags from the identity's capabilities. Used to hide
     /// controls a backend can't drive — a CEC TV, for instance, has no
     /// volume, mute, backlight, or screen-blank. Static per vendor:
     /// populated whether or not the TV is connected, so controls don't
@@ -105,13 +101,13 @@ export struct TvViewModel {
     hw-serial: string,
     desktop-connector: string,
     /// User-editable `(label, value)` rows from
-    /// `Tv1.VendorConfig` (LG: IP, MAC). Rendered in the CONFIG
+    /// the TV's vendor config (LG: IP, MAC). Rendered in the CONFIG
     /// group's view-mode list; the edit form replaces these with
     /// `EditPane.fields` while the user is editing. Empty for
     /// backends without any `UserInput` schema fields.
     vendor-config: [VendorInfoRow],
     /// Backend-discovered diagnostic `(label, value)` rows from
-    /// `Tv1.VendorInfo` (LG: WebSocket scheme). Read-only;
+    /// the TV's vendor info (LG: WebSocket scheme). Read-only;
     /// rendered in the INFO group alongside the cross-vendor
     /// identity rows. Empty for backends without any `Diagnostic`
     /// schema fields.
@@ -133,6 +129,9 @@ export struct TvViewModel {
 
 component FormRow {
     in property <string> label;
+    /// A stable slug for the row's element ids: the label is translated,
+    /// and an id must hold in every locale.
+    in property <string> key;
     in property <string> helper;
     // Optional longer / optional help, revealed by a trailing "i"
     // ContextualHelpButton.
@@ -199,7 +198,7 @@ component FormRow {
                     ContextualHelpButton {
                         text: root.help;
                         nav-row: root.row-id;
-                        accessible-id: root.id-prefix + "help-" + root.label;
+                        accessible-id: root.id-prefix + "help-" + root.key;
                     }
                 }
             }
@@ -428,7 +427,7 @@ component TvList inherits Rectangle {
                         // `tvs-connected-count` plumb on AppWindow,
                         // since Slint can't aggregate `tv.connected`
                         // across the model in a pure-binding context.
-                        text: root.connected-count + "/" + root.tvs.length + " CONNECTED";
+                        text: @tr("{}/{} CONNECTED", root.connected-count, root.tvs.length);
                         color: Theme.text-dim;
                         font-size: Design.font-mini;
                         font-weight: 600;
@@ -767,6 +766,7 @@ component TvConfigEditForm {
                 font-weight: 500;
             }
             LineEditField {
+                accessible-label: @tr("Friendly name");
                 placeholder-text: @tr("e.g. Living Room G4");
                 text <=> EditPane.name;
                 accessible-id: "tv-edit-name";
@@ -795,6 +795,8 @@ component TvDetail inherits Rectangle {
     property <string> id-prefix: "tv-detail-" + root.tv.uuid + "-";
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
 
     /// True when the INFO group should render the edit form for
     /// this specific TV. Tracks `EditPane.tv-uuid` against this
@@ -961,6 +963,7 @@ component TvDetail inherits Rectangle {
                     managed-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Managed");
+                        key: "managed";
                         help: @tr("Let this TV's System and User profiles act: on the TV, and on this PC for the TV's own events.");
                         HorizontalLayout {
                             spacing: 10px;
@@ -968,6 +971,7 @@ component TvDetail inherits Rectangle {
                             VerticalLayout {
                                 alignment: center;
                                 ThemedSwitch {
+                                    accessible-label: managed-row.label;
                                     nav-row: managed-row.row-id;
                                     accessible-id: root.id-prefix + "managed";
                                     checked: root.tv.managed;
@@ -992,16 +996,18 @@ component TvDetail inherits Rectangle {
                     system-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("system profile" => "System");
+                        key: "system-profile";
                         help: @tr("Drives daemon lifecycle (boot / shutdown / sleep).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                accessible-label: system-row.label;
                                 nav-row: system-row.row-id;
                                 accessible-id: root.id-prefix + "system-profile";
                                 model: root.system-profiles;
                                 current-value: root.tv.system-profile == "" ? "default" : root.tv.system-profile;
                                 enabled: root.system-profiles.length > 0;
-                                selected(v) => { Daemon.set-system-profile(root.tv.uuid, v); }
+                                selected-index(i) => { Daemon.set-system-profile(root.tv.uuid, root.system-profile-ids[i]); }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -1027,15 +1033,17 @@ component TvDetail inherits Rectangle {
                     user-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("user profile" => "User");
+                        key: "user-profile";
                         help: @tr("Drives session events (lock / unlock / idle).");
                         HorizontalLayout {
                             spacing: Design.gap-row;
                             ThemedSelect {
+                                accessible-label: user-row.label;
                                 nav-row: user-row.row-id;
                                 model: root.user-profiles;
                                 current-value: root.tv.user-profile == "" ? "default" : root.tv.user-profile;
                                 enabled: root.user-profiles.length > 0;
-                                selected(v) => { Daemon.set-user-profile(root.tv.uuid, v); }
+                                selected-index(i) => { Daemon.set-user-profile(root.tv.uuid, root.user-profile-ids[i]); }
                             }
                             VerticalLayout {
                                 alignment: center;
@@ -1069,6 +1077,7 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Remote power key");
+                        key: "remote-power-key";
                         help: @tr("Whether the TV's remote can power this PC off (on HDMI-CEC, the TV's \"power off this device\"), for the profiles' \"On remote power key\".");
                         Text {
                             text: root.tv.has-remote-power ? @tr("Reaches this PC") : @tr("Not on this connection");
@@ -1081,6 +1090,7 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Remote keys");
+                        key: "remote-keys";
                         help: @tr("Whether the TV remote's other keys can reach this PC's desktop (on HDMI-CEC, through an adapter with a remote-control device), for the system profile's \"Remote keys reach the desktop\".");
                         Text {
                             text: root.tv.has-remote-keys ? @tr("Can reach the desktop") : @tr("Not on this connection");
@@ -1093,6 +1103,7 @@ component TvDetail inherits Rectangle {
                     FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Wakes this PC");
+                        key: "wakes-pc";
                         help: @tr("Whether the TV powering on can wake this PC from sleep (on HDMI-CEC, through a USB adapter allowed to wake the system), for the system profile's \"On TV power on\".");
                         Text {
                             text: root.tv.wakes-pc ? @tr("Can wake it") : @tr("Not on this connection");
@@ -1117,8 +1128,10 @@ component TvDetail inherits Rectangle {
                     if root.tv.has-backlight: backlight-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Backlight");
+                        key: "backlight";
                         help: @tr("Control power draw and/or reduce burn-in risk.");
                         OptimisticSlider {
+                            label: backlight-row.label;
                             nav-row: backlight-row.row-id;
                             model-value: root.tv.backlight;
                             enabled: root.tv.connected;
@@ -1130,12 +1143,14 @@ component TvDetail inherits Rectangle {
                     if root.tv.has-screen: screen-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("screen power" => "Screen");
+                        key: "screen";
                         help: @tr("Turn off the display — a dedicated screen-blank with instant resume where the TV supports it, otherwise emulated by powering the set off and on.");
                         HorizontalLayout {
                             alignment: start;
                             VerticalLayout {
                                 alignment: center;
                                 ThemedSwitch {
+                                    accessible-label: screen-row.label;
                                     nav-row: screen-row.row-id;
                                     checked: root.tv.is-screen-on;
                                     enabled: root.tv.connected;
@@ -1153,7 +1168,9 @@ component TvDetail inherits Rectangle {
                     if root.tv.has-volume: volume-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Volume");
+                        key: "volume";
                         OptimisticSlider {
+                            label: volume-row.label;
                             nav-row: volume-row.row-id;
                             model-value: root.tv.volume;
                             enabled: root.tv.connected && !root.tv.muted;
@@ -1165,7 +1182,9 @@ component TvDetail inherits Rectangle {
                     if root.tv.has-mute: mute-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("Mute");
+                        key: "mute";
                         ThemedSwitch {
+                            accessible-label: mute-row.label;
                             nav-row: mute-row.row-id;
                             checked: root.tv.muted;
                             enabled: root.tv.connected;
@@ -1181,8 +1200,10 @@ component TvDetail inherits Rectangle {
                     current-input-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("current input" => "Current");
+                        key: "current-input";
                         help: @tr("Current input shown now; changing it switches the live input.");
                         ThemedSelect {
+                            accessible-label: current-input-row.label;
                             nav-row: current-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.current-input == "" ? "—" : root.tv.current-input;
@@ -1195,8 +1216,10 @@ component TvDetail inherits Rectangle {
                     primary-input-row := FormRow {
                         id-prefix: root.id-prefix;
                         label: @tr("primary input" => "Primary");
+                        key: "primary-input";
                         help: @tr("Primary input gating automation; E.g. input used for display.");
                         ThemedSelect {
+                            accessible-label: primary-input-row.label;
                             nav-row: primary-input-row.row-id;
                             model: root.tv.available-input-ids;
                             current-value: root.tv.primary-input == "" ? "—" : root.tv.primary-input;
@@ -1458,6 +1481,8 @@ export component TvsPane {
     in property <ServiceHealth> daemon-health;
     in property <[string]> system-profiles;
     in property <[string]> user-profiles;
+    in property <[string]> system-profile-ids;
+    in property <[string]> user-profile-ids;
     in-out property <int> selected-index: -1;
 
     // Wizard state and callbacks live on the `PairingWizard` global
@@ -1523,6 +1548,7 @@ export component TvsPane {
         width: 100%;
         height: 100%;
         system-profiles: root.system-profiles;
+        system-profile-ids: root.system-profile-ids;
     }
 
     if !PairingWizard.active: VerticalLayout {
@@ -1545,8 +1571,6 @@ export component TvsPane {
                     tone: Errors.tvs.tone == "" ? "error" : Errors.tvs.tone;
                     title: Errors.tvs.title;
                     message: Errors.tvs.message;
-                    action-label: Errors.tvs.action-label;
-                    action-clicked => { Errors.tvs-action(); }
                     dismissed => {
                         Errors.tvs = { kind: "", tone: "", title: "", message: "", action-label: "" };
                     }
@@ -1589,6 +1613,8 @@ export component TvsPane {
                     tv: tv;
                     system-profiles: root.system-profiles;
                     user-profiles: root.user-profiles;
+                    system-profile-ids: root.system-profile-ids;
+                    user-profile-ids: root.user-profile-ids;
                     focus-tick: root.focus-detail-tick;
 
                     request-remove => {

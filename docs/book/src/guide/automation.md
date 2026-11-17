@@ -16,7 +16,7 @@ Out of the box, a [managed](#which-tvs-react) TV follows your desktop:
 | Suspend the machine | powers off |
 | Resume the machine | powers on, and switches back to your PC's input |
 | Shut down | powers off |
-| Boot | powers on |
+| Boot | powers on, and switches back to your PC's input |
 
 The TV blanking or waking along with your monitor (DPMS) is on too. Inactivity timers (blank the TV after N minutes idle) are **off** until you set them.
 
@@ -50,7 +50,7 @@ Next to each dropdown are two small icon toggles:
 - **Land on primary input** (the remote icon): after this action, switch the TV to your PC's input. This needs the TV's *Primary* input set on its page, and a TV that can switch inputs (not HDMI-CEC).
 - **Suppressed / fires while streaming** (the network icon): whether this event still happens while a stream has the TV armed. See [Streaming](./streaming.md).
 
-The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (unlocked)**, each in seconds, where `0` turns the timer off. The first applies at the lock screen, the second while you're logged in and active. The **On idle timeout** and **On idle resume** actions say what happens when either timer fires and when activity returns.
+The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (unlocked)**, each in seconds, where `0` turns the timer off. The first applies at the lock screen, the second while you're logged in and active. The same timer is how long a TV whose screen comes on while the PC is idle (a stray remote press, or a TV back from a network outage with its screen on) is left before the idle action goes out again, so with that timer off such a TV stays on. The **On idle timeout** and **On idle resume** actions say what happens when either timer fires and when activity returns.
 
 ### Creating, duplicating, and assigning profiles
 
@@ -76,7 +76,7 @@ The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (u
 | On session unlock | you unlock |
 | On idle timeout | either idle timer runs out |
 | On idle resume | activity returns after an unlocked idle |
-| Stream start / end | a stream starts or ends |
+| On stream start / On stream end | a stream starts or ends |
 | On local return | you first touch the PC after a stream ended |
 
 - **Lock wake** is there so the TV is lit *before* you type your password; the later unlock then has nothing left to do. (Wayland sessions only.)

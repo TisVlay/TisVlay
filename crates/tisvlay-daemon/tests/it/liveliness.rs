@@ -1,5 +1,5 @@
-//! M0 exit criterion: a client session over the daemon's Unix socket sees
-//! the daemon's liveliness token.
+//! A client session over the daemon's Unix socket sees the daemon's
+//! liveliness token.
 
 use std::time::Duration;
 
@@ -10,13 +10,13 @@ use anyhow::anyhow;
 #[tokio::test(flavor = "multi_thread")]
 async fn daemon_liveliness_token_visible_to_client() -> anyhow::Result<()> {
     let dir = tisvlay_test::socket_tempdir();
-    let socket = dir.path().join("m0.sock");
-    let daemon = tisvlay_daemon::open(&socket, "spiketest").await?;
+    let socket = dir.path().join("daemon.sock");
+    let daemon = tisvlay_daemon::open(&socket, "test").await?;
 
     let client = zenoh::open(tisvlay_protocol::bootstrap::client_config(&socket)?)
         .await
         .map_err(|e| anyhow!("open client session: {e}"))?;
-    let key = tisvlay_protocol::keys::daemon_alive("spiketest");
+    let key = tisvlay_protocol::keys::daemon_alive("test");
     let replies = client
         .liveliness()
         .get(key.as_str())
@@ -31,7 +31,7 @@ async fn daemon_liveliness_token_visible_to_client() -> anyhow::Result<()> {
     let sample = reply
         .result()
         .map_err(|e| anyhow!("liveliness reply error: {:?}", e.payload().try_to_string()))?;
-    assert_eq!(sample.key_expr().as_str(), "tisvlay/spiketest/alive/daemon");
+    assert_eq!(sample.key_expr().as_str(), key.as_str());
 
     client
         .close()

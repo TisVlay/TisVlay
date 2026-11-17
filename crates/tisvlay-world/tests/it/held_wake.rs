@@ -107,6 +107,62 @@ async fn a_routeless_wake_expires_into_a_plain_reconnect() {
     assert_eq!(handle.connect_call_count("mock://expire"), 2);
 }
 
+/// An expired held wake takes its input restore with it: the route can
+/// return hours later, to a TV someone turned on and is watching, and the
+/// plain reconnect mustn't switch it to the PC's input.
+#[tokio::test]
+async fn an_expired_wake_drops_its_input_restore() {
+    let (mut effects, client, handle) = spawn_reactor();
+    let id = Uuid::new_v4();
+    let address = "mock://expire-restore";
+    let mut config = mock_config(address);
+    config.insert("initial_input", "HDMI_2");
+    handle.set_unreachable(address, true);
+    client.command(Command::AddTv {
+        record: Box::new(tisvlay_world::TvRecord {
+            primary_input: Some("HDMI_1".into()),
+            ..tv_record(id, "Den", config)
+        }),
+        reply: None,
+    });
+    collect_until(&mut effects, failed).await;
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: None,
+    });
+    let t0 = Instant::now();
+    client.tick(t0);
+    client.command(Command::PowerOn {
+        id,
+        restore_input: true,
+        reply: Some(Reply::new(1)),
+    });
+    collect_until(&mut effects, |e| phase_published(e, "awaiting_network")).await;
+    client.tick(t0 + Duration::from_secs(61));
+    collect_until(&mut effects, |e| phase_published(e, "failed")).await;
+
+    handle.set_unreachable(address, false);
+    client.tick(t0 + Duration::from_secs(70));
+    client.send(InEvent::RouteResolved {
+        tv: id,
+        interface: Some("eth0".into()),
+    });
+    let mut seen = collect_until(&mut effects, |e| link_connected(e, true)).await;
+    for barrier in 2..=4 {
+        client.tick(t0 + Duration::from_secs(70 + 5 * barrier));
+        client.command(Command::SetVolume {
+            id: Uuid::new_v4(),
+            level: 0,
+            reply: Some(Reply::new(barrier)),
+        });
+        seen.extend(collect_until(&mut effects, |e| reply_to(e, barrier)).await);
+    }
+    let restored =
+        |e: &WireEffect| is_publish_on(e, "/state/input").is_some_and(|p| p["current"] == "HDMI_1");
+    assert!(!seen.iter().any(restored), "{seen:#?}");
+    assert_quiet(&mut effects, Duration::from_millis(300), restored).await;
+}
+
 /// A wake held on a missing route is cancelled by a later power-off: the
 /// rpc succeeds, the wake reports failed, and the route's return only
 /// reconnects.

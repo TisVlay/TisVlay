@@ -134,7 +134,8 @@ fn volume_nested_format() {
     let vol: VolumeResponse = serde_json::from_value(response.payload).unwrap();
     let info = vol.into_volume_info().expect("should extract volume info");
     assert_eq!(info.volume, 25);
-    assert!(!info.muted);
+    // webOS nests the flag as `muteStatus`.
+    assert!(info.muted);
 }
 
 #[test]

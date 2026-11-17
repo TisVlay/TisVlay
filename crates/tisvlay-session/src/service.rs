@@ -13,7 +13,8 @@ use crate::sunshine::{HostProbe, SunshineProbe};
 /// The session service's flags, under `tisvlay service session`.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock).
+    /// System daemon socket (default: $XDG_RUNTIME_DIR/tisvlay/zenoh.sock,
+    /// falling back to the packaged /run/tisvlay/zenoh.sock).
     #[arg(long)]
     system_socket: Option<PathBuf>,
 
@@ -97,7 +98,8 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
 
     // Lock state minted by the stack and shared three ways: the lock
     // watcher writes it (LockedHint seed + edges), the idle adapter's
-    // lock-wake policy and the core's drift re-assert read it.
+    // lock-wake policy reads it, and the core stamps it into the idle
+    // window when an idle action fires.
     let is_locked = stack.is_locked.clone();
     // Foreground (`Active`) state minted by the stack: the lock watcher
     // writes it, the core's active-session arbitration gate reads it.
@@ -163,7 +165,14 @@ async fn run(args: Args, spa_plugins: Result<(), crate::SpaPluginsMissing>) -> a
     // and the zero-config fallback. Runs for the session lifetime.
     crate::spawn_sunshine_detector(stack.stream.clone(), sunshine);
 
-    tokio::signal::ctrl_c().await?;
+    // SIGTERM is how systemd stops the unit at logout; ctrl-c a dev run.
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .map_err(|e| anyhow::anyhow!("install the SIGTERM handler: {e}"))?;
+    tokio::select! {
+        result = tokio::signal::ctrl_c() => result?,
+        _ = terminate.recv() => {}
+    }
     tracing::info!("shutting down");
+    stack.tasks.stop().await;
     Ok(())
 }

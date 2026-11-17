@@ -22,6 +22,7 @@ use slint::{Model, ModelRc, SharedString, VecModel};
 use tisvlay_core::{PairingField, PairingFieldType};
 
 use crate::PairingFieldRow;
+use crate::token::parse_token;
 
 /// Plain-data carrier for an autofilled schema row.
 ///
@@ -79,23 +80,11 @@ impl AutofilledRow {
     }
 }
 
-/// Resolve a kebab-case `field-type` wire string back to its typed
-/// [`PairingFieldType`]. Falls back to `String` for unknown values
-/// — keeps the form rendering through a forward-compat schema that
-/// introduces a new variant before we've taught the GUI about it.
-/// The validator just treats it as plain text.
+/// Resolve a row's `field-type` back to its typed [`PairingFieldType`].
+/// Rows only get theirs from [`PairingFieldType::as_str`], the type's
+/// serde name.
 pub(crate) fn parse_field_type(s: &str) -> PairingFieldType {
-    match s {
-        "password" => PairingFieldType::Password,
-        "ip" => PairingFieldType::Ip,
-        "mac" => PairingFieldType::Mac,
-        "port" => PairingFieldType::Port,
-        "int" => PairingFieldType::Int,
-        "bool" => PairingFieldType::Bool,
-        "select" => PairingFieldType::Select,
-        "path" => PairingFieldType::Path,
-        _ => PairingFieldType::String,
-    }
+    parse_token(s).expect("a row's field type is written by PairingFieldType::as_str")
 }
 
 /// Compute `(state, error)` for one row's `value` by reusing the
@@ -152,6 +141,49 @@ pub(crate) fn compute_schema_valid(model: &ModelRc<PairingFieldRow>) -> bool {
             return false;
         }
     }
+    true
+}
+
+/// Write a user's edit `value` into row `i` of a schema form, re-validated.
+/// The edit also clears the row's "Auto-detected" badge: the value is now
+/// the user's, not the system's. False when there's no such row.
+pub(crate) fn revalidate_row(
+    model: &ModelRc<PairingFieldRow>,
+    i: usize,
+    value: SharedString,
+) -> bool {
+    let Some(mut row) = model.row_data(i) else {
+        return false;
+    };
+    let options: Vec<String> = row.options.iter().map(|s| s.to_string()).collect();
+    let (state, error) = validate_value(
+        &row.name,
+        parse_field_type(&row.field_type),
+        row.required,
+        &options,
+        &value,
+    );
+    row.value = value;
+    row.state = SharedString::from(state);
+    row.error = SharedString::from(error);
+    row.autofilled = false;
+    model.set_row_data(i, row);
+    true
+}
+
+/// Mark the row named `field` invalid with the server's `reason`. False
+/// when no row has that name, so the caller falls back to a generic error.
+pub(crate) fn mark_row_invalid(
+    model: &ModelRc<PairingFieldRow>,
+    field: &str,
+    reason: &str,
+) -> bool {
+    let Some((i, mut row)) = model.iter().enumerate().find(|(_, row)| row.name == field) else {
+        return false;
+    };
+    row.state = SharedString::from("invalid");
+    row.error = SharedString::from(reason);
+    model.set_row_data(i, row);
     true
 }
 
@@ -377,27 +409,57 @@ mod tests {
     // ---------- parse_field_type ----------
 
     #[test]
-    fn parse_field_type_maps_known_kebab_strings() {
-        for (input, expected) in [
-            ("password", PairingFieldType::Password),
-            ("ip", PairingFieldType::Ip),
-            ("mac", PairingFieldType::Mac),
-            ("port", PairingFieldType::Port),
-            ("int", PairingFieldType::Int),
-            ("bool", PairingFieldType::Bool),
-            ("select", PairingFieldType::Select),
-            ("path", PairingFieldType::Path),
+    fn parse_field_type_reads_back_every_as_str() {
+        for ty in [
+            PairingFieldType::String,
+            PairingFieldType::Password,
+            PairingFieldType::Ip,
+            PairingFieldType::Mac,
+            PairingFieldType::Port,
+            PairingFieldType::Int,
+            PairingFieldType::Bool,
+            PairingFieldType::Select,
+            PairingFieldType::Path,
         ] {
-            assert_eq!(parse_field_type(input), expected, "input={input}");
+            assert_eq!(parse_field_type(ty.as_str()), ty, "{}", ty.as_str());
         }
     }
 
+    // ---------- revalidate_row / mark_row_invalid ----------
+
     #[test]
-    fn parse_field_type_falls_back_to_string_for_unknown() {
-        // Forward-compat: a future schema variant the GUI hasn't
-        // learned about yet still renders, treated as plain text.
-        assert_eq!(parse_field_type("future-field"), PairingFieldType::String);
-        assert_eq!(parse_field_type(""), PairingFieldType::String);
+    fn revalidate_row_writes_the_edit_and_clears_the_badge() {
+        let mut detected = row("ip", "ip", true, "192.168.1.5", "valid");
+        detected.autofilled = true;
+        let m = model(vec![detected]);
+        assert!(revalidate_row(&m, 0, "not-an-ip".into()));
+        let edited = m.row_data(0).unwrap();
+        assert_eq!(edited.value, "not-an-ip");
+        assert_eq!(edited.state, "invalid");
+        assert!(!edited.error.is_empty());
+        assert!(
+            !edited.autofilled,
+            "the user's edit is no longer auto-detected"
+        );
+        assert!(revalidate_row(&m, 0, "192.168.1.6".into()));
+        assert_eq!(m.row_data(0).unwrap().state, "valid");
+        assert!(!revalidate_row(&m, 1, "x".into()), "no such row");
+    }
+
+    #[test]
+    fn mark_row_invalid_finds_the_row_by_name() {
+        let m = model(vec![
+            row("ip", "ip", true, "192.168.1.5", "valid"),
+            row("mac", "mac", false, "", "pristine"),
+        ]);
+        assert!(mark_row_invalid(&m, "mac", "taken"));
+        let marked = m.row_data(1).unwrap();
+        assert_eq!(
+            (marked.state.as_str(), marked.error.as_str()),
+            ("invalid", "taken")
+        );
+        assert_eq!(m.row_data(0).unwrap().state, "valid");
+        assert!(!mark_row_invalid(&m, "port", "nope"));
     }
 
     // ---------- validate_value ----------

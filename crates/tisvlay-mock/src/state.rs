@@ -78,10 +78,10 @@ pub(crate) struct MockState {
     pub(crate) live_states: HashMap<String, Arc<Mutex<TvState>>>,
 
     /// Live subscription senders per mock TV address. Inserted when
-    /// `MockConnection::subscribe_state` is called. Multiple entries
-    /// may exist after reconnects; closed senders harmlessly fail their
-    /// `send` and are left in place (the maps are bounded by test
-    /// lifetime).
+    /// `MockConnection::subscribe_state` is called, and the only strong
+    /// sender of each stream: a connection removes its own when it
+    /// drops, and [`MockHandle::cut_link`](crate::handle::MockHandle::cut_link)
+    /// removes them to end the stream from outside.
     pub(crate) subscription_txs: HashMap<String, Vec<mpsc::UnboundedSender<TvState>>>,
 
     /// Live event senders per mock TV address, registered by
@@ -108,7 +108,7 @@ pub(crate) struct MockState {
     /// `Ok` without mutating state. Set via
     /// [`MockHandle::set_screen_off_noop`](crate::handle::MockHandle::set_screen_off_noop)
     /// to model firmware that returns Ok on the wire but doesn't
-    /// blank the panel. Needed for V2's reliable-`screen_off`
+    /// blank the panel. Needed for the reliable `screen_off`
     /// verify-retry tests, mirroring the `screen_on_noop` knob.
     pub(crate) screen_off_noop: std::collections::HashSet<String>,
 
@@ -117,6 +117,26 @@ pub(crate) struct MockState {
     /// `ConnectionClosed`. Set via
     /// [`MockHandle::set_power_on_closes`](crate::handle::MockHandle::set_power_on_closes).
     pub(crate) power_on_closes: std::collections::HashSet<String>,
+
+    /// Per-address flag: the TV answers a dial and turns it down, so
+    /// `MockConnector::connect` fails with `NotRegistered`. Set via
+    /// [`MockHandle::set_key_rejected`](crate::handle::MockHandle::set_key_rejected).
+    pub(crate) key_rejected: std::collections::HashSet<String>,
+
+    /// Per-address flag: `switch_input` returns `Ok` without switching.
+    /// Set via
+    /// [`MockHandle::set_switch_input_noop`](crate::handle::MockHandle::set_switch_input_noop).
+    pub(crate) switch_input_noop: std::collections::HashSet<String>,
+
+    /// Per-address flag: `power_off` closes the link without pushing a
+    /// standby report first. Set via
+    /// [`MockHandle::set_power_off_unreported`](crate::handle::MockHandle::set_power_off_unreported).
+    pub(crate) power_off_unreported: std::collections::HashSet<String>,
+
+    /// Per-address flag: `screen_off` finds the link dead under it, so
+    /// it closes the connection and fails with `ConnectionClosed`. Set via
+    /// [`MockHandle::set_screen_off_closes`](crate::handle::MockHandle::set_screen_off_closes).
+    pub(crate) screen_off_closes: std::collections::HashSet<String>,
 
     /// Per-address flag: an in-band `power_on` returns `Ok` but the TV
     /// stays off, as one that ignores the wake does. Set via
@@ -128,6 +148,11 @@ pub(crate) struct MockState {
     /// [`MockHandle::set_state_query_fails`](crate::handle::MockHandle::set_state_query_fails).
     pub(crate) state_query_fails: std::collections::HashSet<String>,
 
+    /// Per-address flag: the network between the PC and the TV is down,
+    /// so `MockConnector::connect` fails with `NetworkUnreachable`. Set via
+    /// [`MockHandle::set_unreachable`](crate::handle::MockHandle::set_unreachable).
+    pub(crate) unreachable: std::collections::HashSet<String>,
+
     /// Per-address override for the `PowerState` a new
     /// `MockConnection` initializes with at construct-time. When
     /// present, takes precedence over `MockVendorConfig::initial_power_state`
@@ -137,9 +162,8 @@ pub(crate) struct MockState {
     /// recent remote-off — the daemon's `power_on` succeeds at the
     /// WS level (a new `MockConnection` is created) but the LG
     /// firmware reports a wake-preflight substate that never
-    /// transitions to `Active`. Needed to cover the
-    /// `screen_off`-post-wake-settle graceful-fallback branch in
-    /// the daemon's reliable screen-dispatch tier.
+    /// transitions to `Active`: a TV that wakes into a wake-needy
+    /// substate, for the verify and escalation tests.
     pub(crate) initial_power_state_overrides: HashMap<String, PowerState>,
 
     /// Per-address call counter for `MockConnection::screen_on`

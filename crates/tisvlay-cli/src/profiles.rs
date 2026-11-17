@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use tisvlay_cli::{SystemProfileCmd, UserProfileCmd, hydrate};
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{profile, user_profile};
-use tisvlay_protocol::rpc;
+use tisvlay_protocol::{keys, rpc};
 use zenoh::Session;
 
 use crate::render::print_reply;
@@ -96,7 +96,7 @@ pub(crate) async fn profile_cmd(
 ) -> Result<()> {
     match cmd {
         SystemProfileCmd::List => {
-            let keyexpr = format!("tisvlay/{site}/profile/system/*");
+            let keyexpr = keys::profile_system_wild(site);
             list_catalog(session, &keyexpr, json_out).await
         }
         SystemProfileCmd::Create { name, body } => {
@@ -138,9 +138,7 @@ pub(crate) async fn user_profile_cmd(
     json_out: bool,
 ) -> Result<()> {
     match cmd {
-        UserProfileCmd::List => {
-            list_catalog(user, &format!("tisvlay/{site}/user/profile/*"), json_out).await
-        }
+        UserProfileCmd::List => list_catalog(user, &keys::user_profile_wild(site), json_out).await,
         UserProfileCmd::Create { name, body } => {
             let request = rpc::UserProfileCreate {
                 id: None,

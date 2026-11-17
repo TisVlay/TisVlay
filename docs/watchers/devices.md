@@ -34,7 +34,7 @@ A `DeviceAvailable(bool)` fact sits on the TV (only once a report has arrived), 
 - **A failure while the device is reported gone isn't an attempt**: it returns its attempt and publishes no `connect-failed`, like a routeless failure.
 - **Device-level failures keep retrying.** When the node exists but can't be opened or set up (`Error::DeviceUnavailable`, or `PermissionDenied`), a local-device TV retries past its budget, the gap doubling from 3 s to a 60 s cap; a TV that doesn't answer through a working adapter keeps the three-try budget, as a network TV does.
 - **A pairing verification dials through the gate**, so a re-pair with the adapter missing fails with its reason instead of waiting.
-- **Held wakes** (a wake deferred on the missing device) expire after 60 s into a plain reconnect, and a newer power-off cancels them; this applies to route-held wakes too ([docs/architecture.md](../architecture.md) § The world).
+- **Held wakes** (a wake deferred on the missing device) expire after 60 s into a plain reconnect, and a newer off intent cancels them; this applies to route-held wakes too ([docs/architecture.md](../architecture.md) § The world).
 
 Clients see it on `state/link`: `waiting_for` is `"device"` while the TV is disconnected and its device is known gone, and a held wake publishes `awaiting_device` on `progress/power`.
 

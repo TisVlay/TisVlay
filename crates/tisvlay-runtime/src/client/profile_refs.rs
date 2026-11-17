@@ -1,29 +1,23 @@
 //! Client-side profile-reference computation.
 //!
-//! v3 drops the server-side `ReferencedBy` property in favor of a
-//! shared helper both daemon and clients call. The TV list every
-//! client maintains in memory is the source of truth; the helper just
-//! encodes the fan-out rule (a TV whose profile-assignment field is
-//! unspecified implicitly references the reserved-default UUID) so
-//! every consumer agrees on what "referenced by" means without a
-//! round-trip per call site.
-//!
-//! See the git history of `docs/plans/profile-crud-v3.md` for the wire-shape
-//! rationale.
+//! Which TVs use a profile is computed from the client's own TV list,
+//! not served: the helpers encode the one rule, that a TV with no
+//! profile assignment references the reserved default profile, so
+//! every consumer agrees on what "referenced by" means. The GUI's
+//! profile panes are the caller.
 
 use tisvlay_core::{DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID};
 use uuid::Uuid;
 
 /// TV-side data the reference helpers need.
 ///
-/// Built by callers from whatever shape their in-memory TV list takes
-/// (`TvRecord` on the daemon, `TvViewRaw` on the GUI, the cached state
-/// in the tray). `system_profile` / `user_profile` are `Option<Uuid>`
-/// so callers from data shapes without explicit assignments can pass
-/// `None`; the helpers fall back to the default-UUID semantic.
+/// Built by callers from whatever shape their in-memory TV list takes.
+/// `system_profile` / `user_profile` are `Option<Uuid>` so callers from
+/// data shapes without explicit assignments can pass `None`; the helpers
+/// fall back to the default-UUID semantic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TvAssignment {
-    /// Stable per-TV identifier (matches `Tv1` object-path UUID).
+    /// The TV's id.
     pub tv_uuid: Uuid,
     /// System-side profile assignment. `None` ⇒ unassigned ⇒
     /// references `DEFAULT_SYSTEM_PROFILE_UUID` implicitly.

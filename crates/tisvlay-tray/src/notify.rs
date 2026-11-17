@@ -1,8 +1,8 @@
 //! Desktop notifications + the per-user settings service.
 //!
-//! The notifier funnels every emit through one worker task (root's
-//! flap-storm hardening: at most one in-flight `show_async`, category
-//! gate checked lock-free before enqueue). Settings persist to
+//! The notifier funnels every emit through one worker task (flap-storm
+//! hardening: at most one in-flight `show_async`, category gate checked
+//! lock-free before enqueue). Settings persist to
 //! `tray.toml` and are served on the user socket — a cached pub at
 //! `user/tray/settings`, rpcs under `user/tray/rpc/*`, and a liveliness
 //! token — so the GUI personalizes them per user, live.

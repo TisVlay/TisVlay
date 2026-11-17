@@ -187,7 +187,29 @@
                 # sbom-check` compares with it through rust-audit-info (and jq).
                 # release.yml installs the same versions.
                 cargo-auditable
-                cargo-cyclonedx
+                # CycloneDX re-published the 0.5.10 tag after nixpkgs
+                # hashed it; the two trees differ only in upstream's own
+                # release tooling (its cargo-dist version), so take the
+                # tag's current hash. The lockfile, and so the vendor
+                # hash, didn't change. Drop the override once nixpkgs
+                # carries the new hash.
+                (
+                  let
+                    src = pkgs.fetchFromGitHub {
+                      owner = "CycloneDX";
+                      repo = "cyclonedx-rust-cargo";
+                      rev = "cargo-cyclonedx-0.5.10";
+                      hash = "sha256-Ne+oufpXfI19KwRjnBAPeSM65ja+5O26+Yl8e+DUsjM=";
+                    };
+                  in
+                  pkgs.cargo-cyclonedx.overrideAttrs {
+                    inherit src;
+                    cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+                      inherit src;
+                      hash = "sha256-aUfygtpGleCpuetyJHGHzs8J5VFkrk996ZqmTYgTwEk=";
+                    };
+                  }
+                )
                 rust-audit-info
                 jq
                 # uuidgen gives each SBOM its serial number (`just sbom`).

@@ -33,8 +33,8 @@ bitflags! {
     pub struct Capabilities: u32 {
         /// Power on/off control.
         ///
-        /// Backends with this capability can turn the TV on (typically via WoL)
-        /// and off (standby).
+        /// Backends with this capability can turn the TV on (by the
+        /// transport's wake) and off (standby).
         const POWER = 0b0000_0001;
 
         /// Screen blanking control (OLED-safe).
