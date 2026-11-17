@@ -155,6 +155,7 @@ impl WebOsClient {
     /// subscription updates) are handled by the background reader and
     /// do not interfere with registration.
     async fn register(&mut self, existing_key: Option<Secret>) -> Result<Secret> {
+        let keyed = existing_key.is_some();
         let payload = RegisterPayload::new(existing_key);
         let request = Request::register(self.next_id(), payload);
 
@@ -167,14 +168,19 @@ impl WebOsClient {
         // To handle the two-phase flow, we use request_wait() which only
         // registers the oneshot (no send) for the second phase.
         let pairing_timeout = Duration::from_millis(timeouts::PAIRING_MS);
+
+        // Phase 1: send the register request and get the first response. A
+        // keyed register is a machine round-trip: the TV accepts the key, or
+        // shows the prompt and says so, at once. Only a first pairing may
+        // wait on a person before its first answer.
+        let first_answer = if keyed { self.timeout } else { pairing_timeout };
+        let response = self.conn()?.request(&request, first_answer).await?;
+        // The person at the TV gets the pairing timeout from the prompt.
         #[expect(
             clippy::arithmetic_side_effects,
             reason = "Instant plus the PAIRING_MS constant cannot overflow"
         )]
         let deadline = tokio::time::Instant::now() + pairing_timeout;
-
-        // Phase 1: send the register request and get the first response.
-        let response = self.conn()?.request(&request, pairing_timeout).await?;
         tracing::debug!(
             msg_type = ?response.msg_type,
             payload_keys = ?payload_keys(&response.payload),

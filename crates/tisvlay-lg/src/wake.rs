@@ -17,8 +17,8 @@ use tokio::time::Instant;
 use tracing::debug;
 
 /// How long a wake may take in all, counted from the first WoL send: the
-/// daemon doesn't time a wake out, so the loop bounds itself.
-const WAKE_DEADLINE: Duration = Duration::from_secs(30);
+/// daemon doesn't time a wake out, so the wake bounds itself.
+pub(crate) const WAKE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// How long a connected TV gets to report on after each connect. It
 /// outlasts the remote-off latch, during which the TV ignores a network
@@ -87,13 +87,20 @@ pub(crate) struct Woke<L> {
 
 /// Dial until the TV answers, then confirm it woke within
 /// [`CONFIRM_WINDOW`], resending WoL as it goes, all within
-/// [`WAKE_DEADLINE`]. A link that drops is dialed again after a pause, so
-/// only a live link is returned. Fails when the deadline passes with no
-/// live link: a TV that never answers, or one that keeps dropping it.
-pub(crate) async fn wake_and_confirm<S: WakeSteps>(steps: &mut S) -> Result<Woke<S::Link>> {
-    let deadline = Instant::now() + WAKE_DEADLINE;
+/// `deadline` ([`WAKE_DEADLINE`] after the first WoL send). A link that
+/// drops is dialed again after a pause, so only a live link is returned.
+/// Fails when the deadline passes with no live link: a TV that never
+/// answers, one that keeps dropping it, or a dial that outlasts it.
+pub(crate) async fn wake_and_confirm<S: WakeSteps>(
+    steps: &mut S,
+    deadline: Instant,
+) -> Result<Woke<S::Link>> {
     'dial: loop {
-        let mut link = match steps.connect().await {
+        let Ok(dialed) = tokio::time::timeout_at(deadline, steps.connect()).await else {
+            debug!("LG TV dial outlasted the wake deadline");
+            return Err(Error::RequestTimeout);
+        };
+        let mut link = match dialed {
             Ok(link) => link,
             Err(error) => {
                 debug!(%error, "LG TV not ready yet");
@@ -161,6 +168,9 @@ mod tests {
         /// A poll that waits out its deadline before answering `NotYet`,
         /// like a TV that doesn't answer in time.
         slow_polls: bool,
+        /// A connect that never finishes, like a TV that takes the
+        /// WebSocket and never answers `register`.
+        hung_connects: bool,
         connect_calls: usize,
         poll_calls: usize,
         resends: usize,
@@ -172,6 +182,7 @@ mod tests {
                 connects: connects.iter().copied().collect(),
                 polls: polls.iter().copied().collect(),
                 slow_polls: false,
+                hung_connects: false,
                 connect_calls: 0,
                 poll_calls: 0,
                 resends: 0,
@@ -194,6 +205,9 @@ mod tests {
 
         async fn connect(&mut self) -> Result<usize> {
             self.connect_calls += 1;
+            if self.hung_connects {
+                std::future::pending::<()>().await;
+            }
             if next(&mut self.connects) {
                 Ok(self.connect_calls)
             } else {
@@ -219,7 +233,9 @@ mod tests {
     async fn a_tv_already_on_returns_at_once_without_resending() {
         let mut script = Script::new(&[true], &[Reading::On]);
         let t0 = Instant::now();
-        let woke = wake_and_confirm(&mut script).await.expect("the TV answers");
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect("the TV answers");
         assert!(woke.confirmed);
         assert_eq!(script.resends, 0);
         assert!(t0.elapsed() < POLL_INTERVAL);
@@ -237,7 +253,9 @@ mod tests {
                 Reading::On,
             ],
         );
-        let woke = wake_and_confirm(&mut script).await.expect("the TV answers");
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect("the TV answers");
         assert!(woke.confirmed);
         assert_eq!(script.poll_calls, 5);
         assert!(
@@ -252,7 +270,9 @@ mod tests {
     async fn a_tv_that_never_wakes_hands_over_the_link_when_the_window_ends() {
         let mut script = Script::new(&[true], &[Reading::NotYet]);
         let t0 = Instant::now();
-        let woke = wake_and_confirm(&mut script).await.expect("the TV answers");
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect("the TV answers");
         assert!(!woke.confirmed);
         assert!(t0.elapsed() >= CONFIRM_WINDOW && t0.elapsed() < CONFIRM_WINDOW + POLL_INTERVAL);
         let resends = CONFIRM_WINDOW.as_millis() / RESEND_INTERVAL.as_millis();
@@ -268,7 +288,9 @@ mod tests {
         let mut script = Script::new(&[true], &[Reading::NotYet]);
         script.slow_polls = true;
         let t0 = Instant::now();
-        let woke = wake_and_confirm(&mut script).await.expect("the TV answers");
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect("the TV answers");
         assert!(!woke.confirmed);
         assert!(t0.elapsed() >= CONFIRM_WINDOW && t0.elapsed() < CONFIRM_WINDOW + POLL_INTERVAL);
     }
@@ -276,7 +298,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_link_lost_while_confirming_is_dialed_again() {
         let mut script = Script::new(&[true], &[Reading::NotYet, Reading::LinkLost, Reading::On]);
-        let woke = wake_and_confirm(&mut script).await.expect("the TV answers");
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect("the TV answers");
         assert!(woke.confirmed);
         assert_eq!(script.connect_calls, 2);
         assert_eq!(woke.link, 2, "the link handed over is the live one");
@@ -286,7 +310,7 @@ mod tests {
     async fn a_tv_that_never_answers_fails_at_the_deadline() {
         let mut script = Script::new(&[false], &[Reading::On]);
         let t0 = Instant::now();
-        let error = wake_and_confirm(&mut script)
+        let error = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
             .await
             .expect_err("nothing answers");
         assert!(matches!(error, Error::ConnectionClosed));
@@ -300,7 +324,7 @@ mod tests {
         // connect succeeds and every link drops. The deadline still ends it.
         let mut script = Script::new(&[true], &[Reading::LinkLost]);
         let t0 = Instant::now();
-        let error = wake_and_confirm(&mut script)
+        let error = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
             .await
             .expect_err("no link survives");
         assert!(matches!(error, Error::ConnectionClosed));
@@ -310,6 +334,18 @@ mod tests {
             "redials pace themselves: {}",
             script.connect_calls
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_dial_fails_at_the_deadline() {
+        let mut script = Script::new(&[true], &[Reading::On]);
+        script.hung_connects = true;
+        let t0 = Instant::now();
+        let error = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
+            .await
+            .expect_err("the dial never finishes");
+        assert!(matches!(error, Error::RequestTimeout));
+        assert_eq!(t0.elapsed(), WAKE_DEADLINE);
     }
 
     #[tokio::test(start_paused = true)]
@@ -323,7 +359,7 @@ mod tests {
             &[Reading::NotYet],
         );
         let t0 = Instant::now();
-        let woke = wake_and_confirm(&mut script)
+        let woke = wake_and_confirm(&mut script, Instant::now() + WAKE_DEADLINE)
             .await
             .expect("the TV answers late");
         assert!(!woke.confirmed);
