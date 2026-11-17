@@ -1843,6 +1843,48 @@ export component ThemedSpinBox inherits Rectangle {
 }
 
 // =============================================================================
+// SettingRow — a label with optional helper text, and its control.
+// =============================================================================
+//
+// Layout:
+//   [ label  (flex) ] [ control ]
+//   [ helper        ]
+//
+// The control is the row's child, centered against the text column.
+
+export component SettingRow {
+    in property <string> label;
+    in property <string> helper;
+
+    HorizontalLayout {
+        spacing: Design.gap-row;
+        alignment: stretch;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: Design.gap-form;
+            alignment: center;
+            Text {
+                text: root.label;
+                color: Theme.text;
+                font-size: Design.font-body;
+            }
+            if root.helper != "": Text {
+                text: root.helper;
+                color: Theme.text-faint;
+                font-size: Design.font-mini;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            @children
+        }
+    }
+}
+
+// =============================================================================
 // Group — uppercase 11px title above a card.
 // =============================================================================
 //

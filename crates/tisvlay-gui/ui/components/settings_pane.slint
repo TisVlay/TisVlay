@@ -15,11 +15,9 @@ import { Tray } from "../globals/tray.slint";
 import { Couch } from "../globals/couch.slint";
 import { Nav } from "../globals/nav.slint";
 import { ThemedSelect } from "../globals/select.slint";
-import { Group, InlineError, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
+import { Group, InlineError, SettingRow, ThemedButton, ThemedSpinBox, ThemedSwitch } from "../widgets.slint";
 
-// Local FormRow — label + switch + optional helper text below.
-// Inlined rather than reusing tvs_pane's FormRow to avoid a
-// cross-pane import dependency for what is a small layout.
+// A notification category's switch.
 component NotificationRow {
     in property <string> label;
     in property <string> helper;
@@ -27,35 +25,14 @@ component NotificationRow {
     in property <bool> enabled: true;
     callback toggled(bool);
 
-    HorizontalLayout {
-        spacing: Design.gap-row;
-        alignment: stretch;
-
-        VerticalLayout {
-            horizontal-stretch: 1;
-            spacing: Design.gap-form;
-            alignment: center;
-            Text {
-                text: root.label;
-                color: Theme.text;
-                font-size: Design.font-body;
-            }
-            if root.helper != "": Text {
-                text: root.helper;
-                color: Theme.text-faint;
-                font-size: Design.font-mini;
-                wrap: word-wrap;
-            }
-        }
-
-        VerticalLayout {
-            alignment: center;
-            ThemedSwitch {
-                accessible-label: root.label;
-                checked: root.checked;
-                enabled: root.enabled;
-                toggled => { root.toggled(self.checked); }
-            }
+    SettingRow {
+        label: root.label;
+        helper: root.helper;
+        ThemedSwitch {
+            accessible-label: root.label;
+            checked: root.checked;
+            enabled: root.enabled;
+            toggled => { root.toggled(self.checked); }
         }
     }
 }
@@ -106,71 +83,33 @@ export component SettingsPane inherits Rectangle {
         Group {
             title: @tr("COUCH MODE");
 
-            HorizontalLayout {
-                spacing: Design.gap-row;
-                alignment: stretch;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: Design.gap-form;
-                    alignment: center;
-                    Text {
-                        text: @tr("Couch mode");
-                        color: Theme.text;
-                        font-size: Design.font-body;
-                    }
-                    Text {
-                        text: @tr("Maximized and scaled up, with the keys arranged for a remote. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
-                        color: Theme.text-faint;
-                        font-size: Design.font-mini;
-                        wrap: word-wrap;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    couch-select := ThemedSelect {
-                        accessible-label: @tr("Couch mode");
-                        accessible-id: "settings-couch-mode";
-                        width: 200px;
-                        model: root.couch-modes;
-                        current-value: root.couch-modes[root.mode-index];
-                        selected-index(i) => {
-                            Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
-                        }
+            SettingRow {
+                label: @tr("Couch mode");
+                helper: @tr("Maximized and scaled up, with the keys arranged for a remote. Following the session turns it on under a TV shell such as Plasma Bigscreen.");
+                couch-select := ThemedSelect {
+                    accessible-label: @tr("Couch mode");
+                    accessible-id: "settings-couch-mode";
+                    width: 200px;
+                    model: root.couch-modes;
+                    current-value: root.couch-modes[root.mode-index];
+                    selected-index(i) => {
+                        Couch.mode-changed(i == 1 ? "on" : i == 2 ? "off" : "auto");
                     }
                 }
             }
 
-            HorizontalLayout {
-                spacing: Design.gap-row;
-                alignment: stretch;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: Design.gap-form;
-                    alignment: center;
-                    Text {
-                        text: @tr("Scale");
-                        color: Theme.text;
-                        font-size: Design.font-body;
-                    }
-                    Text {
-                        text: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
-                        color: Theme.text-faint;
-                        font-size: Design.font-mini;
-                        wrap: word-wrap;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center;
-                    ThemedSpinBox {
-                        width: 200px;
-                        value: Couch.scale-percent;
-                        minimum: Couch.scale-min-percent;
-                        maximum: Couch.scale-max-percent;
-                        step: 10;
-                        accessible-label: @tr("Scale");
-                        accessible-id: "settings-couch-scale";
-                        committed(v) => { Couch.scale-changed(v); }
-                    }
+            SettingRow {
+                label: @tr("Scale");
+                helper: @tr("On top of the display's own scale, in percent. Larger for a farther couch or a smaller screen.");
+                ThemedSpinBox {
+                    width: 200px;
+                    value: Couch.scale-percent;
+                    minimum: Couch.scale-min-percent;
+                    maximum: Couch.scale-max-percent;
+                    step: 10;
+                    accessible-label: @tr("Scale");
+                    accessible-id: "settings-couch-scale";
+                    committed(v) => { Couch.scale-changed(v); }
                 }
             }
         }
