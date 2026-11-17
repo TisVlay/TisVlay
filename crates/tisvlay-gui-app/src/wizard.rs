@@ -246,8 +246,7 @@ pub(crate) fn reset_wizard(
 /// - the `wizard_gen` counter drifting from the value captured at
 ///   start (defense in depth against late callbacks bleeding into a
 ///   reopened wizard)
-/// - the findings stream ending (daemon-side hard cap or daemon
-///   shutdown)
+/// - the findings stream ending (the daemon shutting down)
 ///
 /// Always calls the `discover-stop` rpc on exit, even if cancel
 /// happened mid-iteration, so the daemon promptly stops scanning.
@@ -271,8 +270,8 @@ pub(crate) async fn run_wizard_discovery(
         }
     };
 
-    // The session runs until stopped or the daemon's hard cap, its
-    // safety net for a crashed GUI.
+    // The daemon scans until the session is stopped: nothing else ends
+    // it, so every exit path calls `discover-stop`.
     let session_id = match daemon.start_discovery().await {
         Ok(sid) => sid,
         Err(e) => {

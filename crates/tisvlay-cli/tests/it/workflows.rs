@@ -525,12 +525,13 @@ async fn a_reader_closing_the_pipe_ends_watch_quietly() {
         .spawn()
         .unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap()).lines();
-    let banner = tokio::time::timeout(SETTLE, stdout.next_line())
+    // Stdout carries only samples; the banner goes to stderr.
+    let sample = tokio::time::timeout(SETTLE, stdout.next_line())
         .await
-        .expect("no watch banner")
+        .expect("no sample")
         .unwrap()
         .unwrap();
-    assert!(banner.starts_with("watching"), "{banner:?}");
+    assert!(sample.starts_with("PUT"), "{sample:?}");
     drop(stdout);
     // A new TV publishes fresh samples, whose write hits the closed pipe.
     rig.pair("Living Room", "10.0.0.1").await;
@@ -540,7 +541,7 @@ async fn a_reader_closing_the_pipe_ends_watch_quietly() {
         .unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(output.status.success(), "{:?}: {stderr}", output.status);
-    assert_eq!(stderr, "");
+    assert_eq!(stderr, "watching tisvlay/test/** (ctrl-c to stop)\n");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -599,4 +600,22 @@ async fn reload_reports_service_failures_and_absent_services() {
             .unwrap()
             .contains("reload failed")
     );
+
+    // With nothing running there's nothing to reload: reported, and not
+    // a failure.
+    let dir = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_tisvlay"))
+        .arg("--socket")
+        .arg(dir.path().join("daemon.sock"))
+        .arg("--user-socket")
+        .arg(dir.path().join("session.sock"))
+        .args(["--json", "reload"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    for service in ["daemon", "session", "tray"] {
+        assert_eq!(report[service]["status"], "not-running", "{report}");
+    }
 }

@@ -1,6 +1,6 @@
 # Greeter integration generalization
 
-The greeter idle client (`tisvlay-greeter`) — which blanks managed TVs on login-screen idle for OLED burn-in protection — supports KDE's **plasma-login-manager** and **GDM**. The NixOS module enables it by default when either is the active display manager, and the packages ship a GDM unit. This doc records how (and whether) to extend it to other greeters.
+The greeter idle client (`tisvlay-greeter`) — which blanks managed TVs on login-screen idle for OLED burn-in protection — supports KDE's **plasma-login-manager** and **GDM**. The NixOS module enables it by default when either is the active display manager, and the packages ship a unit for each (`tisvlay-greeter.service` for plasma-login, `tisvlay-greeter-gdm.service`). This doc records how (and whether) to extend it to other greeters.
 
 Researched 2026-06-14 against primary sources (compositor git trees, KDE/GNOME GitLab APIs, man pages).
 
@@ -55,7 +55,7 @@ Not a "Wayland whitelist" and not a "systemd-target map" — both mispredict (se
 
 ## Non-NixOS packaging
 
-Detection is portable — `XDG_SESSION_CLASS=greeter` (logind session class) — but it only *labels* the session; there is no portable *injection* convention. Ship static per-greeter integration files (a `systemd --user` drop-in for plasma-login, inert if that greeter is absent) plus a documented greetd command wrapper. What NixOS uniquely adds is eval-time inference (auto-detecting the active greeter to default-enable), not the mechanism.
+Detection is portable — `XDG_SESSION_CLASS=greeter` (logind session class) — but it only *labels* the session; there is no portable *injection* convention. The packages already ship a user unit per supported greeter (plasma-login and GDM); greetd would add a documented command wrapper. What NixOS uniquely adds is eval-time inference (auto-detecting the active greeter to default-enable), not the mechanism.
 
 ## Trigger
 

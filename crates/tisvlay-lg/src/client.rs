@@ -74,9 +74,9 @@ fn is_idempotent_screen_error(error: &str) -> bool {
 }
 
 impl WebOsClient {
-    /// Connect to a TV and register, trying `wss://` first and
-    /// falling back to `ws://`. Used during pairing and for legacy
-    /// configs that haven't yet recorded which scheme the TV speaks.
+    /// The pairing dial: connect and register, trying `wss://` first
+    /// and falling back to `ws://`. Pairing records the scheme that
+    /// answered, which later dials use.
     ///
     /// If `client_key` is provided, attempts to reconnect with
     /// existing pairing. If `None` or the key is invalid, a pairing

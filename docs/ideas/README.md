@@ -10,7 +10,7 @@ Deferred-work index. Each entry is a self-contained spec with rationale, path fo
 - [Richer `DispatchOutcome` return type for screen_on / screen_off](dispatch-outcome-return-type.md)
 - [Idempotent write rpcs via client-minted ids (extend caller re-issue to writes)](idempotent-write-rpcs.md)
 - [Virtual DRM connector for detached TVs](virtual-drm-connector.md)
-- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding, inputattach start limit)](cec-followups.md)
+- [CEC backend follow-ups (relative volume, multi-transport identity, DPMS-mirror over USB-CEC, emulated-screen toggle, manual-entry label, vendor-OUI branding, inputattach start limit, the Pulse-Eight label)](cec-followups.md)
 - [Stable device alias for USB CEC adapters (a udev symlink so configs survive node renumbering)](cec-stable-device-alias.md)
 - [TV-driven PC power and input (what the TV-controls-the-PC plan left unplanned: input-change events, more than one TV, a leave-alone wake value, the EEPROM lever and a driver patch, LG remote keys and pointer)](tv-controls-pc.md)
 - [Wake follow-ups (a dialing wake an off doesn't cancel, a screen intent's in-place wake without `dispatch-failed`, LG's dial-phase resend rate, the in-place failure toast, LG's wait for its first push, a power-on as an in-place wake ends, pushes during an in-place wake, untested hardware paths)](wake-followups.md)

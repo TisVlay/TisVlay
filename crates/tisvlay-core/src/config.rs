@@ -24,7 +24,7 @@ pub enum SessionAction {
     ScreenOn,
     /// Power off the TV.
     PowerOff,
-    /// Power on the TV (Wake-on-LAN).
+    /// Power on the TV, by its transport's wake.
     PowerOn,
 }
 
@@ -240,8 +240,13 @@ impl AutomateWhen {
     }
 }
 
+/// A string that names no [`AutomateWhen`] variant.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown automate_when: {0}")]
+pub struct UnknownAutomateWhen(pub String);
+
 impl std::str::FromStr for AutomateWhen {
-    type Err = String;
+    type Err = UnknownAutomateWhen;
 
     /// Inverse of [`Display`](Self#impl-Display-for-AutomateWhen); the
     /// round-trip test below pins both against the serde shape.
@@ -250,7 +255,7 @@ impl std::str::FromStr for AutomateWhen {
             "always" => Ok(Self::Always),
             "on_primary" => Ok(Self::OnPrimary),
             "off_primary" => Ok(Self::OffPrimary),
-            other => Err(format!("unknown automate_when: {other}")),
+            other => Err(UnknownAutomateWhen(other.to_owned())),
         }
     }
 }
@@ -561,7 +566,7 @@ impl Default for ResolvedSystemProfile {
 /// Profile configuration for session behavior.
 ///
 /// Fields are `Option<T>` to support layered inheritance:
-/// user profile -> system default profile -> hard-coded defaults.
+/// user profile -> default user profile -> built-in defaults.
 ///
 /// Use [`UserProfileConfig::resolve()`] or [`UserProfileConfig::merge_with_base()`]
 /// to produce a [`ResolvedUserProfile`] with concrete values.
@@ -672,7 +677,7 @@ profile_plumbing! {
 /// A fully resolved profile with no optional fields.
 ///
 /// This is the result of merging a [`UserProfileConfig`] chain
-/// (user profile -> system default -> hard-coded defaults).
+/// (user profile -> default user profile -> built-in defaults).
 /// Consumers (session monitor, idle detector) use this type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedUserProfile {

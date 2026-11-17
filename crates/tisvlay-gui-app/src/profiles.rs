@@ -16,7 +16,7 @@
 //! The selection's editor model is rebuilt on every refresh — a select
 //! call, a `*ProfileChanged` signal whose UUID matches the current
 //! selection, or a fresh default-body fetch. Stale-callback protection
-//! lives on the [`ProfileEditorState::system_gen`] / `user_gen`
+//! lives on the [`ProfileEditorState::system    Ok(token.parse()?)gen`] / `user_gen`
 //! counters, bumped on every selection change. Async refresh tasks
 //! capture the value at start and no-op the post-fetch model push when
 //! the counter has drifted.
@@ -909,10 +909,9 @@ pub(crate) async fn seed_layers(
 ) {
     let system_default = daemon
         .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
-        .await
         .unwrap_or_else(SystemProfileBody::full_default);
     let user_default = match session {
-        Some(session) => session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await,
+        Some(session) => session.get_user_profile(DEFAULT_USER_PROFILE_UUID),
         None => None,
     }
     .unwrap_or_else(UserProfileBody::full_default);

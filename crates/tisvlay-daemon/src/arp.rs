@@ -1,6 +1,6 @@
-//! Neighbor-table MAC lookup for discovery enrichment (ported from the
-//! root daemon's netlink helper): SSDP replies and pairing traffic have
-//! just primed the kernel's neighbor table, so a discovered TV's MAC —
+//! Neighbor-table MAC lookup for discovery enrichment: SSDP replies and
+//! pairing traffic have just primed the kernel's neighbor table, so a
+//! discovered TV's MAC —
 //! the Wake-on-LAN prerequisite in the LG vendor config — is one
 //! `RTM_GETNEIGH` dump away. Netlink rather than `/proc/net/arp`: the
 //! packaged unit runs `ProcSubset=pid`, which mounts a `/proc` without

@@ -207,8 +207,8 @@ pub(crate) fn parse_serverinfo(body: &str) -> ServerState {
 /// arm state, yielding the new state and a report to emit only when the
 /// state changes. `Busy` arms; `Free` or an absent process disarms; a
 /// present-but-`Unknown` endpoint keeps the last state so a transient blip
-/// does not flap the source. Emitting only on change keeps needless traffic
-/// off the aggregator channel (its `apply` is idempotent regardless).
+/// does not flap the source. The report marks a change, for the log; the
+/// poll reports the level on every definite tick (see `run`).
 pub(crate) fn decide(armed: bool, observation: Observation) -> (bool, Option<StreamReport>) {
     let target = match observation {
         Observation::Busy => Some(true),
@@ -253,8 +253,13 @@ pub fn spawn(client: StreamClient, probe: Arc<dyn SunshineProbe>) {
     tokio::spawn(run(client, probe));
 }
 
-/// The poll loop: observe, fold into the arm state, emit on change, sleep.
-/// A short interval while the process is present keeps arm latency low in
+/// The poll loop: observe, fold into the arm state, report the level on
+/// every definite observation, sleep. Reporting the level rather than the
+/// change keeps the poll right after the session's eager pull cleared the
+/// source behind its back: the poll's own state still reads armed, so a
+/// change-only report would never re-arm a stream that resumes (the
+/// aggregator's `apply` drops a report that changes nothing). A short
+/// interval while the process is present keeps arm latency low in
 /// the hook-less case; a longer interval while it is absent keeps an idle
 /// box cheap.
 async fn run(client: StreamClient, probe: Arc<dyn SunshineProbe>) {
@@ -263,11 +268,11 @@ async fn run(client: StreamClient, probe: Arc<dyn SunshineProbe>) {
         let observation = probe.observe(POLL_TIMEOUT).await;
         let (next, change) = decide(armed, observation);
         armed = next;
-        if let Some(report) = change {
-            debug!(active = report.active, "sunshine /serverinfo level change");
-            if !client.report(report) {
-                return;
-            }
+        if let Some(change) = change {
+            debug!(active = change.active, "sunshine /serverinfo level change");
+        }
+        if !matches!(observation, Observation::Unknown) && !client.report(report(armed)) {
+            return;
         }
         let interval = match observation {
             Observation::Absent => ABSENT_INTERVAL,

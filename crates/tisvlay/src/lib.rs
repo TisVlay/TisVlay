@@ -23,6 +23,7 @@ use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::{
     Unary, manager, profile, tv, user_profile, user_stream, user_tray, vendors,
 };
+use tisvlay_protocol::payload::StatePayload as _;
 use tisvlay_protocol::{bootstrap, keys, rpc};
 
 pub use desktop::DesktopMapping;
@@ -57,6 +58,32 @@ pub type SystemProfileBody = SystemProfileConfig;
 /// A user profile's body, carried verbatim like
 /// [`SystemProfileBody`].
 pub type UserProfileBody = UserProfileConfig;
+
+/// `samples`, decoded by `decode`, as a stream that owns `subscriber`:
+/// dropping the stream undeclares it, where a forwarding task would keep
+/// it until its next sample, which may never come. Samples are skipped
+/// while the daemon is known to run another release.
+fn owned_stream<S, T, F>(
+    subscriber: S,
+    samples: zenoh::handlers::fifo::RecvStream<'static, zenoh::sample::Sample>,
+    handshake: &Arc<Handshake>,
+    mut decode: F,
+) -> impl futures_core::Stream<Item = T> + use<S, T, F>
+where
+    F: FnMut(&zenoh::sample::Sample) -> Option<T>,
+{
+    use futures_util::StreamExt;
+    let handshake = Arc::clone(handshake);
+    samples.filter_map(move |sample| {
+        let _owner = &subscriber;
+        let item = if handshake.known_mismatch().is_some() {
+            None
+        } else {
+            decode(&sample)
+        };
+        std::future::ready(item)
+    })
+}
 
 /// Terminal pairing outcome, drained from the progress key.
 #[derive(Debug, Clone)]
@@ -93,6 +120,7 @@ pub struct TvStateChange {
 /// the tray settings service's events (liveliness and settings
 /// republish).
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum StateEvent {
     /// A TV's published state changed in the daemon mirror: a TV
     /// appeared, one of its state keys updated, or it was removed (also
@@ -388,14 +416,14 @@ impl DaemonClient {
     /// Whether the daemon's liveliness token is present: a mirror read.
     /// `true` doesn't promise the next rpc succeeds (the daemon may be
     /// stopping, or run another release).
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
@@ -404,7 +432,7 @@ impl DaemonClient {
     /// check settles ([`StateEvent::ReleaseChecked`]). Ungated, so it
     /// reports a mismatched release too. A mirror read; [`Self::version`]
     /// and [`Self::config_path`] ask the daemon instead.
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -412,18 +440,14 @@ impl DaemonClient {
     /// projection, no rpcs: the vendor display rows and the primary
     /// descriptor arrive as published state (`meta/vendor`,
     /// `meta/identity`) like everything else.
-    pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
+    pub fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         self.refuse_known_mismatch()?;
-        let rows: Vec<(Uuid, mirror_row::Row)> = self.mirror.read(|mirror| {
+        Ok(self.mirror.read(|mirror| {
             mirror
                 .tvs()
-                .map(|(id, row)| (*id, mirror_row::Row::from(row)))
+                .map(|(id, row)| mirror_row::tv_info(row, *id, &self.site))
                 .collect()
-        });
-        Ok(rows
-            .into_iter()
-            .map(|(id, row)| row.into_tv_info(id, &self.site))
-            .collect())
+        }))
     }
 
     /// The daemon's release. Ungated, so it reports what's running
@@ -525,7 +549,7 @@ impl DaemonClient {
     /// does.
     pub async fn pairing_progress_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = (Uuid, PairingProgress)> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = (Uuid, PairingProgress)> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
@@ -533,62 +557,37 @@ impl DaemonClient {
             .history(HistoryConfig::default().detect_late_publishers())
             .await
             .map_err(|e| Error::transport("subscribe to pairing progress", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let samples = (*sub).clone().into_stream();
         let site = self.site.clone();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
-                }
-                let Some(tv) = keys::parse_pairing_progress(&site, sample.key_expr().as_str())
-                else {
-                    continue;
-                };
-                let Ok(progress) =
-                    serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes())
-                else {
-                    warn!(%tv, "undecodable pairing progress sample skipped");
-                    continue;
-                };
-                if tx.send((tv, progress)).is_err() {
-                    return;
+        Ok(owned_stream(sub, samples, &self.handshake, move |sample| {
+            let tv = keys::parse_pairing_progress(&site, sample.key_expr().as_str())?;
+            match serde_json::from_slice::<PairingProgress>(&sample.payload().to_bytes()) {
+                Ok(progress) => Some((tv, progress)),
+                Err(e) => {
+                    warn!(%tv, %e, "undecodable pairing progress sample skipped");
+                    None
                 }
             }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+        }))
     }
 
     /// Drain a pairing-progress stream to `attempt`'s terminal phase on
     /// `tv`, reporting its non-terminal phases through `on_progress`.
     /// Other attempts' samples — earlier sessions replayed from the deep
     /// cache — are skipped, so a stale terminal can't end the drain.
+    /// A caller that keeps the stream past the drain passes `&mut` to a
+    /// pinned one.
     pub async fn drain_pair_to_terminal<S>(
         stream: S,
-        tv: Uuid,
-        attempt: Uuid,
-        on_progress: impl FnMut(PairingPhase, &str),
-    ) -> Result<PairTerminal>
-    where
-        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
-    {
-        let mut stream = std::pin::pin!(stream);
-        Self::drain_pair_to_terminal_pinned(stream.as_mut(), tv, attempt, on_progress).await
-    }
-
-    /// Pinned-borrow workhorse for [`Self::drain_pair_to_terminal`] —
-    /// for callers that keep the stream alive across operations (wait
-    /// for `awaiting_tv`, cancel, then drain the remainder).
-    pub async fn drain_pair_to_terminal_pinned<S>(
-        mut stream: std::pin::Pin<&mut S>,
         tv: Uuid,
         attempt: Uuid,
         mut on_progress: impl FnMut(PairingPhase, &str),
     ) -> Result<PairTerminal>
     where
-        S: futures_util::Stream<Item = (Uuid, PairingProgress)>,
+        S: futures_core::Stream<Item = (Uuid, PairingProgress)>,
     {
         use futures_util::StreamExt;
+        let mut stream = std::pin::pin!(stream);
         while let Some((sample_tv, progress)) = stream.as_mut().next().await {
             if sample_tv != tv || progress.attempt != attempt {
                 continue;
@@ -619,31 +618,32 @@ impl DaemonClient {
     pub async fn power_cycle_progress_stream(
         &self,
         tv: Uuid,
-    ) -> Result<impl futures_util::Stream<Item = PowerPhase> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = PowerPhase> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
-            .declare_subscriber(keys::tv_path(&self.site, &tv, "progress/power"))
+            .declare_subscriber(keys::tv_path(
+                &self.site,
+                &tv,
+                tisvlay_protocol::payload::PowerProgress::PATH,
+            ))
             .await
             .map_err(|e| Error::transport("subscribe to power progress", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
+        let samples = (*sub).clone().into_stream();
+        Ok(owned_stream(
+            sub,
+            samples,
+            &self.handshake,
+            move |sample| match serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
+                &sample.payload().to_bytes(),
+            ) {
+                Ok(progress) => Some(progress.phase),
+                Err(e) => {
+                    warn!(%tv, %e, "undecodable power progress sample skipped");
+                    None
                 }
-                let Ok(progress) = serde_json::from_slice::<tisvlay_protocol::payload::PowerProgress>(
-                    &sample.payload().to_bytes(),
-                ) else {
-                    continue;
-                };
-                if tx.send(progress.phase).is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+            },
+        ))
     }
 
     /// Open an open-ended discovery session; it scans on the daemon's
@@ -669,32 +669,26 @@ impl DaemonClient {
     /// release, and silent while it does.
     pub async fn discovery_found_stream(
         &self,
-    ) -> Result<impl futures_util::Stream<Item = DiscoveredTv> + use<>> {
+    ) -> Result<impl futures_core::Stream<Item = DiscoveredTv> + use<>> {
         self.refuse_known_mismatch()?;
         let sub = self
             .session
             .declare_subscriber(keys::discovery_found_wild(&self.site))
             .await
             .map_err(|e| Error::transport("subscribe to discovery findings", e))?;
-        let (tx, rx) = mpsc::unbounded_channel();
-        let handshake = Arc::clone(&self.handshake);
-        tokio::spawn(async move {
-            while let Ok(sample) = sub.recv_async().await {
-                if handshake.known_mismatch().is_some() {
-                    continue;
+        let samples = (*sub).clone().into_stream();
+        Ok(owned_stream(
+            sub,
+            samples,
+            &self.handshake,
+            |sample| match serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes()) {
+                Ok(found) => Some(found),
+                Err(e) => {
+                    warn!(%e, "undecodable discovery finding skipped");
+                    None
                 }
-                let Ok(found) =
-                    serde_json::from_slice::<DiscoveredTv>(&sample.payload().to_bytes())
-                else {
-                    warn!("undecodable discovery finding skipped");
-                    continue;
-                };
-                if tx.send(found).is_err() {
-                    return;
-                }
-            }
-        });
-        Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+            },
+        ))
     }
 
     /// Manual-entry hint: the daemon probes its ARP cache (after the
@@ -715,7 +709,9 @@ impl DaemonClient {
     /// wake with [`Self::power_cycle_progress_stream`]. A power-on over a
     /// live link (a TV reachable in standby) publishes only `failed`, when
     /// the TV stays off, and nothing when an off interrupts it, so a
-    /// follower that hears nothing for 8 seconds has its answer. Rpc, refused
+    /// follower that hears nothing for
+    /// [`IN_PLACE_WAKE_GRACE`](tisvlay_core::IN_PLACE_WAKE_GRACE) has its
+    /// answer. Rpc, refused
     /// with [`ErrorCode::TvNotFound`], [`ErrorCode::NotConnected`] or
     /// [`ErrorCode::WakeNotSupported`] (disconnected, and the transport
     /// can't wake it; see [`TvInfo::supports_wake`]).
@@ -882,8 +878,9 @@ impl DaemonClient {
     /// Patch the TV's config: known top-level keys apply to its settings,
     /// everything else merges into the vendor table. Rpc, refused with
     /// [`ErrorCode::TvNotFound`], [`ErrorCode::InvalidField`] (a value the
-    /// field rejects; see [`Error::invalid_field`]) or
-    /// [`ErrorCode::BadRequest`] (a key of the wrong type).
+    /// field rejects; see [`Error::invalid_field`]),
+    /// [`ErrorCode::ProfileNotFound`] (a `system_profile` naming no profile)
+    /// or [`ErrorCode::BadRequest`] (a key of the wrong type).
     pub async fn update_tv_config(
         &self,
         tv: Uuid,
@@ -895,7 +892,7 @@ impl DaemonClient {
     }
 
     /// A system profile's body, from the mirror.
-    pub async fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
+    pub fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -906,7 +903,7 @@ impl DaemonClient {
     /// Every system profile by id, the reserved default included: a
     /// mirror read. Empty once the daemon is known to run a mismatched
     /// release.
-    pub async fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
+    pub fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
@@ -1055,21 +1052,21 @@ impl SessionClient {
     /// Whether the session service's liveliness token is present: a
     /// mirror read, with the same caveat as
     /// [`DaemonClient::is_available`].
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the session service's
     /// release and state-file path. A mirror read, like
     /// [`DaemonClient::service_info`].
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -1096,7 +1093,7 @@ impl SessionClient {
 
     /// The TV's assigned user-profile uuid, from the mirror; `None` when
     /// it uses the default.
-    pub async fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
+    pub fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1116,7 +1113,7 @@ impl SessionClient {
     /// Every user profile by id, the reserved default included: a mirror
     /// read. Empty once the session service is known to run a
     /// mismatched release.
-    pub async fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
+    pub fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
@@ -1131,7 +1128,7 @@ impl SessionClient {
 
     /// A user profile's body, from the mirror; `None` against a service
     /// on another release.
-    pub async fn get_user_profile(&self, profile: Uuid) -> Option<UserProfileBody> {
+    pub fn get_user_profile(&self, profile: Uuid) -> Option<UserProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1215,7 +1212,7 @@ impl SessionClient {
     /// The stream fact as last mirrored from the cached fact key
     /// — the passive counterpart to [`Self::stream_status`],
     /// updated on every `StreamChanged` event.
-    pub async fn stream_state(&self) -> Option<StreamState> {
+    pub fn stream_state(&self) -> Option<StreamState> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1280,21 +1277,21 @@ impl TrayClient {
 
     /// Whether the tray's liveliness token is present, with the same
     /// caveat as [`DaemonClient::is_available`]. No rpc.
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the tray's release and
     /// settings-file path. A mirror read, like
     /// [`DaemonClient::service_info`].
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -1321,7 +1318,7 @@ impl TrayClient {
     /// updated on each [`StateEvent::TrayNotificationSettingsChanged`].
     /// `None` until the tray first publishes them, while it's down, and
     /// against a tray on another release.
-    pub async fn notification_settings(&self) -> Option<NotificationSettings> {
+    pub fn notification_settings(&self) -> Option<NotificationSettings> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1440,8 +1437,7 @@ const CHECK_RETRY_MAX: Duration = Duration::from_secs(30);
 #[non_exhaustive]
 pub struct StateWatcherConfig {
     /// How often the watcher emits [`StateEvent::FallbackPoll`], a
-    /// safety net for a missed change. Must be nonzero: a zero interval
-    /// panics the watcher's poll task, and no poll fires.
+    /// safety net for a missed change. Zero turns the poll off.
     pub fallback_poll_interval: Duration,
 }
 
@@ -1494,14 +1490,14 @@ impl StateWatcher {
             let session = session.cloned();
             let tray = tray.cloned();
             tokio::spawn(async move {
-                if daemon.is_available().await {
+                if daemon.is_available() {
                     let _ = tx.send(StateEvent::DaemonAppeared);
                 }
                 for event in daemon.handshake.settled_events() {
                     let _ = tx.send(event);
                 }
                 if let Some(session) = session {
-                    if session.is_available().await {
+                    if session.is_available() {
                         let _ = tx.send(StateEvent::SessionAppeared);
                     }
                     for event in session.handshake.settled_events() {
@@ -1509,7 +1505,7 @@ impl StateWatcher {
                     }
                 }
                 if let Some(tray) = tray {
-                    if tray.is_available().await {
+                    if tray.is_available() {
                         let _ = tx.send(StateEvent::TrayAppeared);
                     }
                     for event in tray.handshake.settled_events() {
@@ -1517,6 +1513,9 @@ impl StateWatcher {
                     }
                 }
             });
+        }
+        if config.fallback_poll_interval.is_zero() {
+            return Self { rx };
         }
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(config.fallback_poll_interval);
@@ -1573,94 +1572,75 @@ mod mirror_row {
     use super::*;
     use tisvlay_protocol::payload;
 
-    pub(crate) struct Row {
-        power: Option<payload::Power>,
-        volume: Option<payload::Volume>,
-        link: Option<payload::Link>,
-        input: Option<payload::Input>,
-        backlight: Option<payload::Backlight>,
-        identity: Option<payload::Identity>,
-        meta: Option<payload::Meta>,
-        vendor: Option<payload::VendorRows>,
-    }
-
-    impl From<&mirror::TvRow> for Row {
-        fn from(row: &mirror::TvRow) -> Self {
-            Self {
-                power: row.power.clone(),
-                volume: row.volume.clone(),
-                link: row.link.clone(),
-                input: row.input.clone(),
-                backlight: row.backlight.clone(),
-                identity: row.identity.clone(),
-                meta: row.meta.clone(),
-                vendor: row.vendor.clone(),
-            }
-        }
-    }
-
-    impl Row {
-        pub(crate) fn into_tv_info(self, id: Uuid, site: &str) -> TvInfo {
-            let identity = self
-                .identity
-                .unwrap_or_else(|| payload::Identity::new(String::new(), String::new()));
-            let meta = self.meta.unwrap_or_else(|| payload::Meta::new(false));
-            let caps: Vec<&str> = identity.capabilities.iter().map(String::as_str).collect();
-            let power_state = self.power.as_ref().map(|p| p.state).unwrap_or_default();
-            TvInfo {
-                uuid: id,
-                name: identity.name.clone(),
-                vendor: identity.vendor.clone(),
-                brand: identity
-                    .brand
-                    .clone()
-                    .unwrap_or_else(|| identity.vendor.clone()),
-                capabilities: Capabilities::from_strings(&caps),
-                connected: self.link.as_ref().is_some_and(|l| l.connected),
-                waiting_for: self.link.as_ref().and_then(|l| l.waiting_for),
-                managed: meta.managed,
-                automated: meta.automated,
-                stream_armed: meta.stream_armed,
-                system_profile: meta.system_profile,
-                primary_input: meta.primary_input.unwrap_or_default(),
-                hardware_id: HardwareId {
-                    manufacturer: identity.make.clone(),
-                    model: identity.model.clone(),
-                    serial: identity.serial.clone(),
-                },
-                primary_descriptor: identity.primary.clone().unwrap_or_default(),
-                vendor_config: self
-                    .vendor
-                    .as_ref()
-                    .map(|v| v.config.clone())
-                    .unwrap_or_default(),
-                vendor_info: self
-                    .vendor
-                    .as_ref()
-                    .map(|v| v.diagnostics.clone())
-                    .unwrap_or_default(),
-                desktop: DesktopMapping {
-                    connector: identity.connector.clone().unwrap_or_default(),
-                },
-                path: keys::tv_path(site, &id, ""),
-                power_state,
-                supports_wake: self.link.as_ref().is_some_and(|l| l.supports_wake),
-                is_screen_on: self.power.as_ref().is_some_and(|p| p.is_screen_on),
-                volume: self.volume.as_ref().map(|v| v.level),
-                muted: self.volume.as_ref().map(|v| v.muted),
-                current_input: self.input.as_ref().and_then(|i| i.current.clone()),
-                backlight: self.backlight.as_ref().map(|b| b.level),
-                inputs: self
-                    .input
-                    .as_ref()
-                    .map(|i| {
-                        i.available
-                            .iter()
-                            .map(|entry| (entry.id.clone(), entry.label.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            }
+    /// Project one mirror row, cloning each field it keeps once.
+    pub(crate) fn tv_info(row: &mirror::TvRow, id: Uuid, site: &str) -> TvInfo {
+        let identity = row.identity.as_ref();
+        let meta = row.meta.as_ref();
+        let text = |field: fn(&payload::Identity) -> &str| {
+            identity
+                .map(|identity| field(identity).to_owned())
+                .unwrap_or_default()
+        };
+        let optional = |field: fn(&payload::Identity) -> Option<&String>| {
+            identity.and_then(field).cloned().unwrap_or_default()
+        };
+        let caps: Vec<&str> = identity
+            .map(|identity| identity.capabilities.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        TvInfo {
+            uuid: id,
+            name: text(|identity| &identity.name),
+            vendor: text(|identity| &identity.vendor),
+            brand: identity
+                .map(|identity| identity.brand.as_ref().unwrap_or(&identity.vendor).clone())
+                .unwrap_or_default(),
+            capabilities: Capabilities::from_strings(&caps),
+            connected: row.link.as_ref().is_some_and(|l| l.connected),
+            waiting_for: row.link.as_ref().and_then(|l| l.waiting_for),
+            managed: meta.is_some_and(|m| m.managed),
+            automated: meta.is_some_and(|m| m.automated),
+            stream_armed: meta.is_some_and(|m| m.stream_armed),
+            system_profile: meta.and_then(|m| m.system_profile),
+            primary_input: meta
+                .and_then(|m| m.primary_input.clone())
+                .unwrap_or_default(),
+            hardware_id: HardwareId {
+                manufacturer: identity.and_then(|identity| identity.make.clone()),
+                model: identity.and_then(|identity| identity.model.clone()),
+                serial: identity.and_then(|identity| identity.serial.clone()),
+            },
+            primary_descriptor: optional(|identity| identity.primary.as_ref()),
+            vendor_config: row
+                .vendor
+                .as_ref()
+                .map(|v| v.config.clone())
+                .unwrap_or_default(),
+            vendor_info: row
+                .vendor
+                .as_ref()
+                .map(|v| v.diagnostics.clone())
+                .unwrap_or_default(),
+            desktop: DesktopMapping {
+                connector: optional(|identity| identity.connector.as_ref()),
+            },
+            path: keys::tv_path(site, &id, ""),
+            power_state: row.power.as_ref().map(|p| p.state).unwrap_or_default(),
+            supports_wake: row.link.as_ref().is_some_and(|l| l.supports_wake),
+            is_screen_on: row.power.as_ref().is_some_and(|p| p.is_screen_on),
+            volume: row.volume.as_ref().map(|v| v.level),
+            muted: row.volume.as_ref().map(|v| v.muted),
+            current_input: row.input.as_ref().and_then(|i| i.current.clone()),
+            backlight: row.backlight.as_ref().map(|b| b.level),
+            inputs: row
+                .input
+                .as_ref()
+                .map(|i| {
+                    i.available
+                        .iter()
+                        .map(|entry| (entry.id.clone(), entry.label.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }

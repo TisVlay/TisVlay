@@ -14,7 +14,7 @@ The LG client sends no WebSocket ping, and its reader only answers the TV's. A l
 
 `state/power` keeps the TV's last report while its link is down, so the GUI, tray and CLI can show "on, screen off" for a TV nobody can see. `state/link` says it is down, and the session no longer trusts the panel bit of a disconnected TV, so nothing acts on the stale value.
 
-**Path:** publish the existing `unknown` power value when a drop is unannounced, or have each client grey the last-known state from `state/link`. The first is a value change on an existing key and needs every client checked for how it renders `unknown`; a new value such as "unreachable" would be wire-visible.
+**Path:** publish the existing `unknown` power value when a drop is unannounced, or have each client gray the last-known state from `state/link`. The first is a value change on an existing key and needs every client checked for how it renders `unknown`; a new value such as "unreachable" would be wire-visible.
 
 **Why deferred:** cosmetic once the session's rule landed, and the world itself reads the last report to tell an announced drop from an outage.
 

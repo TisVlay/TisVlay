@@ -2,7 +2,7 @@
 //!
 //! Like every backend, this is a thin metadata trait; the behavior lives
 //! on [`CecConnector`](crate::CecConnector) and
-//! [`CecConnection`](crate::CecConnection).
+//! [`CecConnection`](crate::connection::CecConnection).
 
 use tisvlay_core::{Capabilities, TvBackend};
 
@@ -43,9 +43,8 @@ impl TvBackend for CecBackend {
         // practice. The `switch_input` impl is kept dormant behind this bit.
         // Volume over CEC is relative-only (deferred behind a future
         // capability); backlight / OLED screen-blank aren't CEC concepts.
-        // Declaring neither IPV4 nor IPV6 is load-bearing beyond "not a network
-        // transport": it stops the daemon's manual-entry enrichment from
-        // ARP-probing a `/dev/cecN` path as if it were an IP address.
+        // Neither IPV4 nor IPV6: not a network transport, so the wizard's
+        // manual-entry IP check doesn't apply to a `/dev/cecN` path.
         // REMOTE_POWER: the TV's "power off this device" reaches every
         // connection's monitor. REMOTE_KEYS: an adapter with an RC device
         // can pass the remote's keys to it, and WAKES_PC: a USB adapter can

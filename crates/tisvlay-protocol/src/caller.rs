@@ -97,6 +97,10 @@ impl std::error::Error for RpcError {
 /// Matching-gated rpc caller over one zenoh session, addressing one
 /// site. Queriers are cached per key, so repeat calls skip
 /// declaration and their matching status is already resolved.
+///
+/// The cache is never evicted: a long-lived client keeps a querier for
+/// each verb of each TV it has called, removed TVs included. That's a few
+/// dozen at the fleet sizes TisVlay runs, each cheap.
 #[derive(Debug)]
 pub struct Caller {
     session: Session,
@@ -171,7 +175,12 @@ impl Caller {
 
     /// The cached single-reply querier for `key`.
     async fn querier(&self, key: &str) -> Result<Arc<Querier<'static>>, RpcError> {
-        if let Some(querier) = self.queriers.lock().expect("querier cache lock").get(key) {
+        if let Some(querier) = self
+            .queriers
+            .lock()
+            .expect("no code panics while the querier cache lock is held, so it is never poisoned")
+            .get(key)
+        {
             return Ok(Arc::clone(querier));
         }
         let declared = Arc::new(
@@ -186,7 +195,9 @@ impl Caller {
         Ok(Arc::clone(
             self.queriers
                 .lock()
-                .expect("querier cache lock")
+                .expect(
+                    "no code panics while the querier cache lock is held, so it is never poisoned",
+                )
                 .entry(key.to_string())
                 .or_insert(declared),
         ))
@@ -279,12 +290,13 @@ fn reply_bytes(key: &str, reply: zenoh::query::Reply) -> Result<Vec<u8>, RpcErro
                 Ok(error) => Err(RpcError::Service(error)),
                 // Zenoh's query timeout arrives as a synthetic
                 // ReplyError("Timeout"), not a WireError — keep "service
-                // slow" distinguishable from a genuine service error.
-                Err(_) if String::from_utf8_lossy(&bytes).contains("Timeout") => {
-                    Err(RpcError::Timeout {
-                        key: key.to_string(),
-                    })
-                }
+                // slow" distinguishable from a genuine service error. The
+                // whole payload, so a newer service's refusal that merely
+                // mentions a timeout stays undecodable rather than read as
+                // one.
+                Err(_) if *bytes == *b"Timeout" => Err(RpcError::Timeout {
+                    key: key.to_string(),
+                }),
                 Err(source) => Err(RpcError::Undecodable {
                     key: key.to_string(),
                     source,

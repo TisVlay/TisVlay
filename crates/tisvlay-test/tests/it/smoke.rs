@@ -6,7 +6,8 @@
 //! receives.
 
 use std::time::Duration;
-use tisvlay_test::{PrivateBus, fake_logind::FakeLogind, traced_test};
+use tisvlay_test::{PrivateBus, fake_logind::FakeLogind};
+use tracing_test::traced_test;
 use zbus::MatchRule;
 
 #[tokio::test]

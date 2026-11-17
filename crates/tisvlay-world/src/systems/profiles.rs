@@ -4,7 +4,7 @@ use super::*;
 
 /// Resolve the effective `automate_when` through the profile chain —
 /// the TV's assigned profile, then the editable default, then the
-/// `Always` floor. The gate is profile policy (root parity); there is
+/// `Always` floor. The gate is profile policy; there is
 /// no per-TV storage, and `meta.automate_when` is a read-only
 /// projection of this resolution.
 pub(super) fn resolve_automate_when(
@@ -28,7 +28,7 @@ pub(super) fn resolve_automate_when(
     .unwrap_or_default()
 }
 
-/// The root stack's `Automated` gate: managed AND the resolved
+/// The `Automated` gate: managed AND the resolved
 /// `automate_when` holds against the current input (unknowns get the
 /// benefit of the doubt — input can't be checked in standby).
 pub(super) fn is_automated(
@@ -44,38 +44,18 @@ pub(super) fn is_automated(
 }
 
 /// The TV's assigned profile decides the action; unset fields (and TVs
-/// without a profile) fall back to the stock mapping. The trailing bool
-/// is the resolved `while_streaming` gate — the stock floor carries the
-/// per-event gate honestly (its off-going actions fire while armed, its
-/// wake-ish actions suppress), matching the core resolved defaults.
+/// without a profile) inherit through [`resolve_system_field`]'s chain. The
+/// trailing bool is the resolved `while_streaming` gate; `None` is an
+/// event with no dispatchable action (an explicit or default `none`).
 pub(super) fn resolve_action(
     event: &SystemEvent,
     meta: Option<&payload::Meta>,
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
-    stock: &SystemProfile,
 ) -> Option<(ProfileAction, bool, bool)> {
-    // Per-TV profile field wins outright (explicit `none` suppresses).
-    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
-        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
-        && let Some(body) = profile_body(profile_id, profile_index, bodies)
-        && let Some(action) = profile_event_action(body, event)
-    {
-        return session_action(action);
-    }
-    // Unset fields inherit the *editable* default profile…
-    if let Some(body) = profile_body(
-        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
-        profile_index,
-        bodies,
-    ) && let Some(action) = profile_event_action(body, event)
-    {
-        return session_action(action);
-    }
-    // …and only then the hard-coded stock floor, which carries its own
-    // per-event gate (its off-going actions fire while armed, its wake-ish
-    // actions suppress).
-    stock.0.get(event).copied()
+    session_action(resolve_system_field(meta, profile_index, bodies, |body| {
+        profile_event_action(body, event)
+    }))
 }
 
 /// What [`resolve_system_field`] reads for a managed TV, watched for
@@ -105,28 +85,30 @@ impl SystemFieldInputs<'_, '_> {
     }
 }
 
-/// A system-profile field the stock table doesn't carry (the PC actions,
-/// `remote_keys`), read by `field`: the TV's assigned profile's, else the
-/// editable default's, else the type's default.
-pub(super) fn resolve_system_field<T: Default>(
+/// A system-profile field, read by `field`: the TV's assigned profile's,
+/// else the editable default's, else the built-in default
+/// ([`SystemProfileConfig::full_default`](tisvlay_core::SystemProfileConfig::full_default)),
+/// the floor the `profile/rpc/defaults` projection serves too.
+pub(super) fn resolve_system_field<T>(
     meta: Option<&payload::Meta>,
     profile_index: &ProfileIndex,
     bodies: &Query<&ProfileBody>,
-    field: fn(&tisvlay_core::SystemProfileConfig) -> Option<T>,
+    field: impl Fn(&tisvlay_core::SystemProfileConfig) -> Option<T>,
 ) -> T {
-    if let Some(profile_id) = meta.and_then(|m| m.system_profile)
-        && profile_id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID
-        && let Some(action) = profile_body(profile_id, profile_index, bodies).and_then(field)
-    {
-        return action;
-    }
-    profile_body(
-        tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
-        profile_index,
-        bodies,
-    )
-    .and_then(field)
-    .unwrap_or_default()
+    meta.and_then(|m| m.system_profile)
+        .filter(|&id| id != tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID)
+        .and_then(|id| profile_body(id, profile_index, bodies))
+        .and_then(&field)
+        .or_else(|| {
+            profile_body(
+                tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
+                profile_index,
+                bodies,
+            )
+            .and_then(&field)
+        })
+        .or_else(|| field(&tisvlay_core::SystemProfileConfig::full_default()))
+        .expect("the built-in default sets every profile field")
 }
 
 /// Look up a system-profile body by uuid through the profile index.

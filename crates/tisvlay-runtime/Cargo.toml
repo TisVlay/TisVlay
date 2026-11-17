@@ -33,7 +33,7 @@ wayland-protocols = { workspace = true, optional = true }
 # Interruptible poll over the wayland fd + a stop pipe, so the idle watch can be
 # torn down and re-registered on a timeout change. The same crate (and the same
 # `poll`) wayland-backend itself uses to read events.
-rustix = { version = "1.1", features = ["event", "pipe"], optional = true }
+rustix = { workspace = true, features = ["event", "pipe"], optional = true }
 
 # `fs`: crash-safe atomic file replacement for the services' state files,
 # and TOML writes that keep a hand edit's comments and layout
@@ -42,8 +42,8 @@ toml = { workspace = true, optional = true }
 toml_edit = { workspace = true, optional = true }
 
 # `client`: the GUI's and tray's shared helpers (dispatch coalescing,
-# optimistic-state reconciliation, deduplicated refreshes, the
-# profile-reference projection)
+# optimistic-state reconciliation, the profile-reference
+# projection)
 tisvlay-core = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }

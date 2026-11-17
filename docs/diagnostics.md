@@ -23,7 +23,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
   },
   "runtime": {
     "bus": "user",
-    "desktop": "KDE",
+    "desktop": "kde",
     "session_type": "wayland",
     "locale": "en_US.UTF-8",
     "kernel": "6.18.24",
@@ -64,7 +64,7 @@ The renderer lives in [`crates/tisvlay-gui-app/src/diagnostic.rs`](../crates/tis
 | `runtime.os_id` | `os_info::get().os_type()` lowercased to match `/etc/os-release ID=` convention |
 | `runtime.os_version` | `os_info::get().version()` (see caveats — `Version::Semantic` normalizes the raw string) |
 | `tvs.configured` | TV model row count |
-| `tvs.connected` | filter on `power == "on" \|\| connected` |
+| `tvs.connected` | count of TVs whose link is up (`TvSnap.connected`) |
 | `tvs.by_vendor` | rollup of TV model `vendor_id`; empty vendors skipped |
 | `vendors_supported` | the cached `manager/vendors` catalog, sorted alphabetically for stable diffs |
 

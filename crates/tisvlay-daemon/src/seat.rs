@@ -7,7 +7,7 @@
 //! of sessions with `Active=yes`, because seatless sessions self-report
 //! active (a plain SSH shell reads `Remote=yes Type=tty Active=yes`). The
 //! active session qualifies only as a human desktop login: `Class=user`
-//! (excludes the greeter session, which Workstream A's group entry
+//! (excludes the greeter session, which the greeter-group ACL entry
 //! covers), `Type` x11/wayland (excludes a bare foreground VT), and not
 //! `Remote`. The qualifying uids across all seats become named-user ACL
 //! entries via [`acl::reconcile`].
@@ -29,6 +29,7 @@ use tracing::{debug, warn};
 use zbus::zvariant::OwnedObjectPath;
 
 use crate::acl::{self, GreeterAccess};
+use crate::supervise::LossLatch;
 
 #[zbus::proxy(
     interface = "org.freedesktop.login1.Manager",
@@ -85,6 +86,9 @@ trait SeatSession {
 /// itself against logind periodically even when no event arrives.
 const RESYNC_PERIOD: Duration = Duration::from_secs(300);
 
+/// How long a lost seat watch waits before reconnecting.
+const RETRY_DELAY: Duration = Duration::from_secs(30);
+
 /// Supervised entry: run the seat watch over its own system-bus
 /// connection, reconnecting with a fixed delay — a dead watch would leave
 /// a stale user grant standing, so it must not stay dead on a bus blip.
@@ -94,22 +98,19 @@ const RESYNC_PERIOD: Duration = Duration::from_secs(300);
 /// instead of dying silently behind a warning spent at boot.
 pub(crate) fn spawn(socket: PathBuf, greeter: GreeterAccess) {
     tokio::spawn(async move {
-        let mut warned = false;
+        let mut latch = LossLatch::default();
         loop {
             let started = tokio::time::Instant::now();
             let outcome = match zbus::Connection::system().await {
                 Ok(connection) => watch_seats(connection, &socket, &greeter, RESYNC_PERIOD).await,
                 Err(e) => Err(e),
             };
-            if started.elapsed() > Duration::from_secs(60) {
-                warned = false;
-            }
             if let Err(e) = outcome
-                && !std::mem::replace(&mut warned, true)
+                && latch.should_warn(started.elapsed())
             {
                 warn!(%e, "seat-access watch lost; retrying");
             }
-            tokio::time::sleep(Duration::from_secs(30)).await;
+            tokio::time::sleep(RETRY_DELAY).await;
         }
     });
 }
@@ -152,13 +153,13 @@ async fn watch_seats(
             tokio::select! {
                 signal = seat_new.next() => {
                     if signal.is_none() {
-                        return Err(zbus::Error::InvalidReply);
+                        return Err(zbus::Error::Failure("logind's seat signals ended".into()));
                     }
                     break;
                 }
                 signal = seat_removed.next() => {
                     if signal.is_none() {
-                        return Err(zbus::Error::InvalidReply);
+                        return Err(zbus::Error::Failure("logind's seat signals ended".into()));
                     }
                     break;
                 }

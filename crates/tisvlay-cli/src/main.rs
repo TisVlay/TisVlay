@@ -128,31 +128,47 @@ async fn run(cli: Cli) -> Result<()> {
     if matches!(cli.command, Command::EnableAccess) {
         return enable_access(&socket);
     }
-    let session = open_client(&socket).await?;
     let site = &cli.site;
-    let caller = Caller::new(session.clone(), site.as_str());
     let json_out = cli.json;
+    // The verbs that work without the daemon run before its socket opens:
+    // `reload` reports a stopped daemon instead of failing, and the
+    // session-only verbs (the Sunshine stream hook among them) don't need
+    // it at all. Each checks the releases of the services it talks to.
+    let command = match cli.command {
+        Command::Reload => {
+            let daemon = open_client(&socket)
+                .await
+                .ok()
+                .map(|session| Caller::new(session, site.as_str()));
+            return reload(daemon.as_ref(), cli.user_socket, site, json_out).await;
+        }
+        Command::Profile(ProfileScope::User(cmd)) => {
+            let (user, user_caller) = open_user(cli.user_socket, site).await?;
+            return user_profile_cmd(&user, &user_caller, site, cmd, json_out).await;
+        }
+        Command::Stream(cmd) => {
+            let (_user, user_caller) = open_user(cli.user_socket, site).await?;
+            return stream_cmd(&user_caller, cmd, json_out).await;
+        }
+        command => command,
+    };
+    let session = open_client(&socket).await?;
+    let caller = Caller::new(session.clone(), site.as_str());
     // Commands that send the daemon rpcs check its release first; `status`
-    // reports it, `watch` is a passive view, the session-only commands
-    // check the session service instead, and `reload` checks each service
-    // it reloads. `user-profile` talks to both, so it checks both.
-    if !matches!(
-        cli.command,
-        Command::Status
-            | Command::Watch
-            | Command::Profile(ProfileScope::User(_))
-            | Command::Stream(_)
-            | Command::Reload
-    ) {
+    // reports it and `watch` is a passive view. `user-profile` talks to
+    // both services, so it checks both.
+    if !matches!(command, Command::Status | Command::Watch) {
         check_release::<manager::Info>(&caller, "daemon").await?;
     }
-    match cli.command {
-        // Handled above, before the client opens (needs no connection).
-        Command::EnableAccess => unreachable!(),
+    match command {
+        // Handled above, before the daemon's socket opens.
+        Command::EnableAccess
+        | Command::Reload
+        | Command::Profile(ProfileScope::User(_))
+        | Command::Stream(_) => unreachable!(),
         // Dispatched by `main`, before any runtime exists.
         Command::Service(_) => unreachable!(),
         Command::Status => status(&session, &caller, site, &socket, json_out).await,
-        Command::Reload => reload(&caller, cli.user_socket, site, json_out).await,
         Command::List => list(&session, &caller, site, json_out).await,
         Command::Watch => watch(&session, site).await,
         Command::Discover {
@@ -225,14 +241,6 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Profile(ProfileScope::System(cmd)) => {
             profile_cmd(&session, &caller, site, cmd, json_out).await
-        }
-        Command::Profile(ProfileScope::User(cmd)) => {
-            let (user, user_caller) = open_user(cli.user_socket, site).await?;
-            user_profile_cmd(&user, &user_caller, site, cmd, json_out).await
-        }
-        Command::Stream(cmd) => {
-            let (_user, user_caller) = open_user(cli.user_socket, site).await?;
-            stream_cmd(&user_caller, cmd, json_out).await
         }
     }
 }

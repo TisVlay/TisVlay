@@ -108,7 +108,7 @@ pub(crate) struct MockState {
     /// `Ok` without mutating state. Set via
     /// [`MockHandle::set_screen_off_noop`](crate::handle::MockHandle::set_screen_off_noop)
     /// to model firmware that returns Ok on the wire but doesn't
-    /// blank the panel. Needed for V2's reliable-`screen_off`
+    /// blank the panel. Needed for the reliable `screen_off`
     /// verify-retry tests, mirroring the `screen_on_noop` knob.
     pub(crate) screen_off_noop: std::collections::HashSet<String>,
 
@@ -162,9 +162,8 @@ pub(crate) struct MockState {
     /// recent remote-off — the daemon's `power_on` succeeds at the
     /// WS level (a new `MockConnection` is created) but the LG
     /// firmware reports a wake-preflight substate that never
-    /// transitions to `Active`. Needed to cover the
-    /// `screen_off`-post-wake-settle graceful-fallback branch in
-    /// the daemon's reliable screen-dispatch tier.
+    /// transitions to `Active`: a TV that wakes into a wake-needy
+    /// substate, for the verify and escalation tests.
     pub(crate) initial_power_state_overrides: HashMap<String, PowerState>,
 
     /// Per-address call counter for `MockConnection::screen_on`

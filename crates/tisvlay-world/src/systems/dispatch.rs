@@ -471,13 +471,8 @@ pub(super) fn publish_dispatch_failed(
     clippy::type_complexity,
     reason = "bevy system: its Query types spell out the components it reads"
 )]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "a bevy system: its parameters are its declared data access; the groups other systems share are already SystemParam structs"
-)]
 pub(super) fn dispatch_system_events(
     mut reader: MessageReader<InEvent>,
-    profile: Res<SystemProfile>,
     mut commands: Commands,
     clock: Res<Clock>,
     q: Query<
@@ -516,13 +511,9 @@ pub(super) fn dispatch_system_events(
                 tracing::debug!(tv = %id.0, ?event, "automation gated off");
                 continue;
             }
-            let Some((action, restore, while_streaming)) = resolve_action(
-                event,
-                meta.map(|meta| &meta.0),
-                &profile_index,
-                &bodies,
-                &profile,
-            ) else {
+            let Some((action, restore, while_streaming)) =
+                resolve_action(event, meta.map(|meta| &meta.0), &profile_index, &bodies)
+            else {
                 tracing::debug!(tv = %id.0, ?event, "no action for system event");
                 continue;
             };

@@ -67,8 +67,8 @@ trait Login1Session {
     #[zbus(property)]
     fn remote_host(&self) -> zbus::Result<String>;
 
-    /// The session's `Type`: `x11`/`wayland`/`mir` for graphical logins,
-    /// `tty`/`unspecified` otherwise.
+    /// The session's `Type`: `x11` or `wayland` for the graphical logins
+    /// this detector admits, `tty`, `mir` or `unspecified` otherwise.
     #[zbus(property, name = "Type")]
     fn session_type(&self) -> zbus::Result<String>;
 
@@ -97,9 +97,8 @@ pub(crate) struct SessionInfo {
 /// Whether a session `Type` is a graphical (remote-desktop) login. Plain
 /// SSH shells also mint `Remote=yes` sessions but are `Type=tty`; the
 /// graphical type is what distinguishes a remote *desktop* from a remote
-/// shell, and only a desktop drives the outputs this arms against. Shared
-/// with the lock watcher, which wants the graphical seat session too.
-pub(crate) fn is_graphical(session_type: &str) -> bool {
+/// shell, and only a desktop drives the outputs this arms against.
+fn is_graphical(session_type: &str) -> bool {
     matches!(session_type, "x11" | "wayland")
 }
 
@@ -111,14 +110,14 @@ pub(crate) fn is_own_remote(info: &SessionInfo, own_uid: u32) -> bool {
     info.remote && info.uid == own_uid && is_graphical(&info.session_type)
 }
 
-/// The source detail for a qualifying session: the remote host when the
-/// session names one, else the session id (always present) so the source
-/// is still identifiable.
+/// The source detail for a qualifying session: its id, which keeps two
+/// sessions from one host apart (the first to end mustn't clear the
+/// other), led by the remote host when the session names one.
 pub(crate) fn detail_for(info: &SessionInfo) -> String {
     if info.remote_host.is_empty() {
         format!("session {}", info.id)
     } else {
-        info.remote_host.clone()
+        format!("{} (session {})", info.remote_host, info.id)
     }
 }
 
@@ -150,8 +149,14 @@ pub fn spawn(client: StreamClient) {
 /// with no cross-process TTL to cover it.
 async fn run(client: StreamClient) {
     let mut backoff = Backoff::default();
+    // Arm-time detail per session id: `SessionRemoved` cannot read the
+    // gone object's properties, and the arm detail carries the remote
+    // host, so the removal must clear by the *exact* detail the arm used.
+    // Kept across reconnects, so a session that ended while the bus was
+    // down is cleared by the next hydration.
+    let mut armed_detail: HashMap<String, String> = HashMap::new();
     loop {
-        match watch(&client).await {
+        match watch(&client, &mut armed_detail).await {
             Ok(()) => {
                 debug!("logind detector: connection ended; reconnecting");
                 backoff.reset();
@@ -163,26 +168,32 @@ async fn run(client: StreamClient) {
     }
 }
 
-/// One watch session: hydrate the live sessions, then follow
-/// `SessionNew`/`SessionRemoved` until either stream ends.
-async fn watch(client: &StreamClient) -> Result<(), Fault> {
+/// One watch session: hydrate the live sessions, clearing the ones armed
+/// before that ended meanwhile, then follow `SessionNew`/`SessionRemoved`
+/// until either stream ends.
+async fn watch(
+    client: &StreamClient,
+    armed_detail: &mut HashMap<String, String>,
+) -> Result<(), Fault> {
     let own_uid = own_uid();
     let connection = zbus::Connection::system().await?;
     let manager = Login1ManagerProxy::new(&connection).await?;
     let mut new_stream = manager.receive_session_new().await?;
     let mut gone_stream = manager.receive_session_removed().await?;
 
-    // Arm-time detail per session id: `SessionRemoved` cannot read the
-    // gone object's properties, and the arm detail prefers the remote host
-    // over the id, so the removal must clear by the *exact* detail the arm
-    // used — reconstructing a bare `session <id>` key would leave a
-    // host-bearing source armed forever. Rebuilt each connection; the
-    // hydration below re-populates it after a reconnect.
-    let mut armed_detail: HashMap<String, String> = HashMap::new();
-
     // Hydrate: a session that predates this service (a restart inside a
-    // live RDP session) is re-armed from the current list.
-    for (id, uid, _user, _seat, path) in manager.list_sessions().await.unwrap_or_default() {
+    // live RDP session) is re-armed from the current list. A failed list
+    // reconnects rather than reading as no sessions.
+    let sessions = manager.list_sessions().await?;
+    let ended: Vec<String> = armed_detail
+        .keys()
+        .filter(|id| !sessions.iter().any(|(live, ..)| live == *id))
+        .cloned()
+        .collect();
+    for id in ended {
+        emit(client, clear_for(armed_detail, &id))?;
+    }
+    for (id, uid, _user, _seat, path) in sessions {
         if let Some(info) = read_session(&connection, &id, uid, &path).await
             && let Some(report) = report_for(&info, own_uid, true)
         {
@@ -209,7 +220,7 @@ async fn watch(client: &StreamClient) -> Result<(), Fault> {
             signal = gone_stream.next() => {
                 let Some(signal) = signal else { return Ok(()) };
                 let Ok(args) = signal.args() else { continue };
-                emit(client, clear_for(&mut armed_detail, args.id()))?;
+                emit(client, clear_for(armed_detail, args.id()))?;
             }
         }
     }
@@ -337,8 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn detail_prefers_remote_host_then_falls_back_to_id() {
-        assert_eq!(detail_for(&info(1000, true, "10.0.0.5")), "10.0.0.5");
+    fn detail_names_the_session_led_by_its_host() {
+        assert_eq!(
+            detail_for(&info(1000, true, "10.0.0.5")),
+            "10.0.0.5 (session 7)"
+        );
         // No host recorded: the session id keeps the source identifiable.
         assert_eq!(detail_for(&info(1000, true, "")), "session 7");
     }
@@ -348,7 +362,7 @@ mod tests {
         // A qualifying session yields an attributed active report.
         let report = report_for(&info(1000, true, "host.lan"), 1000, true).unwrap();
         assert_eq!(report.kind, StreamSourceKind::Logind);
-        assert_eq!(report.detail, "host.lan");
+        assert_eq!(report.detail, "host.lan (session 7)");
         assert!(report.active);
         assert!(!report.provisional, "logind sources always arm");
         // The disarm edge keeps the same detail so it clears the match.
@@ -372,7 +386,7 @@ mod tests {
     fn removal_clears_by_the_cached_arm_detail() {
         let info = info(1000, true, "10.0.0.5"); // id "7"
         let report = report_for(&info, 1000, true).unwrap();
-        assert_eq!(report.detail, "10.0.0.5");
+        assert_eq!(report.detail, "10.0.0.5 (session 7)");
 
         let mut armed_detail = HashMap::new();
         armed_detail.insert(info.id.clone(), report.detail.clone());

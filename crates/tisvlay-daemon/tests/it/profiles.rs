@@ -433,6 +433,14 @@ async fn discovery_session_streams_findings_until_stopped() {
         .expect_err("unknown vendor must fail");
     assert_eq!(refusal(&err).code, ErrorCode::UnknownVendor);
 
+    // Findings are plain puts on the session's found/* keys, repeated
+    // every scan round — a subscriber declared first sees new TVs as they
+    // appear (and keeps the session alive: it ends once nothing listens).
+    let sub = w
+        .client
+        .declare_subscriber(keys::discovery_found_wild(&w.site))
+        .await
+        .unwrap();
     let ok = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "mock" })))
         .await
         .expect("start ok");
@@ -442,13 +450,6 @@ async fn discovery_session_streams_findings_until_stopped() {
     let alive_key = keys::alive_discovery(&w.site, &session);
     wait_liveliness(&w.client, &alive_key, true).await;
 
-    // Findings are plain puts on the session's found/* keys, repeated
-    // every scan round — a subscriber sees new TVs as they appear.
-    let sub = w
-        .client
-        .declare_subscriber(format!("tisvlay/{}/discovery/{}/found/*", w.site, session))
-        .await
-        .unwrap();
     w.handle
         .publish_tv(DiscoveredTv::new("tv-d", "Delta", "mock://d", "mock"));
     // CEC-shaped finding id: a device path. The publish key must
@@ -484,6 +485,26 @@ async fn discovery_session_streams_findings_until_stopped() {
         .await
         .expect_err("second stop must fail");
     assert_eq!(refusal(&err).code, ErrorCode::DiscoveryNotFound);
+}
+
+/// A session whose caller went away without stopping it (a crashed GUI,
+/// a killed CLI) ends once nothing subscribes to its findings.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_discovery_session_nobody_listens_to_ends() {
+    let w = wire().await;
+    let sub = w
+        .client
+        .declare_subscriber(keys::discovery_found_wild(&w.site))
+        .await
+        .unwrap();
+    let ok = call::<manager::DiscoverStart>(&w.caller, &(), &body(json!({ "vendor": "mock" })))
+        .await
+        .expect("start ok");
+    let alive_key = keys::alive_discovery(&w.site, &ok.session);
+    wait_liveliness(&w.client, &alive_key, true).await;
+
+    drop(sub);
+    wait_liveliness(&w.client, &alive_key, false).await;
 }
 
 /// Poll the liveliness state of `key` until it matches `want`.

@@ -64,11 +64,11 @@ fn named(name: &str) -> Value {
 }
 
 async fn system_profile(daemon: &DaemonClient, id: Uuid) -> Option<String> {
-    daemon.get_system_profile(id).await.map(|body| body.name)
+    daemon.get_system_profile(id).map(|body| body.name)
 }
 
 async fn user_profile(session: &SessionClient, id: Uuid) -> Option<String> {
-    session.get_user_profile(id).await.map(|body| body.name)
+    session.get_user_profile(id).map(|body| body.name)
 }
 
 /// Cut the relay, wait until `down` holds, then restore it.
@@ -115,7 +115,7 @@ async fn daemon_mirror_survives_a_cut_link() {
     })
     .await;
 
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
     eventually("the profile never came back", async || {
         system_profile(client, profile).await.as_deref() == Some("Kept")
     })
@@ -137,7 +137,7 @@ async fn daemon_mirror_survives_a_stalled_then_cut_link() {
     rig.sockets.relay.stall();
     rig.fake.put(&key, &named("During")).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
     eventually("the change made while stalled never arrived", async || {
         system_profile(client, profile).await.as_deref() == Some("During")
     })
@@ -161,7 +161,7 @@ async fn daemon_mirror_replaces_a_restarted_daemon() {
 
     fake.stop().await;
     eventually("the daemon never went away", async || {
-        !client.is_available().await
+        !client.is_available()
     })
     .await;
     let mut fake = FakeService::start(&sockets.service, Family::Daemon, VERSION).await;
@@ -187,13 +187,13 @@ async fn daemon_mirror_forgets_a_profile_deleted_while_down() {
         .await;
     let client = &rig.client;
     eventually("the profiles never hydrated", async || {
-        client.list_system_profile_bodies().await.len() == 2
+        client.list_system_profile_bodies().len() == 2
     })
     .await;
 
     rig.sockets.relay.cut();
     eventually("the daemon never went away", async || {
-        !client.is_available().await
+        !client.is_available()
     })
     .await;
     rig.fake.delete(&key).await;
@@ -229,7 +229,7 @@ async fn daemon_mirror_follows_a_profile_recreated_under_its_key() {
     })
     .await;
 
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
     eventually("the re-created profile never came back", async || {
         system_profile(client, profile).await.as_deref() == Some("Second")
     })
@@ -295,16 +295,11 @@ async fn daemon_mirror_shows_a_tv_only_with_its_identity() {
         .await;
     let client = &rig.client;
     eventually("the whole TV never hydrated", async || {
-        client
-            .list_tvs()
-            .await
-            .unwrap()
-            .iter()
-            .any(|tv| tv.uuid == whole)
+        client.list_tvs().unwrap().iter().any(|tv| tv.uuid == whole)
     })
     .await;
     tokio::time::sleep(Duration::from_millis(500)).await;
-    let tvs = client.list_tvs().await.unwrap();
+    let tvs = client.list_tvs().unwrap();
     assert!(
         tvs.iter().all(|tv| tv.uuid != partial),
         "a TV without its identity made a row: {tvs:?}"
@@ -340,22 +335,18 @@ async fn daemon_mirror_is_hydrated_once_the_listed_keys_arrive() {
     let client = &rig.client;
     let mut watcher = StateWatcher::new(client, None, None, StateWatcherConfig::default());
     for cut in 1..=2 {
-        cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
-        assert!(
-            !client.is_hydrated().await,
-            "hydrated while down, cut {cut}"
-        );
+        cut_while(&rig.sockets.relay, async || !client.is_available()).await;
+        assert!(!client.is_hydrated(), "hydrated while down, cut {cut}");
         hydrated(&mut watcher, Service::Daemon).await;
-        assert!(client.is_hydrated().await, "cut {cut}");
+        assert!(client.is_hydrated(), "cut {cut}");
         assert_eq!(
-            client.list_system_profile_bodies().await.len(),
+            client.list_system_profile_bodies().len(),
             profiles.len(),
             "a listed profile is missing once hydrated, cut {cut}"
         );
         assert!(
             client
                 .list_tvs()
-                .await
                 .unwrap()
                 .iter()
                 .any(|info| info.uuid == tv),
@@ -372,13 +363,10 @@ async fn hydration_ends_at_the_deadline_without_a_listed_key() {
     rig.fake
         .list_unpublished(&keys::profile_system(SITE, &Uuid::from_u128(1)));
     let client = &rig.client;
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
-    eventually("the daemon never came back", async || {
-        client.is_available().await
-    })
-    .await;
-    assert!(!client.is_hydrated().await, "a listed key is missing");
-    eventually("hydration never ended", async || client.is_hydrated().await).await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
+    eventually("the daemon never came back", async || client.is_available()).await;
+    assert!(!client.is_hydrated(), "a listed key is missing");
+    eventually("hydration never ended", async || client.is_hydrated()).await;
 }
 
 /// The session's mirror hydrates the same way.
@@ -391,11 +379,8 @@ async fn session_mirror_is_hydrated_once_the_listed_keys_arrive() {
         .await;
     let client = &rig.client;
     // The cut clears `is_hydrated`, so this waits for the next lifetime.
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
-    eventually("the session never hydrated", async || {
-        client.is_hydrated().await
-    })
-    .await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
+    eventually("the session never hydrated", async || client.is_hydrated()).await;
     assert_eq!(
         user_profile(client, profile).await.as_deref(),
         Some("Listed")
@@ -449,9 +434,9 @@ async fn session_mirror_survives_a_cut_link() {
     })
     .await;
 
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
     eventually("the session never came back", async || {
-        client.is_available().await
+        client.is_available()
     })
     .await;
     eventually("the profile never came back", async || {
@@ -475,7 +460,7 @@ async fn session_mirror_clears_while_down() {
 
     rig.sockets.relay.cut();
     eventually("the session never went away", async || {
-        !client.is_available().await
+        !client.is_available()
     })
     .await;
     assert_eq!(user_profile(client, profile).await, None);
@@ -492,19 +477,19 @@ async fn session_mirror_forgets_a_profile_deleted_while_down() {
         .await;
     let client = &rig.client;
     eventually("the profiles never hydrated", async || {
-        client.list_user_profile_bodies().await.len() == 2
+        client.list_user_profile_bodies().len() == 2
     })
     .await;
 
     rig.sockets.relay.cut();
     eventually("the session never went away", async || {
-        !client.is_available().await
+        !client.is_available()
     })
     .await;
     rig.fake.delete(&key).await;
     rig.sockets.relay.restore();
     eventually("the session never came back", async || {
-        client.is_available().await
+        client.is_available()
     })
     .await;
     eventually("the deleted profile stayed", async || {
@@ -530,7 +515,7 @@ async fn session_mirror_replaces_a_restarted_session() {
 
     fake.stop().await;
     eventually("the session never went away", async || {
-        !client.is_available().await
+        !client.is_available()
     })
     .await;
     let mut fake = FakeService::start(&sockets.service, Family::Session, VERSION).await;
@@ -602,18 +587,14 @@ async fn an_assignment_for_an_unknown_tv_makes_no_row() {
         .await;
     let (tvs, users) = (&daemon.client, &session.client);
     eventually("the assignment never hydrated", async || {
-        users.get_tv_user_profile(unknown).await == Some(profile)
+        users.get_tv_user_profile(unknown) == Some(profile)
     })
     .await;
     eventually("the known TV never hydrated", async || {
-        tvs.list_tvs()
-            .await
-            .unwrap()
-            .iter()
-            .any(|tv| tv.uuid == known)
+        tvs.list_tvs().unwrap().iter().any(|tv| tv.uuid == known)
     })
     .await;
-    let rows = tvs.list_tvs().await.unwrap();
+    let rows = tvs.list_tvs().unwrap();
     assert!(
         rows.iter().all(|tv| tv.uuid != unknown),
         "an assignment made a TV row: {rows:?}"
@@ -640,7 +621,7 @@ async fn tray_rig() -> TrayRig {
         .await
         .unwrap();
     eventually("the settings never hydrated", async || {
-        client.notification_settings().await.is_some()
+        client.notification_settings().is_some()
     })
     .await;
     TrayRig {
@@ -654,13 +635,10 @@ async fn tray_rig() -> TrayRig {
 async fn tray_mirror_survives_a_cut_link() {
     let rig = tray_rig().await;
     let client = &rig.client;
-    cut_while(&rig.sockets.relay, async || !client.is_available().await).await;
-    eventually("the tray never came back", async || {
-        client.is_available().await
-    })
-    .await;
+    cut_while(&rig.sockets.relay, async || !client.is_available()).await;
+    eventually("the tray never came back", async || client.is_available()).await;
     eventually("the settings never came back", async || {
-        client.notification_settings().await.is_some()
+        client.notification_settings().is_some()
     })
     .await;
 }
@@ -673,11 +651,8 @@ async fn tray_mirror_clears_while_down() {
         client,
     } = tray_rig().await;
     sockets.relay.cut();
-    eventually("the tray never went away", async || {
-        !client.is_available().await
-    })
-    .await;
-    assert_eq!(client.notification_settings().await, None);
+    eventually("the tray never went away", async || !client.is_available()).await;
+    assert_eq!(client.notification_settings(), None);
     fake.stop().await;
 }
 
@@ -723,7 +698,7 @@ async fn services_rig() -> ServicesRig {
     let daemon = DaemonClient::connect(&system_socket, SITE).await.unwrap();
     let session = SessionClient::connect(&user_socket, SITE).await.unwrap();
     eventually("the services never came up", async || {
-        daemon.is_available().await && session.is_available().await
+        daemon.is_available() && session.is_available()
     })
     .await;
     ServicesRig {
@@ -748,7 +723,6 @@ async fn pair(daemon: &DaemonClient, address: &str) -> Uuid {
     eventually("the TV never connected", async || {
         daemon
             .list_tvs()
-            .await
             .unwrap()
             .iter()
             .any(|info| info.uuid == tv && info.connected)
@@ -760,7 +734,6 @@ async fn pair(daemon: &DaemonClient, address: &str) -> Uuid {
 async fn armed(daemon: &DaemonClient, tv: Uuid) -> bool {
     daemon
         .list_tvs()
-        .await
         .unwrap()
         .iter()
         .any(|info| info.uuid == tv && info.stream_armed)
@@ -794,7 +767,6 @@ async fn the_session_forgets_a_tv_removed_while_its_link_was_down() {
     let armed_set = async || {
         session
             .stream_state()
-            .await
             .map(|state| state.armed)
             .unwrap_or_default()
     };

@@ -473,7 +473,7 @@ pub mod vendors {
 
     /// A decoded vendor-catalog rpc.
     #[derive(Debug)]
-    pub enum Call {
+    pub(crate) enum Call {
         /// [`Catalog`]'s request; it takes no body.
         Catalog(()),
         /// [`Schema`]'s request.

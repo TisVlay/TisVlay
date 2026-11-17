@@ -237,7 +237,6 @@ pub struct Meta {
     /// from the session service). While set, the world honors the
     /// system profile's while-streaming overrides on DPMS-on/resume; a
     /// read-only projection for clients to surface the state.
-    #[serde(default)]
     pub stream_armed: bool,
 }
 
@@ -264,7 +263,7 @@ impl StatePayload for Meta {
 }
 
 /// Every per-TV cached-state key tail — the DELETE sweep on TV removal.
-pub const TV_PATHS: [&str; 8] = [
+pub const TV_PATHS: [&str; 9] = [
     Power::PATH,
     Volume::PATH,
     Link::PATH,
@@ -273,10 +272,8 @@ pub const TV_PATHS: [&str; 8] = [
     Identity::PATH,
     Meta::PATH,
     VendorRows::PATH,
+    PowerProgress::PATH,
 ];
-
-/// Non-payload per-TV keys included in the removal sweep.
-pub const TV_EXTRA_PATHS: [&str; 1] = ["progress/power"];
 
 /// Pairing progress on `tisvlay/<site>/pairing/<uuid>/progress` — the
 /// redacted projection of the core pairing state: credentials never
@@ -344,6 +341,37 @@ pub enum LinkMacOutcome {
 pub struct PowerProgress {
     /// The step the flow just reached.
     pub phase: PowerPhase,
+}
+
+impl StatePayload for PowerProgress {
+    const PATH: &'static str = "progress/power";
+}
+
+/// A TV's user-profile assignment, at
+/// [`keys::user_tv_profile`](crate::keys::user_tv_profile). `None` (JSON
+/// `null`) is no assignment: the TV follows the default user profile.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserTvProfile {
+    /// The assigned user profile.
+    pub profile: Option<uuid::Uuid>,
+}
+
+/// The login screen's idle state, at
+/// [`keys::greeter_idle`](crate::keys::greeter_idle).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GreeterIdle {
+    /// The login screen is idle.
+    pub idle: bool,
+}
+
+/// The greeter's idle timeout, at
+/// [`keys::greeter_timeout`](crate::keys::greeter_timeout): the shortest
+/// enabled across automated TVs.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GreeterTimeout {
+    /// Seconds of idle before the login screen counts as idle; 0 disables
+    /// the greeter's watch.
+    pub seconds: u64,
 }
 
 /// The TV powered off by itself or from its own remote, at

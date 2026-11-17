@@ -18,11 +18,10 @@ use crate::{AppWindow, on_ui};
 
 /// How long after the ack a power-on waits for its first phase. None
 /// comes when there's nothing to report: a TV already on, or an in-place
-/// power-on that landed (a TV reachable in standby publishes only a
-/// failure). This is the bound the `power_on` trait contract holds an
-/// in-place wake to, its read-back included; the wire doesn't say which TVs wake in place, so it applies to
-/// all of them, and nothing renders or blocks while it runs.
-const FIRST_PHASE_GRACE: Duration = Duration::from_secs(8);
+/// power-on that landed. The wire doesn't say which TVs wake in place, so
+/// the in-place bound applies to all of them, and nothing renders or
+/// blocks while it runs.
+const FIRST_PHASE_GRACE: Duration = tisvlay_core::IN_PLACE_WAKE_GRACE;
 
 /// How long a terminal phase ("Connected", "Wake failed") stays on the row.
 const TERMINAL_HOLD: Duration = Duration::from_secs(3);

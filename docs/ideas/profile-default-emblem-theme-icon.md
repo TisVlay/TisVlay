@@ -12,7 +12,7 @@ The relevant facts, verified locally:
 
 Three things keep this from being a straightforward swap today:
 
-1. **Slint's std-widget `ComboBox` can't host per-row icons.** Its model is `[string]`; the renderer paints text only. The TVs-pane System / User profile pickers are std `ComboBox`. Adding an icon-bearing row template means either extending the in-tree `ThemedSelect` widget (mentioned in [.claude/slint.md](../../.claude/slint.md)) with an optional trailing-icon slot, or accepting a hybrid where master list + detail header use the theme icon while ComboBoxes keep the suffix-text codepoint. Both shapes ship; the ThemedSelect extension is meaningfully bigger work than the current single-helper synthesis.
+1. **`ThemedSelect` can't host per-row icons yet.** The TVs-pane System / User profile pickers are `ThemedSelect`, whose model is `[string]`. An icon-bearing row needs an optional per-row icon slot on it, or a hybrid where master list + detail header use the theme icon while the pickers keep the suffix-text codepoint.
 
 2. **Adwaita doesn't ship `emblem-default-symbolic`.** Breeze + hicolor cover it, but on a pure GNOME / Cosmic system the freedesktop icon cascade falls through to whatever the active theme provides — possibly a missing-icon placeholder. A real cross-DE smoke test (Adwaita-only, Cosmic-only) is needed before declaring victory. App-bundled SVG fallback under `crates/tisvlay-gui/assets/` is the conventional escape hatch, but adds maintenance.
 
@@ -22,9 +22,9 @@ Three things keep this from being a straightforward swap today:
 
 Single coherent commit if scoped tight:
 
-- `crates/tisvlay-gui-app/src/main.rs::load_themed_icon` (or equivalent) gets an `emblem-default-symbolic` entry. The existing `freedesktop-icons` plumbing already handles the cascade.
+- `crates/tisvlay-gui-app/src/icon_theme.rs` (`load_symbolic_icon`) loads an `emblem-default-symbolic` entry. The existing `freedesktop-icons` plumbing already handles the cascade.
 - `ProfileListRow` in `profiles_pane.slint`: trailing `Image { source: ...; visible: entry.is-default; accessible-label: @tr("Default profile") }` next to the name. Drop the `\u{2713}` suffix from `display_name` for surfaces that get the widget. The detail-header read-only Text gets the same trailing image.
-- `ThemedSelect` widget grows an optional per-row `image-source: image` slot, falling back to text-only rendering when unset. TVs-pane profile pickers switch from std `ComboBox` to `ThemedSelect` and bind `image-source: row.is-default ? @image-url(".../emblem-default-symbolic.svg") : @image-url("")`.
+- `ThemedSelect` widget grows an optional per-row `image-source: image` slot, falling back to text-only rendering when unset. The TVs-pane profile pickers bind `image-source: row.is-default ? @image-url(".../emblem-default-symbolic.svg") : @image-url("")`.
 - `display_profile_name` helper in `state.rs` collapses to just the localized name (no suffix), since every render site now has the widget-level icon. The `name` / `display_name` two-field split on `ProfileRow` may also collapse back to a single `name` if no caller still wants the suffix-text form.
 - Cross-DE smoke: hit each surface under Plasma (Breeze), GNOME (Adwaita), and Cosmic. File a bundled-asset fallback if any cascade misses.
 

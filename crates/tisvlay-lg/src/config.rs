@@ -72,7 +72,6 @@ impl FromStr for WebOsScheme {
 /// ip = "192.168.1.100"
 /// mac = "AA:BB:CC:DD:EE:FF"
 /// client_key = "abc123"
-/// default_input = "HDMI_1"
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LgVendorConfig {
@@ -98,13 +97,6 @@ pub struct LgVendorConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_key: Option<Secret>,
 
-    /// Default HDMI input to switch to on wake.
-    ///
-    /// When specified, the TV will switch to this input after being
-    /// powered on via Wake-on-LAN.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default_input: Option<String>,
-
     /// WebSocket scheme this TV speaks. Captured at pair-time and
     /// persisted so reconnects dispatch directly to the right
     /// scheme without probing — saves a TLS handshake per connect
@@ -123,7 +115,6 @@ impl LgVendorConfig {
             ip: ip.into(),
             mac: None,
             client_key: None,
-            default_input: None,
             scheme: WebOsScheme::default(),
         }
     }
@@ -131,11 +122,6 @@ impl LgVendorConfig {
     /// Set the client key.
     pub fn set_client_key(&mut self, key: impl Into<Secret>) {
         self.client_key = Some(key.into());
-    }
-
-    /// Set the default input.
-    pub fn set_default_input(&mut self, input: impl Into<String>) {
-        self.default_input = Some(input.into());
     }
 }
 
@@ -149,7 +135,6 @@ mod tests {
             ip = "192.168.1.100"
             mac = "AA:BB:CC:DD:EE:FF"
             client_key = "abc123"
-            default_input = "HDMI_1"
         "#;
         let config: LgVendorConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.ip, "192.168.1.100");
@@ -158,7 +143,6 @@ mod tests {
             config.client_key.as_ref().map(Secret::expose),
             Some("abc123")
         );
-        assert_eq!(config.default_input.as_deref(), Some("HDMI_1"));
     }
 
     #[test]
@@ -168,7 +152,6 @@ mod tests {
         assert_eq!(config.ip, "192.168.1.100");
         assert!(config.mac.is_none());
         assert!(config.client_key.is_none());
-        assert!(config.default_input.is_none());
     }
 
     #[test]
@@ -194,7 +177,6 @@ mod tests {
             ip: "10.0.0.1".to_string(),
             mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
             client_key: Some("key123".into()),
-            default_input: Some("HDMI_2".to_string()),
             scheme: WebOsScheme::Ws,
         };
         let toml_str = toml::to_string(&config).unwrap();
@@ -205,7 +187,6 @@ mod tests {
             parsed.client_key.as_ref().map(Secret::expose),
             Some("key123")
         );
-        assert_eq!(parsed.default_input, config.default_input);
         assert_eq!(parsed.scheme, config.scheme);
     }
 
@@ -215,7 +196,6 @@ mod tests {
         let toml_str = toml::to_string(&config).unwrap();
         assert!(!toml_str.contains("mac"));
         assert!(!toml_str.contains("client_key"));
-        assert!(!toml_str.contains("default_input"));
     }
 
     #[test]
@@ -233,11 +213,9 @@ mod tests {
         let mut config = LgVendorConfig::new("10.0.0.1");
         config.mac = Some("AA:BB:CC:DD:EE:FF".into());
         config.set_client_key("key");
-        config.set_default_input("HDMI_3");
         assert_eq!(config.ip, "10.0.0.1");
         assert_eq!(config.mac.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(config.client_key.as_ref().map(Secret::expose), Some("key"));
-        assert_eq!(config.default_input.as_deref(), Some("HDMI_3"));
     }
 
     /// The client key must never show up in `Debug` output, which can reach

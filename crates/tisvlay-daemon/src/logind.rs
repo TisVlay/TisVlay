@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zbus::proxy;
 
+use crate::supervise::LossLatch;
+
 #[proxy(
     interface = "org.freedesktop.login1.Manager",
     default_service = "org.freedesktop.login1",
@@ -91,18 +93,15 @@ where
     C: Fn() -> F,
     F: Future<Output = zbus::Result<zbus::Connection>>,
 {
-    let mut warned = false;
+    let mut latch = LossLatch::default();
     loop {
         let started = tokio::time::Instant::now();
         let outcome = match connect().await {
             Ok(connection) => watch_logind(connection, world.clone()).await,
             Err(e) => Err(e.into()),
         };
-        if started.elapsed() > Duration::from_secs(60) {
-            warned = false;
-        }
         if let Err(e) = outcome
-            && !std::mem::replace(&mut warned, true)
+            && latch.should_warn(started.elapsed())
         {
             warn!(error = %format!("{e:#}"), retry_in = ?delay, "logind watcher lost; reconnecting");
         }
@@ -115,11 +114,13 @@ where
 /// supervisor reconnects.
 pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> anyhow::Result<()> {
     let manager = Login1ManagerProxy::new(&connection).await?;
-    // Best-effort delay inhibitors: without them the box may sleep before
-    // the TVs get their actions. A fake logind without Inhibit is fine.
-    let mut inhibitors = take_inhibitors(&manager).await;
     let mut sleep_stream = manager.receive_prepare_for_sleep().await?;
     let mut shutdown_stream = manager.receive_prepare_for_shutdown().await?;
+    // Best-effort delay inhibitors: without them the box may sleep before
+    // the TVs get their actions. A fake logind without Inhibit is fine.
+    // Taken once the signals are subscribed: a sleep starting in between
+    // would otherwise wait out logind's delay with no TV action running.
+    let mut inhibitors = take_inhibitors(&manager).await;
     info!("logind watcher started");
     loop {
         tokio::select! {
@@ -156,6 +157,11 @@ pub async fn watch_logind(connection: zbus::Connection, world: WorldClient) -> a
                     info!(?event, "system shutting down");
                     world.send(InEvent::System { event, connector: None });
                     release_after_drain(&world, &manager, &mut inhibitors).await;
+                } else {
+                    // The shutdown was cancelled or failed: retake the
+                    // inhibitors it released, or later sleeps run without.
+                    info!("system shutdown cancelled");
+                    inhibitors = take_inhibitors(&manager).await;
                 }
             }
         }

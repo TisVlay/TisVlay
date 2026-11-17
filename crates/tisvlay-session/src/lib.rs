@@ -2,11 +2,12 @@
 //! socket and a private per-user socket.
 //!
 //! Two zenoh sessions, no routing between them — that is the isolation
-//! design. Session A (client → system socket) mirrors TV meta, publishes
-//! session-event taps, and calls TV rpcs. Session B (peer listening on
-//! the user socket, 0700 runtime dir) owns everything under
-//! `tisvlay/<site>/user/**`: profile bodies, per-TV assignments, the rpc
-//! queryable, and the service's liveliness token. User-private keys
+//! design. Session A, a connect-only peer on the system socket, holds the
+//! daemon mirror, publishes the session-event taps and the cached
+//! `stream/state` mirror, and calls TV rpcs. Session B, a router listening
+//! on the user socket (0700 runtime dir), owns everything under
+//! `tisvlay/<site>/user/**`: profile bodies, per-TV assignments, the
+//! profile and stream rpc queryables, and the service's liveliness token. User-private keys
 //! physically never reach the system peer.
 
 mod detector;
@@ -19,6 +20,7 @@ mod store;
 mod stream;
 pub mod sunshine;
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,7 +34,7 @@ use tisvlay_protocol::endpoint::{user_profile, user_stream};
 use tisvlay_protocol::error::WireError;
 use tisvlay_protocol::payload::StatePayload;
 use tisvlay_protocol::{keys, payload, rpc};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{Notify, mpsc, watch};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use zenoh::Session;
@@ -142,7 +144,7 @@ impl SessionClient {
 }
 
 /// Handle for injecting stream-source reports — the detector-report
-/// seam. Real detectors (spawned in `main.rs`) and the test Rig both
+/// seam. Real detectors (spawned by `service::run`) and the test Rig both
 /// report through it; the verb rpc served on the user socket feeds the
 /// same channel from inside the core.
 #[derive(Debug, Clone)]
@@ -174,16 +176,16 @@ pub struct SessionOptions {
 #[derive(Debug)]
 pub struct SessionStack {
     pub client: SessionClient,
-    /// Detector-report seam for stream sources — `main.rs`'s
-    /// (future) real detectors and the test Rig both report through it.
+    /// Detector-report seam for stream sources: the real detectors and
+    /// the test Rig both report through it.
     pub stream: StreamClient,
     /// Resolved user idle timeouts as `(locked, unlocked)` seconds —
     /// each the min enabled across automated TVs, 0 = disabled — the
     /// wayland idle adapter re-registers on change.
     pub idle_timeouts: watch::Receiver<(u64, u64)>,
     /// Shared lock state: the lock watcher writes it (`LockedHint` seed +
-    /// edges), the idle adapter's lock-wake policy and the core's
-    /// drift re-assert read it.
+    /// edges), the idle adapter's lock-wake policy reads it, and the core
+    /// stamps it into the idle window when an idle action fires.
     pub is_locked: Arc<AtomicBool>,
     /// Shared foreground state: the lock watcher writes it (the session's
     /// `Active` seed + changes), the core's active-session arbitration gate
@@ -198,6 +200,30 @@ pub struct SessionStack {
     /// asked: the service hands them to [`spawn_locker`], which locks this
     /// user's seat session through logind.
     pub lock_requests: mpsc::UnboundedReceiver<Uuid>,
+    /// The core and the store writer, for an orderly stop.
+    pub tasks: SessionTasks,
+}
+
+/// The session's core task and its store writer.
+#[derive(Debug)]
+pub struct SessionTasks {
+    shutdown: Arc<Notify>,
+    core: tokio::task::JoinHandle<()>,
+    store: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl SessionTasks {
+    /// Stop the core, then wait for the store writer to flush what it
+    /// holds: the core's exit closes the writer's channel, which writes a
+    /// snapshot still waiting out its debounce. Without this, a stop
+    /// (logout's SIGTERM) loses an edit made just before it.
+    pub async fn stop(self) {
+        self.shutdown.notify_one();
+        let _ = self.core.await;
+        if let Some(store) = self.store {
+            let _ = store.await;
+        }
+    }
 }
 
 /// Boot the session service: open both sessions, replay the store, and
@@ -236,7 +262,7 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
     // The writer's record of what's on disk is the file as loaded, before
     // the default profile is ensured below; a reload compares against it.
     let mut snapshot = loaded.clone();
-    // Root ensure_default parity: the editable default profile exists
+    // The editable default profile exists
     // from first boot; stored edits to it survive (seed only if absent),
     // and its name stays pinned.
     if !snapshot
@@ -256,19 +282,19 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
             record.body.name = tisvlay_core::DEFAULT_PROFILE_NAME.into();
         }
     }
-    let (persist, reloads) = match &options.store {
+    let (persist, reloads, store_task) = match &options.store {
         Some(path) => {
             let (persist_tx, persist_rx) = mpsc::unbounded_channel();
             let (reload_tx, reload_rx) = mpsc::unbounded_channel();
-            tokio::spawn(store::store_task(
+            let task = tokio::spawn(store::store_task(
                 path.clone(),
                 loaded,
                 persist_rx,
                 reload_rx,
             ));
-            (Some(persist_tx), Some(reload_tx))
+            (Some(persist_tx), Some(reload_tx), Some(task))
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     // RPC queries land in the core loop through a channel, like the
@@ -405,12 +431,15 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         _alive: alive,
         _alive_system: alive_system,
     };
-    tokio::spawn(async move {
+    let shutdown = Arc::new(Notify::new());
+    let core_shutdown = Arc::clone(&shutdown);
+    let core_task = tokio::spawn(async move {
         core.run(
             events,
             reports,
             queries,
             stream_queries,
+            core_shutdown,
             FleetSubs {
                 daemon: daemon_events,
                 tv_off: tv_off_sub,
@@ -430,6 +459,11 @@ pub async fn serve(options: SessionOptions) -> Result<SessionStack> {
         is_locked,
         is_active,
         local_return_armed,
+        tasks: SessionTasks {
+            shutdown,
+            core: core_task,
+            store: store_task,
+        },
     })
 }
 
@@ -450,8 +484,8 @@ struct Core {
     /// For the `info` rpc (About pane row).
     state_path: String,
     idle_tx: watch::Sender<(u64, u64)>,
-    /// Shared with the adapters; the drift re-assert reads it to pick
-    /// the locked vs unlocked grace (a core-local flag would miss the
+    /// Shared with the adapters; stamped into the idle window when an idle
+    /// action fires, picking its grace (a core-local flag would miss the
     /// `LockedHint`-seeded auto-login lock, which arrives with no edge).
     is_locked: Arc<AtomicBool>,
     /// The session's foreground (`Active`) state, written by the lock
@@ -470,7 +504,8 @@ struct Core {
     /// idled unlocked and locked afterwards keeps the unlocked timeout
     /// instead of taking on a locked one that may be off.
     idle_fired: Option<bool>,
-    /// Mirrored `state/power` screen bit per TV.
+    /// Per TV: lit, meaning connected and reporting its screen on. A TV
+    /// nobody can see counts as dark.
     screen_on: HashMap<Uuid, bool>,
     /// Armed drift re-asserts: TV → deadline (one idle-timeout of grace
     /// from the drift; a deliberate remote press gets its window).
@@ -522,6 +557,7 @@ impl Core {
         mut reports: mpsc::UnboundedReceiver<StreamReport>,
         mut queries: mpsc::UnboundedReceiver<Query>,
         mut stream_queries: mpsc::UnboundedReceiver<Query>,
+        shutdown: Arc<Notify>,
         fleet: FleetSubs,
     ) {
         let FleetSubs {
@@ -580,9 +616,10 @@ impl Core {
                     Ok(sample) => self.apply_going_off(&sample, GoingOff::RemotePower).await,
                 },
                 () = drift_deadline(next_drift) => self.reassert_due(),
+                () = shutdown.notified() => break 'run,
             }
         }
-        // Clean exit (a channel closed on logout/restart): the
+        // Clean exit (a stop, or a channel closed on logout/restart): the
         // `_alive_system` token, dropped with `Core` immediately after,
         // sends a DELETE to the daemon's `session_alive` subscriber, which
         // clears the armed set. A crash that skips this path departs the same
@@ -627,7 +664,6 @@ impl Core {
         let fleet: HashMap<Uuid, tisvlay::TvInfo> = self
             .daemon
             .list_tvs()
-            .await
             .unwrap_or_default()
             .into_iter()
             .map(|tv| (tv.uuid, tv))
@@ -775,7 +811,7 @@ impl Core {
         }
     }
 
-    /// Publish the fact both ways: cached pub on the user socket, plain
+    /// Publish the fact both ways: cached pub on the user socket, cached
     /// mirror on the system socket. The `StreamState` is built once
     /// and reused for both puts.
     async fn publish_stream(&mut self) {
@@ -846,9 +882,9 @@ impl Core {
     /// Bounded: awaits up to `EAGER_TIMEOUT` in the single-owner Core loop,
     /// and only when a live Sunshine source is holding down a real dispatch
     /// (see `eager_refresh_applies`) — infrequent and tight, which is why the
-    /// budget is small and the trigger narrow. It refreshes the source only;
-    /// the connect/disconnect edge accounting stays with the poll and the
-    /// report path.
+    /// budget is small and the trigger narrow. It refreshes the source only:
+    /// a stream it ends this way fires no `StreamEnd` edge, and the poll,
+    /// which reports its level every tick, re-arms one that resumes.
     async fn eager_refresh_sunshine(&mut self, event: SessionEvent) {
         let has_sunshine = self
             .stream_sources
@@ -940,7 +976,7 @@ impl Core {
             return;
         }
         // A live Sunshine source reads fresh first: a stream that just
-        // started must still hold the lock back.
+        // ended must not hold the lock back.
         if self
             .stream_sources
             .has_kind(payload::StreamSourceKind::Sunshine)
@@ -1052,7 +1088,7 @@ impl Core {
     }
 
     /// The resolved action for this event *before* the stream gate: the
-    /// root chain per field (assignment → profile → editable default
+    /// chain per field (assignment → profile → editable default
     /// profile → hard-coded floor). One field per event, no direction bias
     /// — an event carries no inherent wake/off-going meaning, only the
     /// profile it resolves through does.
@@ -1085,7 +1121,7 @@ impl Core {
     }
 
     /// Merge an assignment through the editable default profile down to
-    /// the hard-coded floor (root resolve chain).
+    /// the hard-coded floor.
     fn resolve_for(&self, tv: &Uuid) -> ResolvedUserProfile {
         // Merge off borrowed bodies — `merge_with_base`/`resolve` take refs,
         // so an absent assignment or default profile falls back to a shared
@@ -1498,32 +1534,33 @@ impl Core {
 
     async fn publish_assignment(&mut self, tv: &Uuid, profile: Option<Uuid>) {
         let key = keys::user_tv_profile(&self.site, tv);
-        self.publish(&key, &json!({ "profile": profile })).await;
+        self.publish(&key, &json!(payload::UserTvProfile { profile }))
+            .await;
     }
 
     async fn publish(&mut self, key: &str, payload: &Value) {
-        if !self.publishers.contains_key(key) {
-            let declared = self
-                .user
-                .declare_publisher(key.to_string())
-                .encoding(Encoding::APPLICATION_JSON)
-                .cache(CacheConfig::default().max_samples(1))
-                .sample_miss_detection(
-                    MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
-                )
-                .publisher_detection()
-                .await;
-            match declared {
-                Ok(publisher) => {
-                    self.publishers.insert(key.to_string(), publisher);
-                }
-                Err(e) => {
-                    warn!(%key, %e, "declare publisher failed, sample dropped");
-                    return;
+        let publisher = match self.publishers.entry(key.to_owned()) {
+            Entry::Occupied(declared) => declared.into_mut(),
+            Entry::Vacant(slot) => {
+                let declared = self
+                    .user
+                    .declare_publisher(key.to_string())
+                    .encoding(Encoding::APPLICATION_JSON)
+                    .cache(CacheConfig::default().max_samples(1))
+                    .sample_miss_detection(
+                        MissDetectionConfig::default().sporadic_heartbeat(MISS_HEARTBEAT),
+                    )
+                    .publisher_detection()
+                    .await;
+                match declared {
+                    Ok(publisher) => slot.insert(publisher),
+                    Err(e) => {
+                        warn!(%key, %e, "declare publisher failed, sample dropped");
+                        return;
+                    }
                 }
             }
-        }
-        let publisher = self.publishers.get(key).expect("just inserted");
+        };
         match serde_json::to_vec(payload) {
             Ok(bytes) => {
                 if let Err(e) = publisher.put(bytes).await {
@@ -1534,8 +1571,9 @@ impl Core {
         }
     }
 
-    /// Delete through the owning publisher so its cache records the
-    /// tombstone — late joiners see nothing.
+    /// Delete through the owning publisher, so live subscribers get the
+    /// DELETE on its sequence, then drop it with its cache: late joiners
+    /// see nothing.
     async fn delete_key(&mut self, key: &str) {
         match self.publishers.remove(key) {
             Some(publisher) => {
@@ -1623,13 +1661,17 @@ const WATCH_RETRY: Duration = Duration::from_secs(5);
 ///   unlocked.
 ///
 /// Timeouts re-register on change; registration failures retry (the
-/// compositor may be restarting). Runs until the client closes.
+/// compositor may be restarting). A fresh watch starts out not idle, so a
+/// re-registration while the user is away would lose the unlocked rule's
+/// `Resumed`; the always-on probe sends that `IdleResume` instead.
+/// Runs until the client closes.
 pub async fn idle_adapter(
     mut timeouts: watch::Receiver<(u64, u64)>,
     client: SessionClient,
     is_locked: Arc<AtomicBool>,
     local_return_armed: Arc<AtomicBool>,
 ) {
+    let mut owed = OwedResume::default();
     loop {
         let (locked_secs, unlocked_secs) = *timeouts.borrow_and_update();
         let mut notifications = vec![tisvlay_runtime::wayland::IdleNotification {
@@ -1660,15 +1702,16 @@ pub async fn idle_adapter(
             continue;
         };
         let mut lock_wake_sent = false;
+        owed.reregistered(is_locked.load(Ordering::SeqCst));
         loop {
             tokio::select! {
                 transition = transitions.recv() => {
                     let Some((tag, transition)) = transition else { break };
                     let locked = is_locked.load(Ordering::SeqCst);
                     let return_armed = local_return_armed.load(Ordering::SeqCst);
-                    if let Some(event) =
-                        idle_dispatch(tag, transition, locked, return_armed, &mut lock_wake_sent)
-                    {
+                    let event =
+                        idle_dispatch(tag, transition, locked, return_armed, &mut lock_wake_sent);
+                    if let Some(event) = event.or(owed.observe(tag, transition, locked, event)) {
                         client.send(event);
                     }
                 },
@@ -1747,6 +1790,64 @@ fn idle_dispatch(
     }
 }
 
+/// The unlocked rule's `Resumed`, owed across a watch re-registration.
+///
+/// The unlocked rule fired `IdleTimeout` and the user hasn't come back:
+/// the old watch would have sent `Resumed` on their return, but a fresh one
+/// starts out not idle and sends it only after idling a full timeout of
+/// its own. So a re-registration in that state owes the `IdleResume`, and
+/// the always-on probe, which idles within its 200 ms, pays it on the first
+/// activity. A lock settles it: waking a locked desk is lock-wake's job,
+/// and an unlock is activity to the core.
+#[derive(Debug, Default)]
+struct OwedResume {
+    /// The unlocked rule fired `IdleTimeout` and nothing has resumed since.
+    idled: bool,
+    /// A watch registered while `idled`, so its unlocked rule can't resume.
+    owed: bool,
+}
+
+impl OwedResume {
+    fn reregistered(&mut self, is_locked: bool) {
+        self.owed = self.idled && !is_locked;
+    }
+
+    /// Track one transition and what [`idle_dispatch`] made of it; returns
+    /// the owed `IdleResume` when this transition pays it.
+    fn observe(
+        &mut self,
+        tag: u32,
+        transition: tisvlay_runtime::wayland::IdleTransition,
+        is_locked: bool,
+        dispatched: Option<SessionEvent>,
+    ) -> Option<SessionEvent> {
+        use tisvlay_runtime::wayland::IdleTransition;
+        if is_locked {
+            *self = Self::default();
+            return None;
+        }
+        match dispatched {
+            Some(SessionEvent::IdleTimeout) => {
+                // A fresh cycle of the unlocked rule, which will resume
+                // on its own.
+                self.idled = true;
+                self.owed = false;
+                None
+            }
+            Some(_) => {
+                *self = Self::default();
+                None
+            }
+            None if self.owed && tag == LOCK_WAKE_TAG && transition == IdleTransition::Resumed => {
+                *self = Self::default();
+                debug!("activity after a re-registration while idle, sending idle resume");
+                Some(SessionEvent::IdleResume)
+            }
+            None => None,
+        }
+    }
+}
+
 /// Lock-screen wake decision for one idle transition.
 ///
 /// Returns `(next_lock_wake_sent, fire)`. Fires `LockWake` on the first
@@ -1781,8 +1882,8 @@ fn lock_wake_policy(
 #[cfg(test)]
 mod tests {
     use super::{
-        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, TV_EVENT_MAX_AGE, UNLOCKED_IDLE_TAG, eager_refresh_applies,
-        fresh, idle_dispatch, lock_wake_policy,
+        LOCK_WAKE_TAG, LOCKED_IDLE_TAG, OwedResume, TV_EVENT_MAX_AGE, UNLOCKED_IDLE_TAG,
+        eager_refresh_applies, fresh, idle_dispatch, lock_wake_policy,
     };
     use crate::SessionEvent;
     use std::time::{Duration, SystemTime};
@@ -1932,6 +2033,160 @@ mod tests {
             None
         );
         assert!(!latch, "idle rules never touch the lock-wake latch");
+    }
+
+    /// Feed one transition through the adapter's two steps, as its loop
+    /// does.
+    fn adapter_step(
+        owed: &mut OwedResume,
+        latch: &mut bool,
+        tag: u32,
+        transition: IdleTransition,
+        locked: bool,
+    ) -> Option<SessionEvent> {
+        let event = idle_dispatch(tag, transition, locked, false, latch);
+        event.or(owed.observe(tag, transition, locked, event))
+    }
+
+    #[test]
+    fn a_reregistration_while_idle_still_resumes() {
+        let (mut owed, mut latch) = (OwedResume::default(), false);
+        owed.reregistered(false);
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                UNLOCKED_IDLE_TAG,
+                IdleTransition::Idled,
+                false
+            ),
+            Some(SessionEvent::IdleTimeout)
+        );
+        // The watch re-registers (the daemon restarted). The fresh probe
+        // idles within its 200 ms; the fresh unlocked rule never does.
+        owed.reregistered(false);
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Idled,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            Some(SessionEvent::IdleResume),
+            "the user's return resumes through the probe"
+        );
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            None,
+            "once"
+        );
+    }
+
+    #[test]
+    fn an_unbroken_watch_resumes_once() {
+        let (mut owed, mut latch) = (OwedResume::default(), false);
+        owed.reregistered(false);
+        adapter_step(
+            &mut owed,
+            &mut latch,
+            UNLOCKED_IDLE_TAG,
+            IdleTransition::Idled,
+            false,
+        );
+        // No re-registration: the probe's resume is inert, and the unlocked
+        // rule's own resume is the one IdleResume.
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            None
+        );
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                UNLOCKED_IDLE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            Some(SessionEvent::IdleResume)
+        );
+    }
+
+    #[test]
+    fn a_lock_settles_an_owed_resume() {
+        let (mut owed, mut latch) = (OwedResume::default(), false);
+        adapter_step(
+            &mut owed,
+            &mut latch,
+            UNLOCKED_IDLE_TAG,
+            IdleTransition::Idled,
+            false,
+        );
+        owed.reregistered(false);
+        // The desk locks while the user is away; their return wakes the
+        // lock screen, and the unlock that follows is activity to the core.
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                true
+            ),
+            Some(SessionEvent::LockWake)
+        );
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            None,
+            "nothing owed after the lock"
+        );
+        // A re-registration while locked owes nothing either.
+        adapter_step(
+            &mut owed,
+            &mut latch,
+            UNLOCKED_IDLE_TAG,
+            IdleTransition::Idled,
+            false,
+        );
+        owed.reregistered(true);
+        assert_eq!(
+            adapter_step(
+                &mut owed,
+                &mut latch,
+                LOCK_WAKE_TAG,
+                IdleTransition::Resumed,
+                false
+            ),
+            None
+        );
     }
 
     #[test]

@@ -23,4 +23,4 @@ One caveat, the same as for the OSD name and vendor ID: when the adapter already
 
 Tested on Linux 7.3 with a Pulse-Eight USB adapter and an LG C3: <the campaign-end hardware check's result: with `ALLOW_RC_PASSTHRU` set before the claim, `cec-ctl -d /dev/cec0` shows `Logical Addresses : 1 (Allow RC Passthrough)` and the remote's keys arrive on the `rc-cec` input>.
 
-**Before filing:** fill in the test line from the hardware check (so far only `cec-ctl`'s own passthrough claim has been run, in Check C of docs/ideas/tv-controls-pc.md), and rebase the branch onto upstream `main` if it has moved.
+**Before filing:** fill in the test line from the hardware check (so far only `cec-ctl`'s own passthrough claim has been run, in Check C of [docs/cec/checks.md](../cec/checks.md)), and rebase the branch onto upstream `main` if it has moved.

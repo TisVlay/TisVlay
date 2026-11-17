@@ -72,7 +72,7 @@ The same `PairingState` machine ([`crates/tisvlay-core/src/pairing.rs`](../../cr
 
 - **No real auth (trivial).** The mock auto-accepts via a config shorthand. A backend whose transport is unauthenticated (e.g. raw TCP) validates connectivity in `start_pairing()` and emits `Complete` with empty credentials immediately — the simplest end of the machine.
 - **Interactive accept-on-device with a returned credential.** LG races a `tokio::select!` between the TV's user-approval handshake and a cancel command, captures the returned client key, and stores it via `build_config_from_pairing()`. Uses `AwaitingTvPrompt`.
-- **A user-supplied secret (password / PIN).** Collect it up front through a `PairingFieldType::Password` schema field, or surface `AwaitingUserInput(InputType::Password)` mid-flow if the device only challenges on connect. Persist it as a `Secret`-visibility field.
+- **A user-supplied secret (password / PIN).** Collect it up front through a `PairingFieldType::Password` schema field. `AwaitingUserInput` is in the state machine for a device that only challenges mid-flow, but no rpc carries the user's answer back yet, so a backend that waits there waits out its own timeout: adding that rpc comes first. Persist it as a `Secret`-visibility field.
 
 `build_config_from_pairing()` merges the pairing result into the persisted vendor config. If your auth needs a credential shape the existing `InputType` can't express, that's the extension point — note it rather than working around it.
 

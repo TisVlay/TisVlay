@@ -57,7 +57,7 @@ To arm the TV the instant Sunshine launches, a second or two ahead of the status
 }
 ```
 
-The hook is purely a latency optimization. If you run an unpackaged build, give the hook the absolute path to `tisvlay` and pass the `--socket` and `--user-socket` flags explicitly, since Sunshine runs hooks outside your shell environment.
+The hook is purely a latency optimization. If you run an unpackaged build, give the hook the absolute path to `tisvlay` and pass the `--socket` and `--user-socket` flags explicitly, before the verb (`tisvlay --socket … --user-socket … stream start --source sunshine`), since Sunshine runs hooks outside your shell environment.
 
 ### Manual control
 
@@ -69,4 +69,4 @@ tisvlay stream stop  --source myapp   # disarm
 tisvlay stream status                 # show live sources + armed TVs
 ```
 
-These talk to your user session service, so add `--user-socket` if you've moved it from the default. `tisvlay watch` shows the stream state live, alongside everything else.
+These talk to your user session service, so add `--user-socket` before the verb if you've moved it from the default. `tisvlay watch` shows the stream state live, alongside everything else.

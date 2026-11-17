@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use tisvlay_protocol::payload::StreamSourceKind;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::detector::Backoff;
 use crate::{StreamClient, StreamReport};
@@ -273,10 +273,14 @@ fn report(detail: String, active: bool) -> StreamReport {
 /// thread supervises its own PipeWire connection and never blocks the
 /// caller. Reports flow through `client` into the session core.
 pub fn spawn(client: StreamClient) {
-    std::thread::Builder::new()
+    // Optional, like the other detectors: no thread means no screencast
+    // detection, not a failed session service.
+    if let Err(e) = std::thread::Builder::new()
         .name("tisvlay-screencast".into())
         .spawn(move || run(client))
-        .expect("spawn screencast detector thread");
+    {
+        warn!(%e, "screencast detection off: no detector thread");
+    }
 }
 
 /// Supervised connect loop: (re)connect to PipeWire, run a session until
@@ -611,8 +615,6 @@ mod ffi {
         tracker.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Bind a matching node and forward its run-state changes into the
-    /// tracker as detail updates.
     /// Bind a candidate node: its info events (full properties first,
     /// then run state) feed the tracker, which starts tracking it only if
     /// the properties match.

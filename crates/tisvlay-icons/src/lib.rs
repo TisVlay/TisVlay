@@ -64,12 +64,18 @@ fn find(names: &[&str], prefer: Variant) -> Option<(String, PathBuf)> {
         matches!(prefer, Variant::Symbolic),
     );
     let memo = MEMO.get_or_init(Memo::default);
-    if let Some(hit) = memo.lock().expect("icon memo lock").get(&key) {
+    // A poisoned memo is still a valid cache: the panicking holder could
+    // only have been mid-lookup or mid-insert of one entry.
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
         return hit.clone();
     }
     let result = walk(names, prefer);
     memo.lock()
-        .expect("icon memo lock")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(key, result.clone());
     result
 }
@@ -158,12 +164,24 @@ fn icon_themes() -> &'static [String] {
     })
 }
 
-/// KDE writes its icon-theme choice to `~/.config/kdeglobals`
-/// `[Icons] Theme=...`. Returns `None` when the file or key is absent.
+/// KDE writes its icon-theme choice to `kdeglobals` `[Icons] Theme=...`
+/// in the user's config dir (`$XDG_CONFIG_HOME`, else `~/.config`), over
+/// the distro default in `/etc/xdg`. Returns `None` when neither file
+/// sets it.
 fn detect_kde_theme() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".config/kdeglobals");
-    let content = std::fs::read_to_string(&path).ok()?;
+    let user_config = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|dir| !dir.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")));
+    user_config
+        .into_iter()
+        .chain([PathBuf::from("/etc/xdg")])
+        .find_map(|dir| kde_icon_theme(&dir.join("kdeglobals")))
+}
+
+/// The `[Icons] Theme=` value in the kdeglobals file at `path`.
+fn kde_icon_theme(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
     let mut in_icons_section = false;
     for line in content.lines() {
         let line = line.trim();

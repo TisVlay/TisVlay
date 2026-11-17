@@ -49,8 +49,8 @@ gettext-rs = "0.8"
 webbrowser = "1"
 tempfile = { workspace = true }
 os_info = { version = "3", default-features = false }
-rustix = { version = "1", features = ["system"] }
-libc = "0.2"
+rustix = { workspace = true, features = ["system"] }
+libc = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]

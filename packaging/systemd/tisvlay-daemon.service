@@ -8,7 +8,8 @@ Wants=network-online.target
 Type=simple
 # The zenoh listener lives in RuntimeDirectory; clients connect with
 # membership in the tisvlay group (the daemon chmods the socket 0660
-# after bind). State (TV table, pairing credentials) persists in
+# after bind) or, at the console, through the ACL the daemon grants the
+# active seat's graphical user. State (TV table, pairing credentials) persists in
 # StateDirectory. --greeter-access adds a POSIX ACL for each known
 # display-manager greeter group present (gdm / Debian-gdm / plasmalogin)
 # so the login-screen greeter client can reach the socket; it is a quiet

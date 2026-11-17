@@ -89,6 +89,20 @@ pub(crate) struct LifetimeMirror<M> {
     handshake: Arc<Handshake>,
     /// Woken whenever a sample arrives, for the hydration wait.
     arrived: Arc<Notify>,
+    /// The client copies' hold on the follow task, which ends it once the
+    /// last copy drops and so releases the session it holds. The task's
+    /// own copies have none, or it would keep itself alive.
+    owner: Option<Arc<FollowOwner>>,
+}
+
+/// Aborts the follow task when dropped.
+#[derive(Debug)]
+struct FollowOwner(tokio::task::AbortHandle);
+
+impl Drop for FollowOwner {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl<M> Clone for LifetimeMirror<M> {
@@ -98,6 +112,7 @@ impl<M> Clone for LifetimeMirror<M> {
             events: self.events.clone(),
             handshake: Arc::clone(&self.handshake),
             arrived: Arc::clone(&self.arrived),
+            owner: self.owner.clone(),
         }
     }
 }
@@ -112,9 +127,9 @@ struct Lifetime {
 impl Lifetime {
     /// Stop every task and wait for each, so no sample is still being
     /// applied once this returns.
-    async fn end(self) {
+    async fn end(mut self) {
         self.setup.abort();
-        let _ = self.setup.await;
+        let _ = (&mut self.setup).await;
         let pumps = std::mem::take(
             &mut *self
                 .pumps
@@ -124,6 +139,22 @@ impl Lifetime {
         for pump in pumps {
             pump.abort();
             let _ = pump.await;
+        }
+    }
+}
+
+/// A lifetime dropped without [`Lifetime::end`] (its follow task aborted)
+/// still stops its tasks, so their subscriptions and session go too.
+impl Drop for Lifetime {
+    fn drop(&mut self) {
+        self.setup.abort();
+        for pump in self
+            .pumps
+            .lock()
+            .expect("nothing panics while the pump list is held")
+            .iter()
+        {
+            pump.abort();
         }
     }
 }
@@ -139,18 +170,20 @@ impl<M: Mirror> LifetimeMirror<M> {
             .await
             .map_err(|e| Error::transport("subscribe to the service's liveliness", e))?;
         let (events, _) = broadcast::channel(EVENT_CAPACITY);
-        let this = Self {
+        let mut this = Self {
             tracked: Arc::new(Mutex::new(Tracked::default())),
             events,
             handshake: Arc::new(Handshake::new(M::SERVICE)),
             arrived: Arc::new(Notify::new()),
+            owner: None,
         };
-        tokio::spawn(this.clone().follow(
+        let follow = tokio::spawn(this.clone().follow(
             liveliness,
             session.clone(),
             site.to_string(),
             Arc::clone(caller),
         ));
+        this.owner = Some(Arc::new(FollowOwner(follow.abort_handle())));
         Ok(this)
     }
 

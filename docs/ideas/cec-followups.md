@@ -6,7 +6,7 @@ Backend model + what *did* ship: [docs/cec/protocol.md](../cec/protocol.md).
 
 ## Relative volume (cross-cutting capability)
 
-CEC has no absolute volume set — only relative `User Control Pressed{Volume Up/Down}`, and absolute readback (`Report Audio Status`) is an AVR/soundbar feature, device-dependent. The current capability model is absolute-only (`SetVolume y`, `Volume` property), so CEC declares no `VOLUME` and the control is gated off entirely.
+CEC has no absolute volume set — only relative `User Control Pressed{Volume Up/Down}`, and absolute readback (`Report Audio Status`) is an AVR/soundbar feature, device-dependent. The current capability model is absolute-only (the `set-volume` rpc, the `state/volume` level), so CEC declares no `VOLUME` and the control is gated off entirely.
 
 A proper fix is a **cross-cutting capability-model extension**, not CEC-local: a relative-volume primitive (`VolumeUp`/`VolumeDown` steps) threaded through the `Capabilities` bit, `TvConnection` methods, the `volume` rpc and state key, the CLI, and the GUI/tray (step buttons vs. an absolute slider). Its own plan when a relative-only backend (CEC, or an RS-232 amp) makes it worth the surface. Until then CEC simply omits volume.
 

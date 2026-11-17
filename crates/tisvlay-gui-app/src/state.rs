@@ -175,16 +175,16 @@ pub(crate) async fn fetch_state(
     daemon: &DaemonClient,
     session: Option<&SessionClient>,
 ) -> StateSnapshot {
-    let tvs = daemon.list_tvs().await.unwrap_or_else(|e| {
+    let tvs = daemon.list_tvs().unwrap_or_else(|e| {
         debug!(error = %e, "TV list unavailable");
         Vec::new()
     });
     debug!(count = tvs.len(), "Read TVs from the daemon mirror");
 
-    let system_profile_bodies = daemon.list_system_profile_bodies().await;
+    let system_profile_bodies = daemon.list_system_profile_bodies();
 
     let user_profile_bodies = match session {
-        Some(s) => s.list_user_profile_bodies().await,
+        Some(s) => s.list_user_profile_bodies(),
         None => HashMap::new(),
     };
 
@@ -192,7 +192,7 @@ pub(crate) async fn fetch_state(
     if let Some(s) = session {
         // Assignments come from the session client's mirror.
         for tv in &tvs {
-            if let Some(profile) = s.get_tv_user_profile(tv.uuid).await {
+            if let Some(profile) = s.get_tv_user_profile(tv.uuid) {
                 user_profile_by_uuid.insert(tv.uuid, profile);
             }
         }
@@ -213,7 +213,7 @@ pub(crate) async fn fetch_system_profile_body(
     daemon: &DaemonClient,
     uuid: Uuid,
 ) -> Option<SystemProfileBody> {
-    daemon.get_system_profile(uuid).await
+    daemon.get_system_profile(uuid)
 }
 
 /// User-side mirror of [`fetch_system_profile_body`].
@@ -221,7 +221,7 @@ pub(crate) async fn fetch_user_profile_body(
     session: &SessionClient,
     uuid: Uuid,
 ) -> Option<UserProfileBody> {
-    session.get_user_profile(uuid).await
+    session.get_user_profile(uuid)
 }
 
 /// A power state's wire token (`active`, `standby`, ...), which the Slint

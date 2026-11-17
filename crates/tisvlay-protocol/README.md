@@ -18,6 +18,8 @@ The protocol TisVlay's services and clients speak: zenoh over Unix sockets, with
 Ask the daemon its release:
 
 ```rust,no_run
+use std::io::Write;
+
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::manager;
 use tisvlay_protocol::{VERSION, bootstrap, compatible};
@@ -28,7 +30,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let session = zenoh::open(bootstrap::client_config(&socket)?).await?;
     let caller = Caller::new(session, "main");
     let info = caller.call::<manager::Info>(&(), &()).await?;
-    println!("daemon {} (compatible: {})", info.version, compatible(VERSION, &info.version));
+    writeln!(
+        std::io::stdout(),
+        "daemon {} (compatible: {})",
+        info.version,
+        compatible(VERSION, &info.version)
+    )?;
     Ok(())
 }
 ```

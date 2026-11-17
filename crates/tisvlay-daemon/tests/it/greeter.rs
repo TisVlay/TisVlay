@@ -1,6 +1,7 @@
-//! P4 daemon-side wire tests: the greeter contract (timeout key + idle
-//! puts driving system-profile actions) and the `automate_when` gate
-//! (published `automated` flag + suppressed dispatch).
+//! Daemon-side wire tests: the greeter contract (timeout key + idle puts
+//! driving system-profile actions, and the idle level surviving a daemon
+//! restart), the `automate_when` gate (published `automated` flag +
+//! suppressed dispatch) and the session's stream mirror.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -486,4 +487,86 @@ async fn daemon_hydrates_the_armed_set_from_the_session_cache() {
 
     drop(session);
     drop(stack);
+}
+
+/// A daemon restarted under an idle login screen (an upgrade at the
+/// greeter) hydrates the greeter's cached `idle: true` once the greeter's
+/// link returns, and blanks the panel as though the greeter had just gone
+/// idle.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_hydrates_an_idle_greeter() {
+    let dir = tisvlay_test::socket_tempdir();
+    let socket = dir.path().join("g.sock");
+    let store = dir.path().join("daemon.toml");
+    let site = "t";
+    let boot = || async {
+        let (connector, discovery, _handle) = new_test_parts();
+        tisvlay_daemon::serve(
+            &socket,
+            site,
+            vec![
+                tisvlay_daemon::VendorReg::new("mock", "Mock", Arc::new(connector))
+                    .with_discovery(Arc::new(discovery)),
+            ],
+            Some(&store),
+        )
+        .await
+        .unwrap()
+    };
+
+    // First life: a stored TV, and a greeter publishing exactly as
+    // `tisvlay-greeter` does goes idle.
+    let first = boot().await;
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let caller = Caller::new(client.clone(), site);
+    let request = rpc::AddTv {
+        id: None,
+        name: "Hall".into(),
+        vendor: "mock".into(),
+        managed: true,
+        config: serde_json::from_value(json!({ "address": "mock://greeter-restart" })).unwrap(),
+    };
+    let tv = call::<manager::AddTv>(&caller, &(), &request)
+        .await
+        .expect("add-tv ok")
+        .id;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !std::fs::read_to_string(&store).is_ok_and(|t| t.contains(&tv.to_string())) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "store file never appeared"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let greeter = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let publisher = greeter
+        .declare_publisher(keys::greeter_idle(site))
+        .encoding(Encoding::APPLICATION_JSON)
+        .cache(CacheConfig::default().max_samples(1))
+        .sample_miss_detection(
+            MissDetectionConfig::default().sporadic_heartbeat(Duration::from_millis(500)),
+        )
+        .publisher_detection()
+        .await
+        .unwrap();
+    publisher
+        .put(serde_json::to_vec(&json!({ "idle": true })).unwrap())
+        .await
+        .unwrap();
+    drop(client);
+    first.daemon.close().await.unwrap();
+
+    // Second life on the same socket and store: the greeter puts nothing
+    // more, so only its cache can tell the new daemon it's idle.
+    let _second = boot().await;
+    let client = zenoh::open(bootstrap::client_config(&socket).unwrap())
+        .await
+        .unwrap();
+    let sub = history_sub(&client, keys::tv_all(site)).await;
+    wait_tv_state(&sub, site, tv, "state/power", |v| v["state"] == "screenoff").await;
+    drop(publisher);
 }

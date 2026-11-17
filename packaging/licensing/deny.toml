@@ -175,7 +175,7 @@ ignore = [
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained (merged into zbus 6 as its names module); no safe upgrade; via zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained (merged into zbus 6); no safe upgrade; via zbus 5" },
     # Fixed upstream, but not yet reachable:
-    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; zenoh-transport 1.10.1, the latest zenoh, still pulls in 0.10; revisit on the next zenoh release" },
+    { id = "RUSTSEC-2026-0041", reason = "lz4_flex decompression memory leak; fixed >=0.11.6/>=0.12.1; zenoh-transport 1.10.1, the latest zenoh, still pulls in 0.10; revisit on the next zenoh release; see docs/concerns/lz4-flex-advisory.md" },
     # Assessed, but not listed here: unsound advisories against transitive
     # crates, which cargo-deny doesn't gate (`unsound` defaults to
     # `workspace`), so an ignore entry would only warn that it's unused.

@@ -139,8 +139,7 @@ pub fn client_config(socket: &Path) -> Result<Config> {
 /// Config for long-running consumers (GUI, tray, session service's
 /// system link): `zenoh::open` returns immediately and the link
 /// dials in the background forever, so no start or restart order is
-/// assumed — liveliness tokens are the availability signal, the role
-/// D-Bus's NameOwnerChanged played in the root stack.
+/// assumed — liveliness tokens are the availability signal.
 ///
 /// Shape: a connect-only *peer* (client mode requires a live link at
 /// open; peer mode backgrounds the dial). A session with exactly one
@@ -239,7 +238,6 @@ mod tests {
         assert_eq!(resolve_connect_socket(&dev, &packaged), packaged);
 
         // Live dev listener: dev wins again.
-        let _live = std::os::unix::net::UnixListener::bind(dir.path().join("live.sock"));
         std::fs::remove_file(&dev).unwrap();
         let _dev_listener = std::os::unix::net::UnixListener::bind(&dev).unwrap();
         assert_eq!(resolve_connect_socket(&dev, &packaged), dev);

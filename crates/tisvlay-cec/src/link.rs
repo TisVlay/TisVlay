@@ -245,9 +245,9 @@ fn identity_query_timeout() -> Timeout {
 /// Production [`CecLink`] wrapping a `linux_cec::AsyncDevice`.
 ///
 /// `AsyncDevice` runs a dedicated worker thread that it joins on drop.
-/// Since the daemon drops a connection (and thus this link) while holding
-/// the per-TV mutex, that join is bounded by the in-flight ioctl — CEC
-/// message timeouts cap at one second.
+/// The connection's task drops this link with the connection, so that
+/// join is bounded by the in-flight ioctl — CEC message timeouts cap at
+/// one second.
 #[derive(Debug)]
 struct LinuxCecLink {
     device: AsyncDevice,

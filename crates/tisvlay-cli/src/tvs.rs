@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde_json::Value;
@@ -27,7 +26,7 @@ pub(crate) async fn list(
     let values = hydrate(
         session,
         &keys::tv_all(site),
-        Duration::from_millis(400),
+        crate::attributes::STATE_QUIET,
         |_| false,
     )
     .await
@@ -136,11 +135,13 @@ pub(crate) async fn watch(session: &Session, site: &str) -> Result<()> {
         .recovery(RecoveryConfig::default().heartbeat())
         .await
         .map_err(|e| anyhow!("subscribe: {e}"))?;
-    writeln!(
-        io::stdout(),
+    let mut interrupt = crate::pairing::interrupt()?;
+    // On stderr, so stdout carries only samples.
+    let _ = writeln!(
+        io::stderr(),
         "watching {} (ctrl-c to stop)",
         keys::all(site)
-    )?;
+    );
     loop {
         tokio::select! {
             sample = subscriber.recv_async() => match sample {
@@ -159,7 +160,7 @@ pub(crate) async fn watch(session: &Session, site: &str) -> Result<()> {
                 }
                 Err(_) => return Ok(()),
             },
-            _ = tokio::signal::ctrl_c() => return Ok(()),
+            _ = interrupt.recv() => return Ok(()),
         }
     }
 }

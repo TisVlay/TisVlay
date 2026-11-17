@@ -1,8 +1,8 @@
 //! `MockConnection` — in-memory state machine with push-state subscription.
 //!
 //! Emulates the behavior of a real TV backend (like LG WebOS) closely enough
-//! that the daemon's subscription forwarder, D-Bus property cache, and
-//! reconnection logic all exercise real code paths against it.
+//! that the world's backend task, its published state and its reconnect
+//! logic all exercise real code paths against it.
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -498,8 +498,8 @@ impl TvConnection for MockConnection {
     // ------------------------------------------------------------------
 
     async fn subscribe_state(&mut self) -> Result<mpsc::UnboundedReceiver<TvState>> {
-        // Poll-only mode: refuse the subscription so the daemon falls
-        // back to its periodic `get_state` poll + active-verify paths.
+        // Poll-only mode: refuse the subscription, so state refreshes
+        // only on reconnect and through the world's verify reads.
         if self.disable_subscription {
             return Err(Error::not_supported(
                 "subscribe_state",

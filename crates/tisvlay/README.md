@@ -14,20 +14,23 @@ This is the library. The `tisvlay` command ships in distro packages and the Nix 
 ## Example
 
 ```rust,no_run
-use std::time::Duration;
+use std::io::Write;
 
-use tisvlay::{DaemonClient, default_connect_socket_path};
+use tisvlay::{DaemonClient, StateWatcher, StateWatcherConfig, default_connect_socket_path};
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> tisvlay::Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let daemon = DaemonClient::connect(&default_connect_socket_path(), "main").await?;
     // The client mirrors the daemon's published state in the background;
-    // wait for the daemon to appear before reading it.
-    while !daemon.is_available().await {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    // wait for that state to arrive (`StateEvent::Hydrated`) before
+    // reading it, so an empty list means no TVs.
+    let mut events = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
+    while !daemon.is_hydrated() {
+        events.next().await;
     }
-    for tv in daemon.list_tvs().await? {
-        println!("{} {} (connected: {})", tv.uuid, tv.name, tv.connected);
+    let mut out = std::io::stdout().lock();
+    for tv in daemon.list_tvs()? {
+        writeln!(out, "{} {} (connected: {})", tv.uuid, tv.name, tv.connected)?;
         daemon.screen_off(tv.uuid).await?;
     }
     Ok(())

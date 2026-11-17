@@ -32,7 +32,7 @@ pub fn cec_node(device: &Path) -> Option<String> {
 
 /// Whether `name` is a CEC node's: `cec` and a number. What keeps a name
 /// from walking anywhere else under sysfs.
-fn is_cec_node(name: &str) -> bool {
+pub(crate) fn is_cec_node(name: &str) -> bool {
     name.strip_prefix("cec")
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
@@ -299,6 +299,16 @@ mod tests {
         std::fs::write(dev.path().join("ttyACM0"), "").unwrap();
         assert_eq!(cec_node(&dev.path().join("ttyACM0")), None);
         assert_eq!(cec_node(&dev.path().join("missing")), None);
+    }
+
+    #[test]
+    fn cec_node_names_are_cec_and_a_number() {
+        assert!(is_cec_node("cec0"));
+        assert!(is_cec_node("cec12"));
+        assert!(!is_cec_node("cec")); // no number
+        assert!(!is_cec_node("cecx")); // non-digit suffix
+        assert!(!is_cec_node("ceca0")); // letter then digit
+        assert!(!is_cec_node("video0"));
     }
 
     proptest! {

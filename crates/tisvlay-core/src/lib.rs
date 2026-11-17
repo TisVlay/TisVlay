@@ -23,7 +23,8 @@ pub mod wol;
 
 // Traits
 pub use traits::{
-    LocalDevice, RetryConfig, Transport, TvBackend, TvConnection, TvConnector, TvDiscovery,
+    IN_PLACE_WAKE_GRACE, LocalDevice, RetryConfig, Transport, TvBackend, TvConnection, TvConnector,
+    TvDiscovery,
 };
 
 // Capabilities
@@ -43,8 +44,8 @@ pub use pairing_schema::{FieldVisibility, PairingField, PairingFieldType};
 pub use config::{
     AutomateWhen, DEFAULT_PROFILE_NAME, DEFAULT_SYSTEM_PROFILE_UUID, DEFAULT_USER_PROFILE_UUID,
     EventAction, ResolvedSystemProfile, ResolvedUserProfile, SYSTEM_PROFILE_FIELDS, SessionAction,
-    SystemProfileConfig, SystemSleepAction, SystemWakeAction, USER_PROFILE_FIELDS, UserLockAction,
-    UserProfileConfig,
+    SystemProfileConfig, SystemSleepAction, SystemWakeAction, USER_PROFILE_FIELDS,
+    UnknownAutomateWhen, UserLockAction, UserProfileConfig,
 };
 
 // State

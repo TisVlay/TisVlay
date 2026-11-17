@@ -16,7 +16,7 @@ Out of the box, a [managed](#which-tvs-react) TV follows your desktop:
 | Suspend the machine | powers off |
 | Resume the machine | powers on, and switches back to your PC's input |
 | Shut down | powers off |
-| Boot | powers on |
+| Boot | powers on, and switches back to your PC's input |
 
 The TV blanking or waking along with your monitor (DPMS) is on too. Inactivity timers (blank the TV after N minutes idle) are **off** until you set them.
 
@@ -76,7 +76,7 @@ The idle events have two timers, **Idle timeout (locked)** and **Idle timeout (u
 | On session unlock | you unlock |
 | On idle timeout | either idle timer runs out |
 | On idle resume | activity returns after an unlocked idle |
-| Stream start / end | a stream starts or ends |
+| On stream start / On stream end | a stream starts or ends |
 | On local return | you first touch the PC after a stream ended |
 
 - **Lock wake** is there so the TV is lit *before* you type your password; the later unlock then has nothing left to do. (Wayland sessions only.)

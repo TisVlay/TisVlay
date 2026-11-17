@@ -1,6 +1,6 @@
 //! Discovery, pairing and re-pairing: the verbs that find TVs and enroll them.
 
-use std::collections::BTreeMap;
+use std::collections::HashSet;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -21,13 +21,15 @@ use crate::render::print_reply;
 /// the handler at once, where `tokio::signal::ctrl_c()` installs it only
 /// when first polled: a ctrl-c between a printed "ctrl-c stops" and that
 /// first poll would kill the process with SIGINT's default action.
-fn interrupt() -> Result<Signal> {
+pub(crate) fn interrupt() -> Result<Signal> {
     signal(SignalKind::interrupt()).context("listen for ctrl-c")
 }
 
 /// Start an open-ended discovery session, stream findings, stop on
-/// ctrl-c. `--json` emits one JSON object per finding (JSONL); the
-/// session's start and stop notes go to stderr.
+/// ctrl-c, SIGTERM or SIGHUP (a closed terminal). `--json` emits one JSON
+/// object per finding (JSONL); the session's start and stop notes go to
+/// stderr. The session is stopped however the watch ends, a reader
+/// closing the pipe included: the daemon scans until told to stop.
 pub(crate) async fn discover_session(
     session: &Session,
     caller: &Caller,
@@ -36,48 +38,64 @@ pub(crate) async fn discover_session(
     json_out: bool,
 ) -> Result<()> {
     let mut interrupt = interrupt()?;
+    let mut terminate = signal(SignalKind::terminate()).context("listen for SIGTERM")?;
+    let mut hangup = signal(SignalKind::hangup()).context("listen for SIGHUP")?;
+    // Subscribed before the session starts: findings are plain puts, so
+    // one published before the subscriber exists is lost.
+    let sub = session
+        .declare_subscriber(keys::discovery_found_wild(site))
+        .await
+        .map_err(|e| anyhow!("subscribe findings: {e}"))?;
     let id = call::<manager::DiscoverStart>(caller, &(), &rpc::DiscoverStart { vendor })
         .await?
         .session;
     let _ = writeln!(io::stderr(), "discovery session {id} — ctrl-c stops");
-    let sub = session
-        .declare_subscriber(format!("tisvlay/{site}/discovery/{id}/found/*"))
-        .await
-        .map_err(|e| anyhow!("subscribe findings: {e}"))?;
-    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
-    loop {
+    let ours = format!("tisvlay/{site}/discovery/{id}/found/");
+    let mut seen = HashSet::new();
+    let outcome = loop {
         tokio::select! {
             sample = sub.recv_async() => {
-                let Ok(sample) = sample else { break };
+                let Ok(sample) = sample else { break Ok(()) };
+                if !sample.key_expr().as_str().starts_with(&ours) {
+                    continue;
+                }
                 let tv: Value = serde_json::from_slice(&sample.payload().to_bytes())
                     .unwrap_or(Value::Null);
                 let finding = tv["id"].as_str().unwrap_or_default().to_string();
-                if seen.insert(finding, ()).is_none() {
-                    if json_out {
-                        writeln!(io::stdout(), "{tv}")?;
-                        continue;
-                    }
-                    let mac = tv["vendor_data"]["mac"]
-                        .as_str()
-                        .map(|mac| format!("  mac={mac}"))
-                        .unwrap_or_default();
-                    writeln!(
-                        io::stdout(),
-                        "{}  {}  {}  id={}{}",
-                        tv["vendor"].as_str().unwrap_or("?"),
-                        tv["name"].as_str().unwrap_or("?"),
-                        tv["address"].as_str().unwrap_or("?"),
-                        tv["id"].as_str().unwrap_or("?"),
-                        mac,
-                    )?;
+                if seen.insert(finding)
+                    && let Err(e) = write_finding(&tv, json_out)
+                {
+                    break Err(e);
                 }
             }
-            _ = interrupt.recv() => break,
+            _ = interrupt.recv() => break Ok(()),
+            _ = terminate.recv() => break Ok(()),
+            _ = hangup.recv() => break Ok(()),
         }
-    }
+    };
     call::<manager::DiscoverStop>(caller, &(), &rpc::DiscoverStop { session: id }).await?;
     let _ = writeln!(io::stderr(), "stopped");
-    Ok(())
+    Ok(outcome?)
+}
+
+/// One finding on stdout: its JSON, or a line of its fields.
+fn write_finding(tv: &Value, json_out: bool) -> io::Result<()> {
+    if json_out {
+        return writeln!(io::stdout(), "{tv}");
+    }
+    let mac = tv["vendor_data"]["mac"]
+        .as_str()
+        .map(|mac| format!("  mac={mac}"))
+        .unwrap_or_default();
+    writeln!(
+        io::stdout(),
+        "{}  {}  {}  id={}{}",
+        tv["vendor"].as_str().unwrap_or("?"),
+        tv["name"].as_str().unwrap_or("?"),
+        tv["address"].as_str().unwrap_or("?"),
+        tv["id"].as_str().unwrap_or("?"),
+        mac,
+    )
 }
 
 /// A bounded scan. With no `timeout`, the daemon applies its own window.
