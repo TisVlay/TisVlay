@@ -39,6 +39,7 @@ use power_cycle::run_power_on_with_progress;
 use profiles::{
     EditorKind, ProfileEditor, dispatch_rename, dispatch_reset_all, dispatch_reset_field,
     dispatch_select_after_create, dispatch_value_edit, dispatch_value_edit_number, new_editor,
+    session_client,
 };
 use toast::show_toast;
 use wizard::{
@@ -1288,18 +1289,17 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let name = name.to_string();
             tokio::spawn(async move {
-                let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.create_system_profile(&name).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => {
-                                client.create_user_profile(&name).await.map_err(Into::into)
-                            }
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<uuid::Uuid> = async {
+                    Ok(match editor_kind {
+                        EditorKind::System => d.create_system_profile(&name).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .create_user_profile(&name)
+                                .await?
                         }
-                    }
-                };
+                    })
+                }
+                .await;
                 match result {
                     Ok(uuid) => {
                         dispatch_select_after_create(ed, d, s, app_weak, editor_kind, uuid).await;
@@ -1337,16 +1337,17 @@ fn register_callbacks(
             let app_weak = app_weak.clone();
             let new_name = new_name.to_string();
             tokio::spawn(async move {
-                let result: Result<uuid::Uuid> = match editor_kind {
-                    EditorKind::System => d.duplicate_system_profile(source, &new_name).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => client.duplicate_user_profile(source, &new_name).await.map_err(Into::into),
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<uuid::Uuid> = async {
+                    Ok(match editor_kind {
+                        EditorKind::System => d.duplicate_system_profile(source, &new_name).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .duplicate_user_profile(source, &new_name)
+                                .await?
                         }
-                    }
-                };
+                    })
+                }
+                .await;
                 match result {
                     Ok(uuid) => {
                         dispatch_select_after_create(
@@ -1395,18 +1396,18 @@ fn register_callbacks(
             let ed = ed.clone();
             let app_weak = app_weak.clone();
             tokio::spawn(async move {
-                let result: Result<()> = match editor_kind {
-                    EditorKind::System => d.delete_system_profile(uuid).await.map_err(Into::into),
-                    EditorKind::User => {
-                        let session_ref = s.read().await;
-                        match session_ref.as_ref() {
-                            Some(client) => {
-                                client.delete_user_profile(uuid).await.map_err(Into::into)
-                            }
-                            None => Err(anyhow::anyhow!("Session service unavailable")),
+                let result: Result<()> = async {
+                    match editor_kind {
+                        EditorKind::System => d.delete_system_profile(uuid).await?,
+                        EditorKind::User => {
+                            session_client(&*s.read().await)?
+                                .delete_user_profile(uuid)
+                                .await?;
                         }
                     }
-                };
+                    Ok(())
+                }
+                .await;
                 match result {
                     Ok(()) => {
                         // Preemptive cache clear so the selected-row

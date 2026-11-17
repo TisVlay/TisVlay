@@ -2046,9 +2046,7 @@ async fn update_user_field(
     };
     set_user_field(&mut body, wire, patch)?;
     let session_ref = session.read().await;
-    let client = session_ref
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+    let client = session_client(&session_ref)?;
     client.update_user_profile(uuid, body.clone()).await?;
     editor.lock().user.cache_body(uuid, body);
     Ok(())
@@ -2057,6 +2055,14 @@ async fn update_user_field(
 /// Apply a ComboBox-driven enum edit to the selected profile. The
 /// dispatch helpers all read the selection's `(kind, uuid)` from the
 /// caller (Slint reads the global at task-start) so the editor cache
+/// The session client, or the error a user-profile edit reports without
+/// one.
+pub(crate) fn session_client(session: &Option<SessionClient>) -> anyhow::Result<&SessionClient> {
+    session
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))
+}
+
 /// doesn't need an extra round-trip to confirm it.
 pub(crate) async fn dispatch_value_edit(
     editor: &ProfileEditor,
@@ -2311,9 +2317,7 @@ pub(crate) async fn dispatch_reset_all(
                 ..Default::default()
             };
             let session_ref = session.read().await;
-            let client = session_ref
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+            let client = session_client(&session_ref)?;
             client.update_user_profile(uuid, body.clone()).await?;
             editor.lock().user.cache_body(uuid, body);
             Ok(())
@@ -2351,9 +2355,7 @@ pub(crate) async fn dispatch_rename(
             };
             body.name = new_name.to_string();
             let session_ref = session.read().await;
-            let client = session_ref
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Session service unavailable"))?;
+            let client = session_client(&session_ref)?;
             client.update_user_profile(uuid, body.clone()).await?;
             editor.lock().user.cache_body(uuid, body);
             Ok(())
