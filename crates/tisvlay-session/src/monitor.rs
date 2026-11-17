@@ -10,9 +10,15 @@
 //!
 //! Arming edge: a `CreateSession` call is the earliest observable portal
 //! signal (it precedes `Start` and any injected input), so the source
-//! arms there and clears on the session's `Closed` signal. Sessions are
-//! keyed by their handle path, so several concurrent portal sessions from
-//! one app coexist.
+//! arms there. Sessions are keyed by their handle path, which the call
+//! names up front (the caller's `session_handle_token` under its mangled
+//! bus name), so several concurrent portal sessions from one app coexist.
+//!
+//! Disarming edges: the portal emits `Session.Closed` only when its own
+//! side ends a session. A client's `Close` call or its exit tears the
+//! session down silently, so the monitor also watches the owner's `Close`
+//! calls and the bus driver's `NameOwnerChanged` for a vanished owner,
+//! and a vanished portal clears every session it held.
 //!
 //! Two hard filters keep the false positives out:
 //!
@@ -45,11 +51,14 @@
 //! never blocks or kills the session service, and the screencast detector
 //! remains the fallback.
 
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
 use futures_util::StreamExt;
 use tisvlay_protocol::payload::StreamSourceKind;
 use tracing::debug;
 use zbus::MatchRule;
 use zbus::message::Type as MessageType;
+use zbus::zvariant::Value;
 
 use crate::detector::{Backoff, Fault};
 use crate::{StreamClient, StreamReport};
@@ -66,7 +75,17 @@ const SCREENCAST_IFACE: &str = "org.freedesktop.portal.ScreenCast";
 const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
 const CREATE_SESSION: &str = "CreateSession";
+/// The `CreateSession` option naming the session object's last path
+/// segment. The portal aborts on a call without it, so a live session
+/// always has one.
+const SESSION_HANDLE_TOKEN: &str = "session_handle_token";
+const CLOSE: &str = "Close";
 const CLOSED: &str = "Closed";
+/// The portal's well-known name; its owner vanishing ends every session.
+const PORTAL_NAME: &str = "org.freedesktop.portal.Desktop";
+const BUS_NAME: &str = "org.freedesktop.DBus";
+const BUS_PATH: &str = "/org/freedesktop/DBus";
+const NAME_OWNER_CHANGED: &str = "NameOwnerChanged";
 
 /// Executable basenames that mint an attributed `Portal` source. A portal
 /// user outside this list is left to the unattributed screencast signal.
@@ -83,6 +102,10 @@ pub(crate) struct PortalMessage {
     pub path: Option<String>,
     /// The caller's unique bus name (`:1.42`), for attribution.
     pub sender: Option<String>,
+    /// A `CreateSession` call's `session_handle_token` option.
+    pub session_token: Option<String>,
+    /// A `NameOwnerChanged` signal's name, when it lost its owner.
+    pub vanished: Option<String>,
 }
 
 /// The D-Bus message types the parser distinguishes.
@@ -97,11 +120,17 @@ pub(crate) enum MsgType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PortalEvent {
     /// A `ScreenCast`/`RemoteDesktop` `CreateSession` call from `sender`
-    /// (its unique bus name) — the earliest arming edge.
-    Create { sender: String },
-    /// A `Session.Closed` signal for the session object at `path` — the
-    /// disarming edge, keyed by handle.
+    /// (its unique bus name) for the session object at `session` — the
+    /// earliest arming edge.
+    Create { sender: String, session: String },
+    /// The session object at `path` ended: the portal's `Closed` signal,
+    /// or its owner's `Close` call.
     Closed { path: String },
+    /// The client `owner` (a unique bus name) left the bus, taking every
+    /// session it held with it.
+    OwnerGone { owner: String },
+    /// The portal itself left the bus, ending every session.
+    PortalGone,
 }
 
 /// Classify one monitored portal message. Pure over the reduced
@@ -109,31 +138,52 @@ pub(crate) enum PortalEvent {
 /// (crucially, InputCapture `CreateSession` and every other portal
 /// method).
 pub(crate) fn classify(msg: &PortalMessage) -> Option<PortalEvent> {
-    match msg.ty {
-        MsgType::MethodCall => {
-            let iface = msg.interface.as_deref()?;
-            // InputCapture shares the object path and also has a
-            // CreateSession — it is deliberately excluded here.
-            if iface != SCREENCAST_IFACE && iface != REMOTE_DESKTOP_IFACE {
-                return None;
-            }
-            if msg.member.as_deref() != Some(CREATE_SESSION) {
-                return None;
-            }
+    let interface = msg.interface.as_deref()?;
+    let member = msg.member.as_deref()?;
+    match (msg.ty, interface, member) {
+        // InputCapture shares the object path and also has a
+        // CreateSession — it is deliberately excluded here.
+        (MsgType::MethodCall, SCREENCAST_IFACE | REMOTE_DESKTOP_IFACE, CREATE_SESSION) => {
             let sender = msg.sender.clone()?;
-            Some(PortalEvent::Create { sender })
+            let token = msg.session_token.as_deref().filter(|t| is_valid_token(t))?;
+            let session = format!("{PORTAL_SESSION_PATH}/{}/{token}", mangle(&sender)?);
+            Some(PortalEvent::Create { sender, session })
         }
-        MsgType::Signal => {
-            if msg.interface.as_deref() != Some(SESSION_IFACE)
-                || msg.member.as_deref() != Some(CLOSED)
-            {
-                return None;
-            }
+        // The portal refuses a Close from anyone but the owner.
+        (MsgType::MethodCall, SESSION_IFACE, CLOSE) => {
+            let path = msg.path.clone()?;
+            (session_owner(&path) == msg.sender).then_some(PortalEvent::Closed { path })
+        }
+        (MsgType::Signal, SESSION_IFACE, CLOSED) => {
             let path = msg.path.clone()?;
             Some(PortalEvent::Closed { path })
         }
-        MsgType::Other => None,
+        (MsgType::Signal, BUS_NAME, NAME_OWNER_CHANGED) => match msg.vanished.as_deref()? {
+            PORTAL_NAME => Some(PortalEvent::PortalGone),
+            owner if owner.starts_with(':') => Some(PortalEvent::OwnerGone {
+                owner: owner.to_owned(),
+            }),
+            _ => None,
+        },
+        _ => None,
     }
+}
+
+/// Whether `token` is one the portal accepts as a handle token: a
+/// non-empty run of ASCII letters, digits and underscores. A call with
+/// any other token fails, so it never opens a session.
+fn is_valid_token(token: &str) -> bool {
+    !token.is_empty()
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Mangle a unique bus name into its portal path segment: the leading
+/// `:` is dropped and each `.` becomes `_` (`:1.56` → `1_56`). The
+/// inverse of [`session_owner`]'s unmangling.
+fn mangle(unique_name: &str) -> Option<String> {
+    Some(unique_name.strip_prefix(':')?.replace('.', "_"))
 }
 
 /// Whether an executable basename mints an attributed `Portal` source.
@@ -170,46 +220,57 @@ pub(crate) fn session_owner(path: &str) -> Option<String> {
     Some(format!(":{}", segment.replacen('_', ".", 1)))
 }
 
-/// Build the narrow match-rule set the monitor subscribes to: portal
-/// method calls and signals, scoped to the portal object namespace. The
+/// Build the narrow match-rule set the monitor subscribes to: the portal
+/// calls and signals scoped to the portal object namespace, plus the bus
+/// driver's `NameOwnerChanged` for names losing their owner. The
 /// per-message interface/member filtering is done in [`classify`] (a
 /// path-namespace rule cannot express the InputCapture exclusion).
 fn match_rules() -> Vec<MatchRule<'static>> {
-    // Two rules under the portal namespace — one for the CreateSession
-    // calls, one for the Closed signals. Fallible builders, but the
-    // literals are static and valid; a failure just drops that rule.
-    let mut rules = Vec::new();
-    if let Ok(rule) = MatchRule::builder()
-        .msg_type(MessageType::MethodCall)
-        .path_namespace(PORTAL_PATH)
-        .and_then(|b| b.interface(SCREENCAST_IFACE))
-        .and_then(|b| b.member(CREATE_SESSION))
-        .map(|b| b.build().to_owned())
-    {
-        rules.push(rule);
+    fn portal(
+        ty: MessageType,
+        interface: &'static str,
+        member: &'static str,
+    ) -> zbus::Result<MatchRule<'static>> {
+        Ok(MatchRule::builder()
+            .msg_type(ty)
+            .path_namespace(PORTAL_PATH)?
+            .interface(interface)?
+            .member(member)?
+            .build())
     }
-    if let Ok(rule) = MatchRule::builder()
-        .msg_type(MessageType::MethodCall)
-        .path_namespace(PORTAL_PATH)
-        .and_then(|b| b.interface(REMOTE_DESKTOP_IFACE))
-        .and_then(|b| b.member(CREATE_SESSION))
-        .map(|b| b.build().to_owned())
-    {
-        rules.push(rule);
-    }
-    if let Ok(rule) = MatchRule::builder()
-        .msg_type(MessageType::Signal)
-        .path_namespace(PORTAL_PATH)
-        .and_then(|b| b.interface(SESSION_IFACE))
-        .and_then(|b| b.member(CLOSED))
-        .map(|b| b.build().to_owned())
-    {
-        rules.push(rule);
-    }
-    rules
+    // An empty new owner (arg 2) means the name vanished; matching it here
+    // keeps the bus's every other name change off the monitor.
+    let vanished = || -> zbus::Result<MatchRule<'static>> {
+        Ok(MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .sender(BUS_NAME)?
+            .path(BUS_PATH)?
+            .interface(BUS_NAME)?
+            .member(NAME_OWNER_CHANGED)?
+            .arg(2, "")?
+            .build())
+    };
+    // Fallible builders, but the literals are static and valid; a failure
+    // just drops that rule.
+    [
+        portal(MessageType::MethodCall, SCREENCAST_IFACE, CREATE_SESSION),
+        portal(
+            MessageType::MethodCall,
+            REMOTE_DESKTOP_IFACE,
+            CREATE_SESSION,
+        ),
+        portal(MessageType::MethodCall, SESSION_IFACE, CLOSE),
+        portal(MessageType::Signal, SESSION_IFACE, CLOSED),
+        vanished(),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .collect()
 }
 
 /// Reduce a live zbus message to the [`PortalMessage`] the parser reads.
+/// Only the two bodies the parser needs are decoded: `CreateSession`'s
+/// options and `NameOwnerChanged`'s name and new owner.
 fn reduce(msg: &zbus::Message) -> PortalMessage {
     let header = msg.header();
     let ty = match msg.message_type() {
@@ -217,12 +278,27 @@ fn reduce(msg: &zbus::Message) -> PortalMessage {
         MessageType::Signal => MsgType::Signal,
         _ => MsgType::Other,
     };
+    let member = header.member().map(|m| m.as_str().to_string());
+    let body = msg.body();
+    let session_token = (member.as_deref() == Some(CREATE_SESSION))
+        .then(|| body.deserialize::<(HashMap<&str, Value<'_>>,)>().ok())
+        .flatten()
+        .and_then(|(options,)| match options.get(SESSION_HANDLE_TOKEN)? {
+            Value::Str(token) => Some(token.as_str().to_owned()),
+            _ => None,
+        });
+    let vanished = (member.as_deref() == Some(NAME_OWNER_CHANGED))
+        .then(|| body.deserialize::<(&str, &str, &str)>().ok())
+        .flatten()
+        .and_then(|(name, _, new_owner)| new_owner.is_empty().then(|| name.to_owned()));
     PortalMessage {
         ty,
         interface: header.interface().map(|i| i.as_str().to_string()),
-        member: header.member().map(|m| m.as_str().to_string()),
+        member,
         path: header.path().map(|p| p.as_str().to_string()),
         sender: header.sender().map(|s| s.as_str().to_string()),
+        session_token,
+        vanished,
     }
 }
 
@@ -290,13 +366,13 @@ async fn session(
     // allow-listed owner provisionally (the aggregator gates admission on
     // a corroborating screencast signal). A failed walk is non-fatal —
     // the live stream still catches new sessions.
-    match bootstrap_owners(main_bus).await {
+    match bootstrap_sessions(main_bus).await {
         Ok(owners) => {
-            for owner in owners {
+            for (owner, sessions) in owners {
                 if let Some(exe) = resolve_exe(main_bus, &owner).await
                     && is_allow_listed(&exe)
                 {
-                    emit(client, tracker.provisional(&owner, exe))?;
+                    emit(client, tracker.provisional(&owner, exe, sessions))?;
                 }
             }
         }
@@ -309,23 +385,22 @@ async fn session(
         let Some(event) = classify(&reduce(&msg)) else {
             continue;
         };
-        match event {
-            PortalEvent::Create { sender } => {
+        let reports = match event {
+            PortalEvent::Create { sender, session } => {
                 let Some(exe) = resolve_exe(main_bus, &sender).await else {
                     continue;
                 };
-                if is_allow_listed(&exe) {
-                    emit(client, tracker.opened(&sender, exe))?;
-                } else {
+                if !is_allow_listed(&exe) {
                     debug!(%exe, "portal monitor: non-allow-listed portal user ignored");
+                    continue;
                 }
+                tracker.opened(&sender, exe, session)
             }
-            PortalEvent::Closed { path } => {
-                if let Some(owner) = session_owner(&path) {
-                    emit(client, tracker.closed(&owner))?;
-                }
-            }
-        }
+            PortalEvent::Closed { path } => tracker.closed(&path),
+            PortalEvent::OwnerGone { owner } => tracker.gone(&owner),
+            PortalEvent::PortalGone => tracker.clear(),
+        };
+        emit(client, reports)?;
     }
     Ok(())
 }
@@ -350,26 +425,36 @@ async fn resolve_exe(bus: &zbus::Connection, unique_name: &str) -> Option<String
     exe_basename(&target.to_string_lossy())
 }
 
-/// Walk `/org/freedesktop/portal/desktop/session/*` and return the owner
-/// unique names of the live session objects. Introspection on the portal
-/// object gives the child node names (the mangled owners).
-async fn bootstrap_owners(bus: &zbus::Connection) -> zbus::Result<Vec<String>> {
+/// Walk `/org/freedesktop/portal/desktop/session/*/*` and return each live
+/// session object's path, grouped by its owner's unique name. The direct
+/// children of `.../session/` are the mangled owners; theirs are the
+/// session tokens.
+async fn bootstrap_sessions(bus: &zbus::Connection) -> zbus::Result<BTreeMap<String, Vec<String>>> {
+    let mut owners = BTreeMap::new();
+    for segment in introspect_children(&introspect(bus, PORTAL_SESSION_PATH).await?) {
+        let owner_path = format!("{PORTAL_SESSION_PATH}/{segment}");
+        let Some(owner) = session_owner(&owner_path) else {
+            continue;
+        };
+        let sessions: Vec<String> = introspect_children(&introspect(bus, &owner_path).await?)
+            .into_iter()
+            .map(|token| format!("{owner_path}/{token}"))
+            .collect();
+        if !sessions.is_empty() {
+            owners.insert(owner, sessions);
+        }
+    }
+    Ok(owners)
+}
+
+/// The portal's introspection XML for the object at `path`.
+async fn introspect(bus: &zbus::Connection, path: &str) -> zbus::Result<String> {
     let proxy = zbus::fdo::IntrospectableProxy::builder(bus)
-        .destination("org.freedesktop.portal.Desktop")?
-        .path(PORTAL_SESSION_PATH)?
+        .destination(PORTAL_NAME)?
+        .path(path.to_owned())?
         .build()
         .await?;
-    let xml = proxy.introspect().await?;
-    // The direct children of `.../session/` are the mangled owner
-    // segments; recover each to a unique name. Dedup so one owner with
-    // several sessions reports once.
-    let mut owners: Vec<String> = introspect_children(&xml)
-        .into_iter()
-        .filter_map(|child| session_owner(&format!("{PORTAL_SESSION_PATH}/{child}")))
-        .collect();
-    owners.sort();
-    owners.dedup();
-    Ok(owners)
+    Ok(proxy.introspect().await?)
 }
 
 /// Extract child node names from an introspection XML document. A tiny
@@ -401,56 +486,74 @@ pub(crate) fn introspect_children(xml: &str) -> Vec<String> {
 /// sessions is open and clears only when the last closes.
 ///
 /// A session is either **confirmed** (seen opening on the wire, direct
-/// attribution, always arms) or **provisional** (bootstrapped, owner-only,
-/// admitted by the aggregator only while a screencast corroborates). One
-/// owner unique name can hold several concurrent sessions (krdp opens a
-/// ScreenCast *and* a RemoteDesktop session), so each owner carries an
-/// open-session count: an open increments it, a `Closed` decrements it,
-/// and the source clears when the count reaches zero — closing the first
-/// of two concurrent sessions must not disarm while the other still
-/// captures. A confirmed open for an owner promotes it out of provisional.
+/// attribution, always arms) or **provisional** (bootstrapped, admitted
+/// by the aggregator only while a screencast corroborates). One owner
+/// unique name can hold several concurrent sessions (krdp opens a
+/// ScreenCast *and* a RemoteDesktop session), so each owner carries the
+/// set of its live session paths: closing the first of two concurrent
+/// sessions must not disarm while the other still captures, and a session
+/// seen closing twice (the portal's `Closed` and the owner's `Close`)
+/// counts once. A confirmed open for an owner promotes it out of
+/// provisional.
 #[derive(Debug, Default)]
 pub(crate) struct PortalTracker {
     /// Owner unique name → its tracked state. One entry per owner; the
     /// portal serves all of an owner's session objects under one subtree.
-    owners: std::collections::BTreeMap<String, OwnerState>,
+    owners: BTreeMap<String, OwnerState>,
 }
 
 /// The per-owner tracking state: the attributed exe, whether any of its
-/// sessions was confirmed on the wire, and the count of live sessions.
+/// sessions was confirmed on the wire, and its live session paths. The
+/// entry goes when the last session does, so the set is never empty.
 #[derive(Debug)]
 struct OwnerState {
     exe: String,
     confirmed: bool,
-    /// Live sessions for this owner: a bootstrap guess counts as one, and
-    /// each confirmed `CreateSession` on the wire adds one. The source
-    /// clears when this reaches zero.
-    open: usize,
+    sessions: BTreeSet<String>,
 }
 
 impl PortalTracker {
-    /// A confirmed `CreateSession` from `owner` running `exe`: report the
-    /// exe's source as confirmed (non-provisional, always arms) and
-    /// remember the owner so its `Closed` clears it.
-    pub(crate) fn opened(&mut self, owner: &str, exe: String) -> Vec<StreamReport> {
-        self.record(owner, exe, true)
+    /// A confirmed `CreateSession` from `owner` running `exe` for the
+    /// session at `session`: report the exe's source as confirmed
+    /// (non-provisional, always arms).
+    pub(crate) fn opened(
+        &mut self,
+        owner: &str,
+        exe: String,
+        session: String,
+    ) -> Vec<StreamReport> {
+        self.record(owner, exe, vec![session], true)
     }
 
-    /// A bootstrapped `owner` running `exe`, attributed only
-    /// provisionally (the aggregator admits it only under a corroborating
-    /// screencast signal).
-    pub(crate) fn provisional(&mut self, owner: &str, exe: String) -> Vec<StreamReport> {
-        self.record(owner, exe, false)
+    /// A bootstrapped `owner` running `exe` with live `sessions`,
+    /// attributed only provisionally (the aggregator admits it only under
+    /// a corroborating screencast signal).
+    pub(crate) fn provisional(
+        &mut self,
+        owner: &str,
+        exe: String,
+        sessions: Vec<String>,
+    ) -> Vec<StreamReport> {
+        self.record(owner, exe, sessions, false)
     }
 
-    fn record(&mut self, owner: &str, exe: String, confirmed: bool) -> Vec<StreamReport> {
+    fn record(
+        &mut self,
+        owner: &str,
+        exe: String,
+        sessions: Vec<String>,
+        confirmed: bool,
+    ) -> Vec<StreamReport> {
+        if sessions.is_empty() {
+            return Vec::new();
+        }
         match self.owners.get_mut(owner) {
-            // Already tracked with the same exe: count the new session and
+            // Already tracked with the same exe: add the sessions and
             // re-report only on a provisional→confirmed promotion (it drops
             // the corroboration requirement). An additional session under
             // an already-live source needs no fresh report.
             Some(state) if state.exe == exe => {
-                state.open += 1;
+                state.sessions.extend(sessions);
                 if confirmed && !state.confirmed {
                     state.confirmed = true;
                     return vec![portal_report(owner, &exe, true, false)];
@@ -458,11 +561,11 @@ impl PortalTracker {
                 Vec::new()
             }
             // A different exe for a known owner: clear the prior source,
-            // then report the new one starting a fresh count.
+            // then report the new one with only the new sessions.
             Some(state) => {
                 let old_exe = std::mem::replace(&mut state.exe, exe.clone());
                 state.confirmed = confirmed;
-                state.open = 1;
+                state.sessions = sessions.into_iter().collect();
                 vec![
                     portal_report(owner, &old_exe, false, false),
                     portal_report(owner, &exe, true, !confirmed),
@@ -475,7 +578,7 @@ impl PortalTracker {
                     OwnerState {
                         exe: exe.clone(),
                         confirmed,
-                        open: 1,
+                        sessions: sessions.into_iter().collect(),
                     },
                 );
                 vec![portal_report(owner, &exe, true, !confirmed)]
@@ -483,23 +586,37 @@ impl PortalTracker {
         }
     }
 
-    /// One of `owner`'s sessions closed: decrement its count and clear the
-    /// source only when the last one closes.
-    pub(crate) fn closed(&mut self, owner: &str) -> Vec<StreamReport> {
-        let std::collections::btree_map::Entry::Occupied(mut state) =
-            self.owners.entry(owner.to_owned())
+    /// The session at `path` ended: drop it from its owner's set and clear
+    /// the source only when the owner's last session goes. A session not
+    /// tracked (or already closed) changes nothing.
+    pub(crate) fn closed(&mut self, path: &str) -> Vec<StreamReport> {
+        let Some(owner) = session_owner(path) else {
+            return Vec::new();
+        };
+        let std::collections::btree_map::Entry::Occupied(mut state) = self.owners.entry(owner)
         else {
             return Vec::new();
         };
-        state.get_mut().open = state.get().open.saturating_sub(1);
-        if state.get().open > 0 {
+        state.get_mut().sessions.remove(path);
+        if !state.get().sessions.is_empty() {
             return Vec::new();
         }
-        vec![portal_report(owner, &state.remove().exe, false, false)]
+        let (owner, state) = state.remove_entry();
+        vec![portal_report(&owner, &state.exe, false, false)]
     }
 
-    /// Tear down every tracked session (a monitor reconnect): clear each
-    /// live source so nothing lingers armed across the gap.
+    /// `owner` left the bus: every session it held is gone, so its source
+    /// clears.
+    pub(crate) fn gone(&mut self, owner: &str) -> Vec<StreamReport> {
+        self.owners
+            .remove(owner)
+            .map(|state| portal_report(owner, &state.exe, false, false))
+            .into_iter()
+            .collect()
+    }
+
+    /// Tear down every tracked session (a monitor reconnect or a vanished
+    /// portal): clear each live source so nothing lingers armed.
     pub(crate) fn clear(&mut self) -> Vec<StreamReport> {
         let reports = self
             .owners
@@ -529,6 +646,10 @@ fn portal_report(owner: &str, exe: &str, active: bool, provisional: bool) -> Str
 mod tests {
     use super::*;
 
+    const OWNER: &str = ":1.42";
+    const SESSION: &str = "/org/freedesktop/portal/desktop/session/1_42/krdp_a";
+    const OTHER_SESSION: &str = "/org/freedesktop/portal/desktop/session/1_42/krdp_b";
+
     fn call(iface: &str, member: &str, sender: &str) -> PortalMessage {
         PortalMessage {
             ty: MsgType::MethodCall,
@@ -536,6 +657,22 @@ mod tests {
             member: Some(member.into()),
             path: Some(PORTAL_PATH.into()),
             sender: Some(sender.into()),
+            session_token: None,
+            vanished: None,
+        }
+    }
+
+    fn create(iface: &str, sender: &str, token: &str) -> PortalMessage {
+        PortalMessage {
+            session_token: Some(token.into()),
+            ..call(iface, CREATE_SESSION, sender)
+        }
+    }
+
+    fn close(path: &str, sender: &str) -> PortalMessage {
+        PortalMessage {
+            path: Some(path.into()),
+            ..call(SESSION_IFACE, CLOSE, sender)
         }
     }
 
@@ -546,23 +683,46 @@ mod tests {
             member: Some(member.into()),
             path: Some(path.into()),
             sender: Some(":1.10".into()),
+            session_token: None,
+            vanished: None,
+        }
+    }
+
+    fn vanished(name: &str) -> PortalMessage {
+        PortalMessage {
+            vanished: Some(name.into()),
+            ..signal(BUS_NAME, NAME_OWNER_CHANGED, BUS_PATH)
         }
     }
 
     #[test]
     fn create_session_on_capture_interfaces_arms() {
         assert_eq!(
-            classify(&call(SCREENCAST_IFACE, CREATE_SESSION, ":1.42")),
+            classify(&create(SCREENCAST_IFACE, OWNER, "krdp_a")),
             Some(PortalEvent::Create {
-                sender: ":1.42".into()
+                sender: OWNER.into(),
+                session: SESSION.into(),
             })
         );
         assert_eq!(
-            classify(&call(REMOTE_DESKTOP_IFACE, CREATE_SESSION, ":1.43")),
+            classify(&create(REMOTE_DESKTOP_IFACE, ":1.234", "t1")),
             Some(PortalEvent::Create {
-                sender: ":1.43".into()
+                sender: ":1.234".into(),
+                session: "/org/freedesktop/portal/desktop/session/1_234/t1".into(),
             })
         );
+    }
+
+    #[test]
+    fn a_create_session_the_portal_refuses_is_ignored() {
+        // No token: the portal aborts. A token outside [A-Za-z0-9_] or an
+        // empty one: the call fails. Neither opens a session.
+        assert_eq!(
+            classify(&call(SCREENCAST_IFACE, CREATE_SESSION, OWNER)),
+            None
+        );
+        assert_eq!(classify(&create(SCREENCAST_IFACE, OWNER, "a/b")), None);
+        assert_eq!(classify(&create(SCREENCAST_IFACE, OWNER, "")), None);
     }
 
     #[test]
@@ -571,11 +731,7 @@ mod tests {
         // is physically present — it shares the object path and the
         // CreateSession member, so only the interface filter excludes it.
         assert_eq!(
-            classify(&call(
-                "org.freedesktop.portal.InputCapture",
-                CREATE_SESSION,
-                ":1.56"
-            )),
+            classify(&create("org.freedesktop.portal.InputCapture", ":1.56", "t")),
             None
         );
     }
@@ -583,26 +739,64 @@ mod tests {
     #[test]
     fn non_create_portal_methods_are_ignored() {
         // Start/SelectSources/etc. are not the arming edge.
-        assert_eq!(classify(&call(SCREENCAST_IFACE, "Start", ":1.42")), None);
+        assert_eq!(classify(&call(SCREENCAST_IFACE, "Start", OWNER)), None);
         assert_eq!(
-            classify(&call(SCREENCAST_IFACE, "SelectSources", ":1.42")),
+            classify(&call(SCREENCAST_IFACE, "SelectSources", OWNER)),
             None
         );
         assert_eq!(
-            classify(&call(REMOTE_DESKTOP_IFACE, "ConnectToEIS", ":1.42")),
+            classify(&call(REMOTE_DESKTOP_IFACE, "ConnectToEIS", OWNER)),
             None
         );
     }
 
     #[test]
     fn session_closed_signal_disarms() {
-        let path = "/org/freedesktop/portal/desktop/session/1_42/ashpd_AbCd";
         assert_eq!(
-            classify(&signal(SESSION_IFACE, CLOSED, path)),
-            Some(PortalEvent::Closed { path: path.into() })
+            classify(&signal(SESSION_IFACE, CLOSED, SESSION)),
+            Some(PortalEvent::Closed {
+                path: SESSION.into()
+            })
         );
         // A different signal on the session object is not a close.
-        assert_eq!(classify(&signal(SESSION_IFACE, "Response", path)), None);
+        assert_eq!(classify(&signal(SESSION_IFACE, "Response", SESSION)), None);
+    }
+
+    /// The portal tears a session down on its owner's `Close` without
+    /// emitting `Closed`, so the call itself is the disarming edge.
+    #[test]
+    fn the_owners_close_call_disarms() {
+        assert_eq!(
+            classify(&close(SESSION, OWNER)),
+            Some(PortalEvent::Closed {
+                path: SESSION.into()
+            })
+        );
+        // The portal refuses anyone else's Close.
+        assert_eq!(classify(&close(SESSION, ":1.43")), None);
+    }
+
+    /// A client's exit ends its sessions silently too; the bus driver's
+    /// `NameOwnerChanged` is the edge.
+    #[test]
+    fn a_vanished_owner_or_portal_disarms() {
+        assert_eq!(
+            classify(&vanished(OWNER)),
+            Some(PortalEvent::OwnerGone {
+                owner: OWNER.into()
+            })
+        );
+        assert_eq!(
+            classify(&vanished(PORTAL_NAME)),
+            Some(PortalEvent::PortalGone)
+        );
+        // Another well-known name going is not the portal's.
+        assert_eq!(classify(&vanished("org.kde.krdpserver")), None);
+        // A name changing hands (no vanished name) is ignored.
+        assert_eq!(
+            classify(&signal(BUS_NAME, NAME_OWNER_CHANGED, BUS_PATH)),
+            None
+        );
     }
 
     #[test]
@@ -679,49 +873,70 @@ mod tests {
     #[test]
     fn tracker_confirmed_open_and_close_toggle_one_source() {
         let mut t = PortalTracker::default();
-        let r = t.opened(":1.42", "krdpserver".into());
+        let r = t.opened(OWNER, "krdpserver".into(), SESSION.into());
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
         assert!(!r[0].provisional, "a confirmed open always arms");
         assert_eq!(r[0].detail, "krdpserver (:1.42)");
         // The single session closes: the source clears.
-        let r = t.closed(":1.42");
+        let r = t.closed(SESSION);
         assert_eq!(r.len(), 1);
         assert!(!r[0].active);
-        // Closing an unknown owner is a no-op.
-        assert!(t.closed(":1.99").is_empty());
+        // The portal's Closed after the owner's Close is a no-op.
+        assert!(t.closed(SESSION).is_empty());
+        // Closing an unknown owner's session is a no-op.
+        assert!(
+            t.closed("/org/freedesktop/portal/desktop/session/1_99/t")
+                .is_empty()
+        );
     }
 
     #[test]
-    fn tracker_refcounts_concurrent_sessions_per_owner() {
+    fn tracker_keeps_concurrent_sessions_per_owner() {
         let mut t = PortalTracker::default();
         // krdp opens two capture sessions (ScreenCast + RemoteDesktop) from
         // one bus name: the first reports the source active, the second is
         // an already-armed no-op.
-        let r = t.opened(":1.42", "krdpserver".into());
+        let r = t.opened(OWNER, "krdpserver".into(), SESSION.into());
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
-        assert!(t.opened(":1.42", "krdpserver".into()).is_empty());
-        // Closing the first handle must NOT clear the source — the other
-        // session is still capturing.
         assert!(
-            t.closed(":1.42").is_empty(),
-            "one of two concurrent sessions closing keeps the source live"
+            t.opened(OWNER, "krdpserver".into(), OTHER_SESSION.into())
+                .is_empty()
         );
-        // Closing the last handle clears it.
-        let r = t.closed(":1.42");
+        // Closing the first session, even twice (Close, then Closed), must
+        // NOT clear the source — the other session is still capturing.
+        assert!(t.closed(SESSION).is_empty());
+        assert!(
+            t.closed(SESSION).is_empty(),
+            "a session seen closing twice counts once"
+        );
+        // Closing the last session clears it.
+        let r = t.closed(OTHER_SESSION);
         assert_eq!(r.len(), 1);
         assert!(!r[0].active);
         assert_eq!(r[0].detail, "krdpserver (:1.42)");
-        // Fully drained: another close is a no-op.
-        assert!(t.closed(":1.42").is_empty());
+    }
+
+    #[test]
+    fn tracker_clears_an_owner_that_left_with_sessions_open() {
+        let mut t = PortalTracker::default();
+        t.opened(OWNER, "krdpserver".into(), SESSION.into());
+        t.opened(OWNER, "krdpserver".into(), OTHER_SESSION.into());
+        let r = t.gone(OWNER);
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].active);
+        assert_eq!(r[0].detail, "krdpserver (:1.42)");
+        // Already gone: nothing left to clear.
+        assert!(t.gone(OWNER).is_empty());
+        assert!(t.closed(SESSION).is_empty());
     }
 
     #[test]
     fn tracker_bootstrap_is_provisional_until_confirmed() {
         let mut t = PortalTracker::default();
         // A bootstrapped owner reports provisionally.
-        let r = t.provisional(":1.42", "rustdesk".into());
+        let r = t.provisional(OWNER, "rustdesk".into(), vec![SESSION.into()]);
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
         assert!(
@@ -731,19 +946,29 @@ mod tests {
         // A later CreateSession on the wire promotes it to confirmed —
         // re-reported as non-provisional so the aggregator drops the
         // corroboration requirement.
-        let r = t.opened(":1.42", "rustdesk".into());
+        let r = t.opened(OWNER, "rustdesk".into(), OTHER_SESSION.into());
         assert_eq!(r.len(), 1);
         assert!(r[0].active);
         assert!(!r[0].provisional);
-        // Already confirmed: another open is idempotent.
-        assert!(t.opened(":1.42", "rustdesk".into()).is_empty());
+        // The bootstrapped session closing leaves the confirmed one live.
+        assert!(t.closed(SESSION).is_empty());
+        assert_eq!(t.closed(OTHER_SESSION).len(), 1);
+        // An owner with no sessions bootstraps nothing.
+        assert!(
+            t.provisional(":1.43", "rustdesk".into(), Vec::new())
+                .is_empty()
+        );
     }
 
     #[test]
     fn tracker_clear_tears_down_every_live_source() {
         let mut t = PortalTracker::default();
-        t.opened(":1.42", "krdpserver".into());
-        t.provisional(":1.43", "rustdesk".into());
+        t.opened(OWNER, "krdpserver".into(), SESSION.into());
+        t.provisional(
+            ":1.43",
+            "rustdesk".into(),
+            vec!["/org/freedesktop/portal/desktop/session/1_43/t".into()],
+        );
         let mut r = t.clear();
         r.sort_by(|a, b| a.detail.cmp(&b.detail));
         assert_eq!(r.len(), 2);
@@ -760,10 +985,14 @@ mod tests {
     #[test]
     fn tracker_keeps_owners_of_one_exe_apart() {
         let mut t = PortalTracker::default();
-        let first = t.opened(":1.42", "rustdesk".into());
-        let second = t.opened(":1.43", "rustdesk".into());
+        let first = t.opened(OWNER, "rustdesk".into(), SESSION.into());
+        let second = t.opened(
+            ":1.43",
+            "rustdesk".into(),
+            "/org/freedesktop/portal/desktop/session/1_43/t".into(),
+        );
         assert_ne!(first[0].detail, second[0].detail);
-        let r = t.closed(":1.42");
+        let r = t.closed(SESSION);
         assert_eq!(r.len(), 1);
         assert_eq!(
             r[0].detail, first[0].detail,

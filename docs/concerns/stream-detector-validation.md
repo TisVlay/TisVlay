@@ -4,8 +4,8 @@ Field validation of the stream detectors that need more bench setup than a Sunsh
 
 ## Not yet field-validated (needs bench setup)
 
-- **Portal monitor (krdp).** Needs an RDP client + krdp server configured on the box. Validates: `CreateSession` arming edge, exe attribution (`krdpserver`), the provisional bootstrap join, and the tighter portal-`CreateSession`-vs-injected-input ordering race (the case most likely to need retroactive correction, if any detector does).
-- **Portal monitor (RustDesk).** Needs a RustDesk host + a second machine to connect from. Validates portal attribution (`rustdesk`) over the ScreenCast+RemoteDesktop path, and the concurrent-session refcount fix (two clients → the tracker must not disarm on the first disconnect).
+- **Portal monitor (krdp).** Needs an RDP client + krdp server configured on the box. Validates: `CreateSession` arming edge, exe attribution (`krdpserver`), the provisional bootstrap join, and the tighter portal-`CreateSession`-vs-injected-input ordering race (the case most likely to need retroactive correction, if any detector does). The disarm edges are already checked: a scripted portal client running as an allow-listed exe armed the source on `CreateSession` and cleared it on its `Close` call and on its exit (2026-11-16); the portal emitted no `Closed` signal in either case.
+- **Portal monitor (RustDesk).** Needs a RustDesk host + a second machine to connect from. Validates portal attribution (`rustdesk`) over the ScreenCast+RemoteDesktop path, and the per-session tracking (two clients → the tracker must not disarm on the first disconnect).
 - **PipeWire screencast detector.** Exercisable with OBS or a browser tab-share (no remote peer needed). Validates the `Stream/Output/Video` class with the `kwin-screencast-` `media.name` prefix and the `screencast_arms` policy (off → no arm; on → arms). Also the InputCapture false-positive exclusion (lan-mouse holds a standing session on this box).
 - **logind detector.** Needs an xrdp-class graphical remote login. Validates the graphical-`Type` filter (the SSH `Type=tty` exclusion is proven; a real `x11`/`wayland` `Remote=yes` login is not).
 
