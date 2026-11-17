@@ -442,16 +442,12 @@ impl DaemonClient {
     /// `meta/identity`) like everything else.
     pub fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         self.refuse_known_mismatch()?;
-        let rows: Vec<(Uuid, mirror_row::Row)> = self.mirror.read(|mirror| {
+        Ok(self.mirror.read(|mirror| {
             mirror
                 .tvs()
-                .map(|(id, row)| (*id, mirror_row::Row::from(row)))
+                .map(|(id, row)| mirror_row::tv_info(row, *id, &self.site))
                 .collect()
-        });
-        Ok(rows
-            .into_iter()
-            .map(|(id, row)| row.into_tv_info(id, &self.site))
-            .collect())
+        }))
     }
 
     /// The daemon's release. Ungated, so it reports what's running
@@ -1576,94 +1572,75 @@ mod mirror_row {
     use super::*;
     use tisvlay_protocol::payload;
 
-    pub(crate) struct Row {
-        power: Option<payload::Power>,
-        volume: Option<payload::Volume>,
-        link: Option<payload::Link>,
-        input: Option<payload::Input>,
-        backlight: Option<payload::Backlight>,
-        identity: Option<payload::Identity>,
-        meta: Option<payload::Meta>,
-        vendor: Option<payload::VendorRows>,
-    }
-
-    impl From<&mirror::TvRow> for Row {
-        fn from(row: &mirror::TvRow) -> Self {
-            Self {
-                power: row.power.clone(),
-                volume: row.volume.clone(),
-                link: row.link.clone(),
-                input: row.input.clone(),
-                backlight: row.backlight.clone(),
-                identity: row.identity.clone(),
-                meta: row.meta.clone(),
-                vendor: row.vendor.clone(),
-            }
-        }
-    }
-
-    impl Row {
-        pub(crate) fn into_tv_info(self, id: Uuid, site: &str) -> TvInfo {
-            let identity = self
-                .identity
-                .unwrap_or_else(|| payload::Identity::new(String::new(), String::new()));
-            let meta = self.meta.unwrap_or_else(|| payload::Meta::new(false));
-            let caps: Vec<&str> = identity.capabilities.iter().map(String::as_str).collect();
-            let power_state = self.power.as_ref().map(|p| p.state).unwrap_or_default();
-            TvInfo {
-                uuid: id,
-                name: identity.name.clone(),
-                vendor: identity.vendor.clone(),
-                brand: identity
-                    .brand
-                    .clone()
-                    .unwrap_or_else(|| identity.vendor.clone()),
-                capabilities: Capabilities::from_strings(&caps),
-                connected: self.link.as_ref().is_some_and(|l| l.connected),
-                waiting_for: self.link.as_ref().and_then(|l| l.waiting_for),
-                managed: meta.managed,
-                automated: meta.automated,
-                stream_armed: meta.stream_armed,
-                system_profile: meta.system_profile,
-                primary_input: meta.primary_input.unwrap_or_default(),
-                hardware_id: HardwareId {
-                    manufacturer: identity.make.clone(),
-                    model: identity.model.clone(),
-                    serial: identity.serial.clone(),
-                },
-                primary_descriptor: identity.primary.clone().unwrap_or_default(),
-                vendor_config: self
-                    .vendor
-                    .as_ref()
-                    .map(|v| v.config.clone())
-                    .unwrap_or_default(),
-                vendor_info: self
-                    .vendor
-                    .as_ref()
-                    .map(|v| v.diagnostics.clone())
-                    .unwrap_or_default(),
-                desktop: DesktopMapping {
-                    connector: identity.connector.clone().unwrap_or_default(),
-                },
-                path: keys::tv_path(site, &id, ""),
-                power_state,
-                supports_wake: self.link.as_ref().is_some_and(|l| l.supports_wake),
-                is_screen_on: self.power.as_ref().is_some_and(|p| p.is_screen_on),
-                volume: self.volume.as_ref().map(|v| v.level),
-                muted: self.volume.as_ref().map(|v| v.muted),
-                current_input: self.input.as_ref().and_then(|i| i.current.clone()),
-                backlight: self.backlight.as_ref().map(|b| b.level),
-                inputs: self
-                    .input
-                    .as_ref()
-                    .map(|i| {
-                        i.available
-                            .iter()
-                            .map(|entry| (entry.id.clone(), entry.label.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-            }
+    /// Project one mirror row, cloning each field it keeps once.
+    pub(crate) fn tv_info(row: &mirror::TvRow, id: Uuid, site: &str) -> TvInfo {
+        let identity = row.identity.as_ref();
+        let meta = row.meta.as_ref();
+        let text = |field: fn(&payload::Identity) -> &str| {
+            identity
+                .map(|identity| field(identity).to_owned())
+                .unwrap_or_default()
+        };
+        let optional = |field: fn(&payload::Identity) -> Option<&String>| {
+            identity.and_then(field).cloned().unwrap_or_default()
+        };
+        let caps: Vec<&str> = identity
+            .map(|identity| identity.capabilities.iter().map(String::as_str).collect())
+            .unwrap_or_default();
+        TvInfo {
+            uuid: id,
+            name: text(|identity| &identity.name),
+            vendor: text(|identity| &identity.vendor),
+            brand: identity
+                .map(|identity| identity.brand.as_ref().unwrap_or(&identity.vendor).clone())
+                .unwrap_or_default(),
+            capabilities: Capabilities::from_strings(&caps),
+            connected: row.link.as_ref().is_some_and(|l| l.connected),
+            waiting_for: row.link.as_ref().and_then(|l| l.waiting_for),
+            managed: meta.is_some_and(|m| m.managed),
+            automated: meta.is_some_and(|m| m.automated),
+            stream_armed: meta.is_some_and(|m| m.stream_armed),
+            system_profile: meta.and_then(|m| m.system_profile),
+            primary_input: meta
+                .and_then(|m| m.primary_input.clone())
+                .unwrap_or_default(),
+            hardware_id: HardwareId {
+                manufacturer: identity.and_then(|identity| identity.make.clone()),
+                model: identity.and_then(|identity| identity.model.clone()),
+                serial: identity.and_then(|identity| identity.serial.clone()),
+            },
+            primary_descriptor: optional(|identity| identity.primary.as_ref()),
+            vendor_config: row
+                .vendor
+                .as_ref()
+                .map(|v| v.config.clone())
+                .unwrap_or_default(),
+            vendor_info: row
+                .vendor
+                .as_ref()
+                .map(|v| v.diagnostics.clone())
+                .unwrap_or_default(),
+            desktop: DesktopMapping {
+                connector: optional(|identity| identity.connector.as_ref()),
+            },
+            path: keys::tv_path(site, &id, ""),
+            power_state: row.power.as_ref().map(|p| p.state).unwrap_or_default(),
+            supports_wake: row.link.as_ref().is_some_and(|l| l.supports_wake),
+            is_screen_on: row.power.as_ref().is_some_and(|p| p.is_screen_on),
+            volume: row.volume.as_ref().map(|v| v.level),
+            muted: row.volume.as_ref().map(|v| v.muted),
+            current_input: row.input.as_ref().and_then(|i| i.current.clone()),
+            backlight: row.backlight.as_ref().map(|b| b.level),
+            inputs: row
+                .input
+                .as_ref()
+                .map(|i| {
+                    i.available
+                        .iter()
+                        .map(|entry| (entry.id.clone(), entry.label.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
