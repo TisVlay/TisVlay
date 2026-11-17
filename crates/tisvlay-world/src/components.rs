@@ -14,9 +14,7 @@ use tisvlay_protocol::{keys, payload};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::events::{
-    BackendCmd, SleepRequest, StoreSnapshot, SystemEvent, TransportInfo, WakeList, WireEffect,
-};
+use crate::events::{BackendCmd, SleepRequest, StoreSnapshot, TransportInfo, WakeList, WireEffect};
 
 /// Stable identity of a TV entity — the uuid chunk of its keys.
 ///
@@ -416,57 +414,6 @@ pub(crate) enum ProfileAction {
     ScreenOn,
     PowerOff,
     PowerOn,
-}
-
-/// Event → `(action, restore_input, while_streaming)` mapping applied when
-/// a TV has no assigned profile or its profile leaves the event's field
-/// unset — the inheritance base the `profile/rpc/defaults` projection
-/// serves. The trailing bool is the resolved stream gate: `true`
-/// fires while the TV is armed, `false` suppresses.
-#[derive(Resource, Debug)]
-pub(crate) struct SystemProfile(pub HashMap<SystemEvent, (ProfileAction, bool, bool)>);
-
-impl SystemProfile {
-    /// Stock mapping, the floor `ResolvedSystemProfile::default` defines:
-    /// full power-off on sleep/shutdown, wake-on-LAN on resume,
-    /// screen-blank mirroring for DPMS and the login greeter's idle timer.
-    /// The session-start wakes restore the primary input (mirrors
-    /// `ResolvedSystemProfile::default`).
-    ///
-    /// The `while_streaming` floor splits by event direction, mirroring
-    /// [`tisvlay_core::ResolvedSystemProfile::default`]: off-going events
-    /// fire while armed (a blank is always safe to let through, and the
-    /// machine going away turns the TV off for the empty room), so sleep,
-    /// shutdown, and the DPMS-off/greeter-idle blanks are ungated; the
-    /// wake-ish events (startup, resume, DPMS-on, greeter-resume) stay
-    /// gated. Greeter events run before any session, so their gate never
-    /// bites either way (the armed set is empty at the login screen).
-    pub(crate) fn stock() -> Self {
-        Self(HashMap::from([
-            // WoL at boot; a reboot deliberately has no stock action
-            // (the TV stays on across a quick restart).
-            (SystemEvent::Startup, (ProfileAction::PowerOn, true, false)),
-            (SystemEvent::Sleep, (ProfileAction::PowerOff, false, true)),
-            (SystemEvent::Resume, (ProfileAction::PowerOn, true, false)),
-            (
-                SystemEvent::Shutdown,
-                (ProfileAction::PowerOff, false, true),
-            ),
-            (
-                SystemEvent::DpmsOff,
-                (ProfileAction::ScreenOff, false, true),
-            ),
-            (SystemEvent::DpmsOn, (ProfileAction::ScreenOn, false, false)),
-            (
-                SystemEvent::GreeterIdle,
-                (ProfileAction::ScreenOff, false, true),
-            ),
-            (
-                SystemEvent::GreeterResume,
-                (ProfileAction::ScreenOn, false, false),
-            ),
-        ]))
-    }
 }
 
 /// The set of TVs a stream currently arms — mirrored from the

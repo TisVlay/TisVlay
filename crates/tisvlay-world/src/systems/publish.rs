@@ -99,17 +99,9 @@ pub(super) fn publish_greeter_timeout(
         if !meta.automated {
             continue;
         }
-        let assigned = meta
-            .system_profile
-            .and_then(|id| profile_body(id, &profile_index, &bodies))
-            .and_then(|body| body.idle_timeout_seconds);
-        let inherited = profile_body(
-            tisvlay_core::DEFAULT_SYSTEM_PROFILE_UUID,
-            &profile_index,
-            &bodies,
-        )
-        .and_then(|body| body.idle_timeout_seconds);
-        let seconds = assigned.or(inherited).unwrap_or(0);
+        let seconds = resolve_system_field(Some(&meta.0), &profile_index, &bodies, |body| {
+            body.idle_timeout_seconds
+        });
         if seconds > 0 && (timeout == 0 || seconds < timeout) {
             timeout = seconds;
         }

@@ -18,8 +18,7 @@ use tokio::sync::mpsc;
 use crate::backend;
 use crate::components::{
     Clock, ConnectionHandle, DeviceWatch, DialSeq, Effect, GoingOff, KnownVendors, LastPersisted,
-    Outbox, PairingIndex, PowerEdges, ProfileIndex, Site, SleepPending, StreamArmed, SystemProfile,
-    TvIndex,
+    Outbox, PairingIndex, PowerEdges, ProfileIndex, Site, SleepPending, StreamArmed, TvIndex,
 };
 use crate::events::{
     AckReply, AnyReply, BackendCmd, BackendEvent, Command, DeviceRequest, InEvent, PairingUpdate,
@@ -97,7 +96,6 @@ impl Reactor {
         world.insert_resource(KnownVendors(
             connectors.keys().cloned().collect::<HashSet<_>>(),
         ));
-        world.insert_resource(SystemProfile::stock());
         world.init_resource::<StreamArmed>();
         world.init_resource::<PowerEdges>();
         world.init_resource::<GoingOff>();
