@@ -12,6 +12,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use zbus::proxy;
 
+use crate::supervise::LossLatch;
+
 #[proxy(
     interface = "org.freedesktop.login1.Manager",
     default_service = "org.freedesktop.login1",
@@ -91,18 +93,15 @@ where
     C: Fn() -> F,
     F: Future<Output = zbus::Result<zbus::Connection>>,
 {
-    let mut warned = false;
+    let mut latch = LossLatch::default();
     loop {
         let started = tokio::time::Instant::now();
         let outcome = match connect().await {
             Ok(connection) => watch_logind(connection, world.clone()).await,
             Err(e) => Err(e.into()),
         };
-        if started.elapsed() > Duration::from_secs(60) {
-            warned = false;
-        }
         if let Err(e) = outcome
-            && !std::mem::replace(&mut warned, true)
+            && latch.should_warn(started.elapsed())
         {
             warn!(error = %format!("{e:#}"), retry_in = ?delay, "logind watcher lost; reconnecting");
         }

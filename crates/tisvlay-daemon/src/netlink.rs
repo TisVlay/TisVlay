@@ -32,6 +32,8 @@ use netlink_packet_route::link::{LinkAttribute, LinkFlags, LinkMessage};
 use netlink_packet_route::route::RouteAttribute;
 use rtnetlink::{MulticastGroup, RouteMessageBuilder, new_connection, new_multicast_connection};
 use tisvlay_world::{InEvent, RouteRequest, WorldClient};
+
+use crate::supervise::{Watch, supervise};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 use uuid::Uuid;
@@ -42,56 +44,42 @@ use uuid::Uuid;
 /// events over seconds.
 const ROUTE_SETTLE: Duration = Duration::from_millis(100);
 
-/// Reconnect backoff after the kernel connection fails: doubling from the
-/// first bound up to the second. It starts over only after a connection
-/// stayed up for the second bound, so one that opens and dies at once
-/// backs off instead of retrying every second.
-const RECONNECT_MIN: Duration = Duration::from_secs(1);
-const RECONNECT_MAX: Duration = Duration::from_secs(60);
-
 pub(crate) fn spawn_link_monitor(
     world: WorldClient,
     routes: mpsc::UnboundedReceiver<RouteRequest>,
 ) {
-    tokio::spawn(supervise(world, routes));
+    let monitor = Monitor {
+        world,
+        state: MonitorState::default(),
+    };
+    tokio::spawn(supervise(monitor, routes));
 }
 
-/// Keep the monitor running for the world's lifetime. Each connection
-/// opens the multicast subscription, resyncs, and watches; when it fails
-/// (the open, the link dump, or the message stream ending), route
-/// requests are still served through a capped backoff, then it
-/// reconnects. Without this a dead connection would silently end carrier
-/// and route monitoring, and a TV parked during a network blip would
-/// never redial. The monitor's view survives reconnects.
-async fn supervise(world: WorldClient, mut routes: mpsc::UnboundedReceiver<RouteRequest>) {
-    let mut state = MonitorState::default();
-    let mut backoff = RECONNECT_MIN;
-    loop {
-        let started = tokio::time::Instant::now();
-        let error = match watch_network(&world, &mut routes, &mut state).await {
-            Ok(()) => return,
-            Err(error) => error,
-        };
-        if started.elapsed() >= RECONNECT_MAX {
-            backoff = RECONNECT_MIN;
-        }
-        warn!(error = %format!("{error:#}"), retry_in = ?backoff, "network monitor lost its kernel connection; reconnecting");
-        let pause = tokio::time::sleep(backoff);
-        tokio::pin!(pause);
-        loop {
-            tokio::select! {
-                request = routes.recv() => match request {
-                    Some(request) => {
-                        if !handle_request(&world, &mut state, request).await {
-                            return;
-                        }
-                    }
-                    None => return,
-                },
-                () = &mut pause => break,
-            }
-        }
-        backoff = backoff.saturating_mul(2).min(RECONNECT_MAX);
+/// The route monitor, supervised for the world's lifetime: when its kernel
+/// connection fails, route requests are still served while it reopens.
+/// Without this a dead connection would silently end carrier and route
+/// monitoring, and a TV parked during a network blip would never redial.
+struct Monitor {
+    world: WorldClient,
+    state: MonitorState,
+}
+
+impl Watch for Monitor {
+    type Request = RouteRequest;
+
+    async fn watch(
+        &mut self,
+        requests: &mut mpsc::UnboundedReceiver<RouteRequest>,
+    ) -> anyhow::Result<()> {
+        watch_network(&self.world, requests, &mut self.state).await
+    }
+
+    async fn serve(&mut self, request: RouteRequest) -> bool {
+        handle_request(&self.world, &mut self.state, request).await
+    }
+
+    fn lost(&self, error: &anyhow::Error, retry_in: Duration) {
+        warn!(error = %format!("{error:#}"), ?retry_in, "network monitor lost its kernel connection; reconnecting");
     }
 }
 

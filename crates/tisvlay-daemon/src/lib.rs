@@ -14,6 +14,7 @@ mod seat;
 mod seed;
 pub mod service;
 mod store;
+mod supervise;
 pub mod wakeup;
 
 use std::collections::{HashMap, HashSet};
