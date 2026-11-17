@@ -77,7 +77,7 @@ toml_edit = "0.25"
 
 # The system's monospace family for the GUI (the font library Slint uses;
 # kept on the version Slint pins so the graph holds one copy).
-fontique = "0.11"
+fontique = "0.12"
 
 # Error handling
 thiserror = "2"
@@ -206,7 +206,7 @@ ksni = "0.3"
 # off the cold-build path. `unstable-winit-030` is a preliminary API, so
 # slint is pinned exactly — bump it together with slint-build and
 # i-slint-backend-testing, re-checking the winit-030 call sites.
-slint = { version = "=1.18.1", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
+slint = { version = "=1.19.0", default-features = false, features = ["std", "backend-winit-wayland", "compat-1-2", "renderer-femtovg", "gettext", "unstable-winit-030"] }
 
 # Freedesktop icon-theme lookup (name → file path), shared by the GUI
 # and tray via tisvlay-icons.

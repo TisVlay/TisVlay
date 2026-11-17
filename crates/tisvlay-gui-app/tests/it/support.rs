@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use i_slint_backend_testing::{ElementHandle, ElementQuery};
 use slint::platform::{Key, WindowEvent};
-use slint::{ComponentHandle, SharedString};
+use slint::{ComponentHandle, LogicalPosition, SharedString};
 use tisvlay_gui::AppWindow;
 
 /// Find the (single) widget whose `accessible-id` matches. The testing
@@ -57,6 +57,18 @@ pub(crate) fn press_text(app: &AppWindow, text: SharedString) {
     settle();
 }
 
+/// One wheel notch at a window position, in logical pixels: a negative
+/// `delta_y` scrolls the content under the pointer down, as a wheel
+/// turned toward the user does. Then [`settle`].
+pub(crate) fn scroll_at(app: &AppWindow, x: f32, y: f32, delta_y: f32) {
+    app.window().dispatch_event(WindowEvent::PointerScrolled {
+        position: LogicalPosition::new(x, y),
+        delta_x: 0.0,
+        delta_y,
+    });
+    settle();
+}
+
 /// Shift+Tab, the way a keyboard or a gamepad's left shoulder sends it:
 /// Shift held around a Tab. Slint turns that into backtab itself; the
 /// `Backtab` key code never arrives from a real window.
@@ -77,6 +89,13 @@ pub(crate) fn press_shift_tab(app: &AppWindow) {
 /// mock clock past a frame and fire due timers, so zero-interval timers
 /// (deferred focus, synthesized keys) have run before the test asserts.
 pub(crate) fn settle() {
-    i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(16));
+    elapse(16);
+}
+
+/// Advance the backend's mock clock by `millis` and run what came due:
+/// timers, and animations such as a wheel scroll's (180 ms in Slint's
+/// Flickable), which [`settle`]'s one frame leaves mid-flight.
+pub(crate) fn elapse(millis: u64) {
+    i_slint_backend_testing::mock_elapsed_time(Duration::from_millis(millis));
     slint::platform::update_timers_and_animations();
 }

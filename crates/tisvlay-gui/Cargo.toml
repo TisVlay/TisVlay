@@ -19,7 +19,7 @@ path = "src/lib.rs"
 slint = { workspace = true }
 
 [build-dependencies]
-slint-build = "=1.18.1"
+slint-build = "=1.19.0"
 
 [lints]
 workspace = true

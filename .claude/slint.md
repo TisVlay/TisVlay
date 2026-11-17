@@ -352,10 +352,16 @@ The user-driven workflow that worked for me:
 - **Multi-step UI flows.** Click navigation through nested custom
   components has been flaky. Drive interactive flows by asking the
   user; verify via screenshots + journal logs.
-- **Live reload.** `slint-viewer --auto-reload <file>.slint` is the
-  fast iteration path for pure layout/style work — but it doesn't run
-  Rust callbacks, so anything tied to backend state has to be done in
-  the full app.
+- **Live reload.** `slint-viewer --auto-reload crates/tisvlay-gui` is
+  the fast iteration path for pure layout/style work — the crate
+  directory, so the viewer reads `slint-project.json` (the main file and
+  the edition; a `.slint` path alone compiles without the edition). It
+  doesn't run Rust callbacks, so anything tied to backend state has to
+  be done in the full app. `--check` on the same directory prints the
+  compiler's diagnostics, the info level included, which `slint-build`
+  doesn't; `--screenshot out.png --size WxH --load-data props.json`
+  renders a state headlessly (`SLINT_BACKEND=software`), with the root
+  component's `in` properties set from the JSON.
 - **Property inspection.** `get_element_properties` returns geometry
   + opacity + types only. It does NOT expose user-defined Slint
   property values. Add an `info!` log on the Rust side to introspect

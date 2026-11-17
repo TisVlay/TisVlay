@@ -7,11 +7,11 @@ Running list of Slint footguns this project has hit and worked around. Each is a
 
 ### `Timer.restart()` ICEs the compiler inside an inlined component
 
-When a `Timer` lives in a reusable component that gets inlined, `lower_restart_timer` can't find it post-inline and the compiler panics. Drive `running` directly (`running: true` / `false` in the handler) instead of calling `.restart()`.
+When a `Timer` lives in a reusable component that gets inlined, `lower_restart_timer` can't find it post-inline and the compiler panics. Drive `running` directly (`running: true` / `false` in the handler) instead of calling `.restart()`. A minimal component with a timer compiles on 1.18.1 and 1.19 alike, so the shape that crashed isn't pinned down; the workaround costs nothing and stays.
 
 ### `changed <geometry>` reading `absolute-position` panics the layout cache
 
-A `changed anchor` handler — or any handler that reads `absolute-position` *during* layout — trips a reentrant layout-cache panic. Defer the read to a post-layout event: bump a cheap non-geometry tick property from `changed viewport-y` / `changed width` and read `absolute-position` only in that tick's handler. The contextual-help overlay's anchor tracking uses this pattern ([gui/contextual-help.md](../gui/contextual-help.md)).
+A `changed anchor` handler — or any handler that reads `absolute-position` *during* layout — trips a reentrant layout-cache panic. Defer the read to a post-layout event: bump a cheap non-geometry tick property from `changed viewport-y` / `changed width` and read `absolute-position` only in that tick's handler. The contextual-help overlay's anchor tracking uses this pattern ([gui/contextual-help.md](../gui/contextual-help.md)). A probe reading `absolute-position` from a `changed width` handler didn't panic on 1.19; the deferred read is the robust form regardless.
 
 ### Built-in `Tooltip` / `PopupWindow` are unfit for anchored persistent bubbles
 
@@ -24,15 +24,11 @@ Both drove the custom in-window overlay — see [gui/contextual-help.md](../gui/
 
 A Slint `TouchArea` is binary: enabled it eats both clicks and hover; disabled it eats neither. There is no "block clicks but let hover through," so a full-window modal scrim and a live cursor are mutually exclusive — the help overlay forgoes a scrim (intercepting only the bubble rect) and dismisses when focus leaves the "i"'s row instead, which (because the window's `forward-focus` points at a full-area nav `FocusScope` with `focus-on-click`) still yields a click-anywhere dismiss without any scrim. The same binary nature means a destroyed or disabled `TouchArea` never emits a final `has-hover = false`, so a trigger that goes non-interactive must clear its own hover state explicitly.
 
-The rest were hit making the GUI navigable from a remote ([gui/remote-navigation.md](../gui/remote-navigation.md)), on Slint 1.18.1.
+The rest were hit making the GUI navigable from a remote ([gui/remote-navigation.md](../gui/remote-navigation.md)), on Slint 1.18.1, and re-checked on 1.19.
 
 ### The winit backend drops keys it can't name
 
 A key with neither a Slint name nor text never reaches a handler. A gamepad's Square under Plasma Bigscreen arrives as the `XF86MenuKB` keysym (winit: `Key::Unidentified(NativeKey::Xkb(0x1008ff65))`) and its Share and L2 as `XF86Back` (winit: `NamedKey::BrowserBack`, which Slint has no name for). The `on_winit_window_event` hook sees them first: `keys::remap_dropped_key` maps them to Menu and Escape, the hook dispatches that key through `Window::dispatch_event` and prevents the original.
-
-### Tab skips a stop under a clipping ancestor while it's scrolled out of view
-
-Traversal forgives an item hidden only by a `Flickable`, but its walk stops at the first clipping ancestor, and that ancestor's own clip rect is already empty below the fold (`item_tree.rs`, `is_visible_or_clipped_by_flickable`), so a `TextInput` or `FocusScope` under a `Rectangle { clip: true }` is skipped while a bare one is reached. `LineEdit` clips its `TextInput`. Keep the stop's `FocusScope` outside any clip, or take the Tab in a reach scope outside the clip and forward focus programmatically: programmatic focus ignores visibility and still scrolls into view.
 
 ### No focus, no key handlers
 
@@ -40,7 +36,7 @@ When the focused item is hidden or destroyed, Slint clears focus, and with nothi
 
 ### `changed has-focus` is deferred; `focus-gained` is synchronous
 
-A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all. `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
+A `changed` handler runs after the pass that changed the property, and a component created and focused in the same pass (a detail focusing its first stop from `init`) never sees a `changed has-focus` at all (slint-ui/slint#14894; its fix, slint-ui/slint#14927, merged after the 1.19 release branch was cut). `FocusScope.focus-gained(reason)` runs synchronously inside the focus change. Anything the same pass must read (the GUI's column and row reporting, read by a Rust loop between synthesized Tabs) goes in `focus-gained`; what needs the deferred handler covers the created-and-focused case in `init`.
 
 ### Change handlers in one pass run newest first
 
@@ -48,11 +44,7 @@ The pending `changed` handlers are pushed at the front of a list and drained fro
 
 ### A programmatic `focus()` on an item that refuses walks on
 
-`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, and with the `Programmatic` reason it ignores visibility. So `focus()` on a disabled control isn't a no-op: focus lands on whatever accepts next in tree order, a hidden dialog's `FocusScope` included, with no ring anywhere. The next key then doesn't reach that scope either: `process_key_input` drops a focus item its clip-aware `is_visible()` rejects, so the key is lost, and a shell that restores focus on a lost key sends it straight back in. Disable what's closed (`enabled: open` on a dialog's scope and buttons) and guard a programmatic `focus()` on a target that may be disabled. Reproduced on 1.18.1 and on master (2026-11-07).
-
-### The Menu key's release opens a `ContextMenu` too
-
-Slint's `ContextMenu` item opens on any Menu key event, the release included. A capture handler that takes the press for its own purpose has to take the release as well, or the context menu opens anyway.
+`focus()` compiles to `set_focus_item(.., Programmatic)`, whose `move_focus` takes focus off the current item and walks `next_focus_item` until one accepts, the way Tab would from there. So `focus()` on a disabled control isn't a no-op: the current item loses focus, and it lands on the next stop in tree order or nowhere. Guard a programmatic `focus()` on a target that may be disabled. Up to Slint 1.18 the walk ignored visibility as well and could land in a hidden dialog's `FocusScope`, where every key was dropped (slint-ui/slint#14893); hidden items are skipped since 1.19, so what's closed needs no `enabled: open`.
 
 ### `row` is a reserved property name
 
@@ -60,8 +52,18 @@ Slint's `ContextMenu` item opens on any Menu key event, the release included. A 
 
 ### Scroll-into-view has no margin
 
-The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it.
+The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it. Slint 1.19's `ensure-visible(behavior)` scrolls the same way, edge to edge, so the margin stays the GUI's own. `ThemedSelect`'s flyout does use it: the cursor row calls `ensure-visible(instant)` from `changed is-cursor`, which also keeps a key step in view after a wheel scroll replaced the flyout's `content-y` binding. A select opening on a value past `max-visible` keeps the binding for its first position, since that row becomes the cursor in the creation pass, where `changed` doesn't run and the layout isn't there to read.
 
 ### `TextInput` focus rules
 
 `TextInput::focus_event` refuses focus while `enabled: false` (a programmatic `focus()` then walks on, see above), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.
+
+The last two were found moving the GUI to Slint 1.19.
+
+### Edition 1.19 sizes `if` and `for` children, and the compiler gains infos
+
+The UI opts into edition 1.19 in `crates/tisvlay-gui/slint-project.json`, which the build script compiles and the LSP and `slint-viewer` read too, so all three agree on the edition (a bare `.slint` path to the viewer compiles without it). The edition's gates that can move this UI are the sizing ones: an element created with `if` or `for` counts toward its parent's size, and a wrapping `Text` with a width of its own inside one is measured at that width ([slint-ui/slint#14705](https://github.com/slint-ui/slint/issues/14705)). Headless renders under `--edition 1.19` and `--edition 1.18` matched pixel for pixel when the GUI moved. 1.19 also adds an info level, chiefly "a binding to a property's default value": `slint-build` drops infos, while the viewer's `--check` and the LSP show them. The GUI keeps the check clean, so a new default-valued binding shows up as the only line.
+
+### `unstable-fontique-012` isn't worth adopting
+
+`fontique_012::set_shared_collection()` would hand Slint the font collection the GUI builds for its monospace lookup (`fonts.rs`), one fontconfig view and one scan instead of two. It sits behind a preliminary feature renamed at every fontique bump, next to `unstable-winit-030`, while both scans already run off the UI thread and read the same fontconfig, so nothing a user sees would change. Revisit if the feature stabilizes.

@@ -29,7 +29,6 @@ Items that aren't bugs but represent fragility, suboptimal patterns, or deferred
 
 - [Slint `unstable-winit-030` feature dependency](slint-unstable-winit-030.md)
 - [Slint `ComboBox` dropdown clipped by the window](slint-combobox-popup-clipped.md)
-- [Slint live-preview interpreter panics on a navigation callback (dev-only; #6426)](slint-live-preview-nav-crash.md)
 - [Slint compiler/runtime gotchas hit building the GUI (all worked around)](slint-gotchas.md)
 
 ## Packaging & deployment
