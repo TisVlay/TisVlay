@@ -51,7 +51,7 @@ async fn settings_round_trip_and_persistence() {
 
     let client = TrayClient::connect(&user_socket, "t").await.unwrap();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while !client.is_available().await {
+    while !client.is_available() {
         assert!(
             !service.is_finished(),
             "settings service died: {:?}",
@@ -84,7 +84,6 @@ async fn settings_round_trip_and_persistence() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while !client
         .notification_settings()
-        .await
         .is_some_and(|mirrored| mirrored == settings)
     {
         assert!(
@@ -179,8 +178,8 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
         .await
         .unwrap();
     let tray_client = TrayClient::connect(&user_socket, "t").await.unwrap();
-    assert!(!session_client.is_available().await);
-    assert!(!tray_client.is_available().await);
+    assert!(!session_client.is_available());
+    assert!(!tray_client.is_available());
     tokio::time::sleep(Duration::from_millis(400)).await;
 
     // Now the stack: daemon, session service (router hub), tray
@@ -218,7 +217,7 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
     ));
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-    while !(session_client.is_available().await && tray_client.is_available().await) {
+    while !(session_client.is_available() && tray_client.is_available()) {
         assert!(
             !service.is_finished(),
             "settings service died: {:?}",
@@ -227,8 +226,8 @@ async fn clients_before_stack_see_liveliness_when_it_appears() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "liveliness never reached the pre-existing clients: session={} tray={}",
-            session_client.is_available().await,
-            tray_client.is_available().await,
+            session_client.is_available(),
+            tray_client.is_available(),
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

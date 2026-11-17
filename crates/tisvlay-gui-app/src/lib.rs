@@ -1860,7 +1860,7 @@ fn register_callbacks(
         let tv_id = tv_id.to_string();
         let picked_name = profile.to_string();
         tokio::spawn(async move {
-            let bodies = d.list_system_profile_bodies().await;
+            let bodies = d.list_system_profile_bodies();
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
@@ -1905,7 +1905,7 @@ fn register_callbacks(
                 );
                 return;
             };
-            let bodies = client.list_user_profile_bodies().await;
+            let bodies = client.list_user_profile_bodies();
             let Some(uuid) = bodies
                 .iter()
                 .find(|(u, b)| {
@@ -3024,7 +3024,7 @@ mod tests {
         let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if ready(&daemon.list_tvs().await.unwrap()) {
+                if ready(&daemon.list_tvs().unwrap()) {
                     break;
                 }
                 watcher.next().await.expect("state watcher remains open");
@@ -3045,7 +3045,7 @@ mod tests {
         let mut observed = serde_json::Value::Null;
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let bodies = daemon.list_system_profile_bodies().await;
+                let bodies = daemon.list_system_profile_bodies();
                 if let Some(body) = bodies.get(&id) {
                     observed = serde_json::to_value(body).unwrap();
                     if ready(&observed) {
@@ -3079,7 +3079,7 @@ mod tests {
         let mut observed = serde_json::Value::Null;
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                let bodies = client.list_user_profile_bodies().await;
+                let bodies = client.list_user_profile_bodies();
                 if let Some(body) = bodies.get(&id) {
                     observed = serde_json::to_value(body).unwrap();
                     if ready(&observed) {
@@ -3104,7 +3104,7 @@ mod tests {
     async fn wait_for_system_profile_removed(daemon: &DaemonClient, id: uuid::Uuid) {
         let mut watcher = tisvlay::StateWatcher::new(daemon, None, None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while daemon.list_system_profile_bodies().await.contains_key(&id) {
+            while daemon.list_system_profile_bodies().contains_key(&id) {
                 watcher
                     .next()
                     .await
@@ -3124,7 +3124,7 @@ mod tests {
         let mut watcher =
             tisvlay::StateWatcher::new(daemon, Some(client), None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while client.list_user_profile_bodies().await.contains_key(&id) {
+            while client.list_user_profile_bodies().contains_key(&id) {
                 watcher
                     .next()
                     .await
@@ -3235,7 +3235,7 @@ mod tests {
         wait_for_ui(&app, move |app| {
             app.global::<Profiles>().get_selected_uuid() == profile.to_string()
         });
-        let mut body = daemon.get_system_profile(profile).await.unwrap();
+        let mut body = daemon.get_system_profile(profile).unwrap();
         body.name = "Watcher work renamed".into();
         body.on_startup = Some(tisvlay_core::EventAction::Plain(
             tisvlay_core::SessionAction::ScreenOff,
@@ -3293,7 +3293,7 @@ mod tests {
             user_profile,
         )
         .await;
-        let mut user_body = session_client.get_user_profile(user_profile).await.unwrap();
+        let mut user_body = session_client.get_user_profile(user_profile).unwrap();
         user_body.name = "Watcher personal renamed".into();
         user_body.locked_idle_timeout_seconds = Some(123);
         session_client
@@ -3483,7 +3483,7 @@ mod tests {
         let daemon = Arc::new(DaemonClient::connect(&socket, "main").await.unwrap());
         let mut watcher = tisvlay::StateWatcher::new(&daemon, None, None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while !daemon.is_available().await {
+            while !daemon.is_available() {
                 watcher.next().await.unwrap();
             }
         })
@@ -3654,7 +3654,7 @@ mod tests {
         .await;
 
         let controls = app.global::<Daemon>();
-        let input = daemon.list_tvs().await.unwrap()[0].inputs[1].0.clone();
+        let input = daemon.list_tvs().unwrap()[0].inputs[1].0.clone();
         controls.invoke_set_volume(tv.to_string().into(), 64);
         controls.invoke_set_backlight(tv.to_string().into(), 24);
         controls.invoke_set_mute(tv.to_string().into(), true);
@@ -3776,7 +3776,7 @@ mod tests {
         })
         .await;
         assert_eq!(
-            daemon.list_system_profile_bodies().await[&original_id].name,
+            daemon.list_system_profile_bodies()[&original_id].name,
             "Work"
         );
         controls.invoke_set_system_profile(tv.to_string().into(), "Work".into());
@@ -3855,7 +3855,7 @@ mod tests {
         let mut watcher =
             tisvlay::StateWatcher::new(&daemon, Some(&client), None, Default::default());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while !client.is_available().await {
+            while !client.is_available() {
                 watcher.next().await.unwrap();
             }
         })
@@ -3906,7 +3906,7 @@ mod tests {
         .await;
         controls.invoke_set_user_profile(tv.to_string().into(), "Personal renamed".into());
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while client.get_tv_user_profile(tv).await != Some(user_id) {
+            while client.get_tv_user_profile(tv) != Some(user_id) {
                 watcher.next().await.unwrap();
             }
         })
@@ -4034,7 +4034,7 @@ mod tests {
             Default::default(),
         );
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while !tray_client.is_available().await {
+            while !tray_client.is_available() {
                 tray_events.next().await.unwrap();
             }
         })

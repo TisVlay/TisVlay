@@ -25,11 +25,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // wait for that state to arrive (`StateEvent::Hydrated`) before
     // reading it, so an empty list means no TVs.
     let mut events = StateWatcher::new(&daemon, None, None, StateWatcherConfig::default());
-    while !daemon.is_hydrated().await {
+    while !daemon.is_hydrated() {
         events.next().await;
     }
     let mut out = std::io::stdout().lock();
-    for tv in daemon.list_tvs().await? {
+    for tv in daemon.list_tvs()? {
         writeln!(out, "{} {} (connected: {})", tv.uuid, tv.name, tv.connected)?;
         daemon.screen_off(tv.uuid).await?;
     }

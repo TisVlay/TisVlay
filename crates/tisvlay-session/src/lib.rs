@@ -664,7 +664,6 @@ impl Core {
         let fleet: HashMap<Uuid, tisvlay::TvInfo> = self
             .daemon
             .list_tvs()
-            .await
             .unwrap_or_default()
             .into_iter()
             .map(|tv| (tv.uuid, tv))

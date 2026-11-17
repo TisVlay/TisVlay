@@ -416,14 +416,14 @@ impl DaemonClient {
     /// Whether the daemon's liveliness token is present: a mirror read.
     /// `true` doesn't promise the next rpc succeeds (the daemon may be
     /// stopping, or run another release).
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
@@ -432,7 +432,7 @@ impl DaemonClient {
     /// check settles ([`StateEvent::ReleaseChecked`]). Ungated, so it
     /// reports a mismatched release too. A mirror read; [`Self::version`]
     /// and [`Self::config_path`] ask the daemon instead.
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -440,7 +440,7 @@ impl DaemonClient {
     /// projection, no rpcs: the vendor display rows and the primary
     /// descriptor arrive as published state (`meta/vendor`,
     /// `meta/identity`) like everything else.
-    pub async fn list_tvs(&self) -> Result<Vec<TvInfo>> {
+    pub fn list_tvs(&self) -> Result<Vec<TvInfo>> {
         self.refuse_known_mismatch()?;
         let rows: Vec<(Uuid, mirror_row::Row)> = self.mirror.read(|mirror| {
             mirror
@@ -894,7 +894,7 @@ impl DaemonClient {
     }
 
     /// A system profile's body, from the mirror.
-    pub async fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
+    pub fn get_system_profile(&self, profile: Uuid) -> Option<SystemProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -905,7 +905,7 @@ impl DaemonClient {
     /// Every system profile by id, the reserved default included: a
     /// mirror read. Empty once the daemon is known to run a mismatched
     /// release.
-    pub async fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
+    pub fn list_system_profile_bodies(&self) -> HashMap<Uuid, SystemProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
@@ -1054,21 +1054,21 @@ impl SessionClient {
     /// Whether the session service's liveliness token is present: a
     /// mirror read, with the same caveat as
     /// [`DaemonClient::is_available`].
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the session service's
     /// release and state-file path. A mirror read, like
     /// [`DaemonClient::service_info`].
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -1095,7 +1095,7 @@ impl SessionClient {
 
     /// The TV's assigned user-profile uuid, from the mirror; `None` when
     /// it uses the default.
-    pub async fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
+    pub fn get_tv_user_profile(&self, tv: Uuid) -> Option<Uuid> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1115,7 +1115,7 @@ impl SessionClient {
     /// Every user profile by id, the reserved default included: a mirror
     /// read. Empty once the session service is known to run a
     /// mismatched release.
-    pub async fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
+    pub fn list_user_profile_bodies(&self) -> HashMap<Uuid, UserProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return HashMap::new();
         }
@@ -1130,7 +1130,7 @@ impl SessionClient {
 
     /// A user profile's body, from the mirror; `None` against a service
     /// on another release.
-    pub async fn get_user_profile(&self, profile: Uuid) -> Option<UserProfileBody> {
+    pub fn get_user_profile(&self, profile: Uuid) -> Option<UserProfileBody> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1214,7 +1214,7 @@ impl SessionClient {
     /// The stream fact as last mirrored from the cached fact key
     /// — the passive counterpart to [`Self::stream_status`],
     /// updated on every `StreamChanged` event.
-    pub async fn stream_state(&self) -> Option<StreamState> {
+    pub fn stream_state(&self) -> Option<StreamState> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1279,21 +1279,21 @@ impl TrayClient {
 
     /// Whether the tray's liveliness token is present, with the same
     /// caveat as [`DaemonClient::is_available`]. No rpc.
-    pub async fn is_available(&self) -> bool {
+    pub fn is_available(&self) -> bool {
         self.mirror.is_available()
     }
 
     /// Whether the service's cached state has arrived in the mirror for
     /// its current lifetime ([`StateEvent::Hydrated`]): while it's up and
     /// this is `false`, an empty read means not yet known. A mirror read.
-    pub async fn is_hydrated(&self) -> bool {
+    pub fn is_hydrated(&self) -> bool {
         self.mirror.is_hydrated()
     }
 
     /// What this lifetime's release check learned: the tray's release and
     /// settings-file path. A mirror read, like
     /// [`DaemonClient::service_info`].
-    pub async fn service_info(&self) -> Option<ServiceInfo> {
+    pub fn service_info(&self) -> Option<ServiceInfo> {
         self.handshake.info()
     }
 
@@ -1320,7 +1320,7 @@ impl TrayClient {
     /// updated on each [`StateEvent::TrayNotificationSettingsChanged`].
     /// `None` until the tray first publishes them, while it's down, and
     /// against a tray on another release.
-    pub async fn notification_settings(&self) -> Option<NotificationSettings> {
+    pub fn notification_settings(&self) -> Option<NotificationSettings> {
         if self.handshake.known_mismatch().is_some() {
             return None;
         }
@@ -1492,14 +1492,14 @@ impl StateWatcher {
             let session = session.cloned();
             let tray = tray.cloned();
             tokio::spawn(async move {
-                if daemon.is_available().await {
+                if daemon.is_available() {
                     let _ = tx.send(StateEvent::DaemonAppeared);
                 }
                 for event in daemon.handshake.settled_events() {
                     let _ = tx.send(event);
                 }
                 if let Some(session) = session {
-                    if session.is_available().await {
+                    if session.is_available() {
                         let _ = tx.send(StateEvent::SessionAppeared);
                     }
                     for event in session.handshake.settled_events() {
@@ -1507,7 +1507,7 @@ impl StateWatcher {
                     }
                 }
                 if let Some(tray) = tray {
-                    if tray.is_available().await {
+                    if tray.is_available() {
                         let _ = tx.send(StateEvent::TrayAppeared);
                     }
                     for event in tray.handshake.settled_events() {

@@ -214,7 +214,7 @@ async fn apply(
             profiles::handle_user_removed(editor, app_weak.clone(), uuid);
         }
         StateEvent::ReleaseChecked(Service::Daemon) => {
-            let sleep = daemon.service_info().await.and_then(|info| info.sleep);
+            let sleep = daemon.service_info().and_then(|info| info.sleep);
             profiles::set_sleep_support(editor, app_weak.clone(), sleep);
         }
         StateEvent::DaemonStateChanged(_)
@@ -262,29 +262,29 @@ impl View {
         let mut snapshot = fetch_state(&self.daemon, session.as_ref()).await;
         self.reconcilers.reconcile(&mut snapshot);
         let daemon = Peer {
-            up: self.daemon.is_available().await,
-            info: self.daemon.service_info().await.map(PeerInfo::from),
+            up: self.daemon.is_available(),
+            info: self.daemon.service_info().map(PeerInfo::from),
         };
         // Up but still hydrating: an empty list means not yet known.
-        let daemon_loading = daemon.up && !self.daemon.is_hydrated().await;
+        let daemon_loading = daemon.up && !self.daemon.is_hydrated();
         let session_loading = match session.as_ref() {
-            Some(client) => client.is_available().await && !client.is_hydrated().await,
+            Some(client) => client.is_available() && !client.is_hydrated(),
             None => false,
         };
         let session_peer = match session.as_ref() {
             Some(client) => Peer {
-                up: client.is_available().await,
-                info: client.service_info().await.map(PeerInfo::from),
+                up: client.is_available(),
+                info: client.service_info().map(PeerInfo::from),
             },
             None => Peer::default(),
         };
         let (tray_peer, tray_settings) = match tray.as_ref() {
             Some(client) => (
                 Peer {
-                    up: client.is_available().await,
-                    info: client.service_info().await.map(PeerInfo::from),
+                    up: client.is_available(),
+                    info: client.service_info().map(PeerInfo::from),
                 },
-                client.notification_settings().await,
+                client.notification_settings(),
             ),
             None => (Peer::default(), None),
         };
@@ -352,7 +352,7 @@ async fn fetch_lifetime_facts(
         tokio::select! {
             () = appeared.daemon.notified() => {
                 // Gone again already: its next appearance wakes this.
-                if daemon.is_available().await {
+                if daemon.is_available() {
                     fetch_and_publish_vendors(daemon, app_weak, supported_vendors_cache).await;
                     profiles::fetch_system_floor(daemon, editor, app_weak).await;
                 }
@@ -360,7 +360,7 @@ async fn fetch_lifetime_facts(
             () = appeared.session.notified() => {
                 let client = session.read().await.as_ref().cloned();
                 if let Some(client) = client
-                    && client.is_available().await
+                    && client.is_available()
                 {
                     profiles::fetch_user_floor(&client, editor, app_weak).await;
                 }

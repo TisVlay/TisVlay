@@ -319,14 +319,14 @@ async fn snapshot(
     daemon: &tisvlay::DaemonClient,
     session: Option<&tisvlay::SessionClient>,
 ) -> state::View {
-    let tvs = daemon.list_tvs().await.unwrap_or_default();
-    let system_profiles = daemon.list_system_profile_bodies().await;
+    let tvs = daemon.list_tvs().unwrap_or_default();
+    let system_profiles = daemon.list_system_profile_bodies();
     let mut user_profiles = std::collections::HashMap::new();
     let mut assignments = std::collections::HashMap::new();
     if let Some(session) = session {
-        user_profiles = session.list_user_profile_bodies().await;
+        user_profiles = session.list_user_profile_bodies();
         for tv in &tvs {
-            if let Some(profile) = session.get_tv_user_profile(tv.uuid).await {
+            if let Some(profile) = session.get_tv_user_profile(tv.uuid) {
                 assignments.insert(tv.uuid, profile);
             }
         }
@@ -334,11 +334,10 @@ async fn snapshot(
     let mut view = state::View::new(&tvs, &system_profiles, &user_profiles, |tv| {
         assignments.get(&tv).copied()
     });
-    view.daemon_alive = daemon.is_available().await;
-    view.daemon_hydrated = daemon.is_hydrated().await;
+    view.daemon_alive = daemon.is_available();
+    view.daemon_hydrated = daemon.is_hydrated();
     view.daemon_mismatch = daemon
         .service_info()
-        .await
         .map(|info| info.version)
         .filter(|theirs| !tisvlay_protocol::compatible(tisvlay_protocol::VERSION, theirs));
     view
@@ -696,7 +695,7 @@ mod orchestration_tests {
             .unwrap();
         let mut watcher = tisvlay::StateWatcher::new(&daemon, None, None, Default::default());
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !daemon.is_available().await {
+            while !daemon.is_available() {
                 watcher.next().await.unwrap();
             }
         })
@@ -820,7 +819,7 @@ mod orchestration_tests {
         let mut session_events =
             tisvlay::StateWatcher::new(&daemon, Some(&session), None, Default::default());
         tokio::time::timeout(Duration::from_secs(10), async {
-            while !session.is_available().await {
+            while !session.is_available() {
                 session_events.next().await.unwrap();
             }
         })

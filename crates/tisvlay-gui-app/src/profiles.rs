@@ -909,10 +909,9 @@ pub(crate) async fn seed_layers(
 ) {
     let system_default = daemon
         .get_system_profile(DEFAULT_SYSTEM_PROFILE_UUID)
-        .await
         .unwrap_or_else(SystemProfileBody::full_default);
     let user_default = match session {
-        Some(session) => session.get_user_profile(DEFAULT_USER_PROFILE_UUID).await,
+        Some(session) => session.get_user_profile(DEFAULT_USER_PROFILE_UUID),
         None => None,
     }
     .unwrap_or_else(UserProfileBody::full_default);
