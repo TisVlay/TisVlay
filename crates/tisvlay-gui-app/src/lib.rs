@@ -1133,11 +1133,6 @@ fn register_callbacks(
     let wizard = app.global::<PairingWizard>();
     let edit_pane = app.global::<EditPane>();
     let errors_global = app.global::<Errors>();
-    // Inline-error action callback: no TVs-pane error sets an action
-    // label yet, so the button never shows and this never fires; the
-    // close X is the only dismiss path.
-    errors_global.on_tvs_action(|| {});
-
     // App-level access banner. When the user can't reach the daemon
     // socket the resilient link never connects (the socket is 0660,
     // `tisvlay` group + daemon-applied ACLs), so the window would
@@ -2753,22 +2748,16 @@ fn register_callbacks(
         // schema step.
         let primary_is_ip = option.primary_is_ip;
         tokio::spawn(async move {
-            // Daemon-side cap is 600 ms; wizard cap of 1 s is the
-            // safety net for a hung RPC. Either firing produces an
-            // empty vendor_data — same outcome as a clean miss, the
-            // user just sees the field blank with the "MAC not
-            // detected" helper.
+            // The daemon bounds its own lookup and the rpc has its
+            // deadline; a miss either way, like a clean miss, leaves the
+            // field blank with the "MAC not detected" helper.
             let vendor_data = if !primary_is_ip {
                 HashMap::new()
             } else {
                 tokio::select! {
                     _ = cancel_rx => HashMap::new(),
-                    res = tokio::time::timeout(
-                        std::time::Duration::from_secs(1),
-                        d.enrich_manual_entry(&vendor, &ip),
-                    ) => res
+                    res = d.enrich_manual_entry(&vendor, &ip) => res
                         .ok()
-                        .and_then(std::result::Result::ok)
                         .flatten()
                         .map(|mac| HashMap::from([(tisvlay_core::MAC_CONFIG_KEY.to_string(), mac)]))
                         .unwrap_or_default(),

@@ -1559,8 +1559,6 @@ export component TvsPane {
                     tone: Errors.tvs.tone == "" ? "error" : Errors.tvs.tone;
                     title: Errors.tvs.title;
                     message: Errors.tvs.message;
-                    action-label: Errors.tvs.action-label;
-                    action-clicked => { Errors.tvs-action(); }
                     dismissed => {
                         Errors.tvs = { kind: "", tone: "", title: "", message: "", action-label: "" };
                     }
