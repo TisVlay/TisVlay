@@ -104,15 +104,27 @@ pub(super) fn arm_screen_verify(
     target_on: bool,
     escalated: bool,
 ) {
+    commands
+        .entity(entity)
+        .insert(screen_verify(clock, retry, target_on, escalated));
+}
+
+/// A screen dispatch's first verify, one verify delay from now.
+fn screen_verify(
+    clock: &Clock,
+    retry: Option<&DispatchRetry>,
+    target_on: bool,
+    escalated: bool,
+) -> DispatchVerify {
     let delay = retry
         .map(|r| r.0.verify_delay)
         .unwrap_or_else(|| tisvlay_core::RetryConfig::default().verify_delay);
-    commands.entity(entity).insert(DispatchVerify {
+    DispatchVerify {
         target_on,
         attempts: 1,
         verify_at: clock.0 + delay,
         escalated,
-    });
+    }
 }
 
 /// Refuse a screen-off to a TV being redialed through an outage, ahead of
@@ -176,7 +188,9 @@ pub(super) fn dispatch_screen(
     row: ScreenRow,
     restore_to: Option<String>,
 ) -> Result<(), WireError> {
-    let (handle, pending, traits, link, retry, power) = row;
+    // The row's pending dial is the state before this batch; the
+    // screen-off below checks for one when its commands apply.
+    let (handle, _, traits, link, retry, power) = row;
     if traits.is_some_and(|t| t.0.emulate_screen_via_power) {
         if on {
             return power_on_tv(
@@ -269,15 +283,21 @@ pub(super) fn dispatch_screen(
             arm_screen_verify(commands, entity, clock, retry, true, true);
             armed
         }
-        None if !on && pending => {
-            // A dial is in flight: latch the intent so the reconnect
-            // re-asserts `screen_off` over the fresh link — the locked-
-            // idle timer racing a boot wake must not be swallowed.
-            arm_screen_verify(commands, entity, clock, retry, false, false);
+        None if !on => {
+            // A dial in flight latches the intent, so the reconnect
+            // re-asserts `screen_off` over the fresh link: the locked-idle
+            // timer racing a boot wake must not be swallowed. The dial is
+            // checked when the commands apply, so one an on earlier in this
+            // batch started counts. With none, it's a satisfied no-op: a
+            // dark, disconnected TV already is screen-off.
+            let verify = screen_verify(clock, retry, false, false);
+            commands.entity(entity).queue(move |mut e: EntityWorldMut| {
+                if e.contains::<PendingConnect>() {
+                    e.insert(verify);
+                }
+            });
             Ok(())
         }
-        // Satisfied no-op: a dark, disconnected TV already is screen-off.
-        None if !on => Ok(()),
         _ => Err(WireError::not_connected(id)),
     }
 }
