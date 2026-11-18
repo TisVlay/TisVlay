@@ -1991,6 +1991,49 @@ fn an_icon_button_shows_its_tip_after_focus_lingers() {
 }
 
 #[test]
+fn a_clicked_profile_hands_focus_to_duplicate_without_its_tip() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_active_pane(Pane::Profiles);
+    let profiles = app.global::<Profiles>();
+    let help = app.global::<Help>();
+    let row = ProfileRow {
+        uuid: SharedString::from("p-1"),
+        name: SharedString::from("Gaming"),
+        display_name: SharedString::from("Gaming"),
+        ..ProfileRow::default()
+    };
+    profiles.set_system(ModelRc::new(VecModel::from(vec![row.clone()])));
+    let weak = app.as_weak();
+    profiles.on_select(move |kind, uuid| {
+        if let Some(app) = weak.upgrade() {
+            let profiles = app.global::<Profiles>();
+            profiles.set_selected_kind(kind);
+            profiles.set_selected_uuid(uuid);
+            profiles.set_selected_row(row.clone());
+        }
+    });
+
+    // A click hands focus to the detail's Duplicate, but focus a mouse
+    // user can't see opens no tip, however long it lingers.
+    find_by_accessible_id(&app, "profiles-row-p-1")
+        .expect("the profile row renders")
+        .mock_single_click(PointerEventButton::Left);
+    settle();
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(800));
+    settle();
+    assert!(!help.get_shown(), "no tip for focus the click placed");
+    // Once focus shows, the focused Duplicate's tip follows.
+    app.global::<Nav>().set_focus_visible(true);
+    settle();
+    assert!(ring_on(&app, "profiles-duplicate-button"));
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(800));
+    settle();
+    assert!(help.get_shown(), "the tip shows with the ring");
+    assert_eq!(help.get_text(), "Duplicate profile");
+}
+
+#[test]
 fn escape_in_the_wizard_mirrors_its_footer() {
     i_slint_backend_testing::init_no_event_loop();
     let app = AppWindow::new().expect("AppWindow::new");

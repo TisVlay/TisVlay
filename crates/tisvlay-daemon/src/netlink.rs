@@ -317,8 +317,8 @@ async fn resync(world: &WorldClient, state: &mut MonitorState) -> anyhow::Result
 }
 
 /// Every link's current state, over a short-lived connection of its own:
-/// a dump on the multicast connection could meet an overrun on its reply
-/// path, which netlink-proto doesn't handle.
+/// a dump's replies on the multicast connection would share its socket
+/// buffer with the notifications, and a large one could crowd them out.
 async fn dump_links() -> anyhow::Result<Vec<LinkMessage>> {
     let (connection, handle, _) =
         new_connection().context("open a netlink connection for the link dump")?;
