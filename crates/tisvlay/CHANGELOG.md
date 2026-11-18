@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.6.0...tisvlay-v0.7.0) - 2026-11-17
+
+### Added
+
+- *(core)* publish the in-place wake grace once
+- *(protocol)* type the profile-assignment and greeter payloads
+- *(world)* refuse a TV profile that names no profile on every path
+
+### Changed
+
+- `DaemonClient::screen_off` (and `apply_action` with a screen-off) is refused with `ErrorCode::NotConnected` for a TV that was on when last seen and can no longer be reached, where any disconnected TV used to ack. The daemon now keeps dialing such a TV until it answers and holds nothing for it meanwhile, so a request made during a network outage is not applied later: send it again once `TvInfo::connected` is true. A TV that turned off still acks a screen-off as already dark ([#255](https://github.com/TisVlay/TisVlay/pull/255)).
+- `DaemonClient::power_off` to such a TV is refused the same way even while a wake for it is pending; it used to ack after cancelling the wake, which it still cancels.
+- `state/link` reads `reconnecting` again after a drop the TV did not announce, and for a TV that has not answered since the daemon started, about once a minute for as long as the outage lasts; such a TV used to get three dials.
+
+### Fixed
+
+- *(sdk)* leave no ghost row when a removed TV's keys arrive out of order
+- *(sdk)* release a client's session when its last copy drops
+- *(sdk)* let a zero fallback poll interval turn the poll off
+- *(sdk)* undeclare a progress stream's subscriber when it's dropped
+- *(world)* hold nothing for a TV being redialed through an outage
+
+### Other
+
+- *(sdk)* project list_tvs from the mirror row in one pass
+- *(sdk)* [**breaking**] make the mirror reads plain functions
+- *(sdk)* [**breaking**] mark StateEvent non-exhaustive
+- *(sdk)* [**breaking**] one pairing drain, not a pinned twin
+- *(protocol)* [**breaking**] give progress/power its payload path
+- *(core,protocol,sdk)* correct the published crates' docs
+- Rust 1.100.0
+
 ## [0.6.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-v0.5.1...tisvlay-v0.6.0) - 2026-11-07
 
 ### Other

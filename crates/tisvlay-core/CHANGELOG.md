@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-core-v0.6.0...tisvlay-core-v0.7.0) - 2026-11-17
+
+### Added
+
+- *(core)* publish the in-place wake grace once
+- *(protocol)* [**breaking**] decode stream_armed and discovered-TV fields strictly
+
+### Fixed
+
+- *(core)* don't wait after the last failed Wake-on-LAN send
+
+### Other
+
+- *(core)* [**breaking**] give AutomateWhen's parse a typed error
+- *(core)* [**breaking**] drop PairingSession's client-side helpers
+- *(core)* [**breaking**] drop the error variants nothing constructs
+- *(core,protocol,sdk)* correct the published crates' docs
+- Rust 1.100.0
+
 ## [0.6.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-core-v0.5.1...tisvlay-core-v0.6.0) - 2026-11-07
 
 ### Other

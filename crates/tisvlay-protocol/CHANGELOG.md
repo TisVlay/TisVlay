@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-protocol-v0.6.0...tisvlay-protocol-v0.7.0) - 2026-11-17
+
+### Added
+
+- *(protocol)* [**breaking**] decode stream_armed and discovered-TV fields strictly
+- *(protocol)* type the profile-assignment and greeter payloads
+
+### Fixed
+
+- *(protocol)* take only zenoh's own timeout reply for a timeout
+
+### Other
+
+- *(protocol)* say that the caller's querier cache is never evicted
+- *(protocol)* [**breaking**] give progress/power its payload path
+- *(protocol)* [**breaking**] drop two unused key helpers, narrow the internal ones
+- *(cli)* build the profile catalog keys through the protocol
+- *(daemon,tray)* subscribe to the keys they read, by the protocol's names
+- *(core,protocol,sdk)* correct the published crates' docs
+- Rust 1.100.0
+
 ## [0.6.0](https://github.com/TisVlay/TisVlay/compare/tisvlay-protocol-v0.5.1...tisvlay-protocol-v0.6.0) - 2026-11-07
 
 ### Other
