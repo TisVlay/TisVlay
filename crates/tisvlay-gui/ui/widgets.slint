@@ -2166,10 +2166,11 @@ export component IconBtn inherits Focusable {
     }
     // An icon-only button shows its tip once keyboard focus lingers on
     // it, the way hover does: the glyph alone doesn't name the action.
-    changed focused => {
-        if (!root.has-label) {
-            tip-trigger.set-hover(self.focused && root.interactive);
-        }
+    // Only visible focus counts, as with the ring: a click that lands
+    // focus here (a list row handing focus to its detail) pops no tip.
+    property <bool> focus-tip: root.focused && Nav.focus-visible && root.interactive && !root.has-label;
+    changed focus-tip => {
+        tip-trigger.set-hover(root.focus-tip);
     }
 
     property <bool> interactive: root.enabled && !root.loading;
