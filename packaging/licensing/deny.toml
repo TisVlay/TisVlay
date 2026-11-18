@@ -171,6 +171,8 @@ ignore = [
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; no safe upgrade; unconditional via zenoh-config 1.10/serde_yaml; TisVlay builds Zenoh config programmatically, not from YAML; revisit on Zenoh bump" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; no safe upgrade; transitive via winit sctk-adwaita" },
     { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained; no safe upgrade; build-time only, via spin_on under slint-build and slint-macros; revisit when spin_on drops pin-utils" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (soft-deprecated upstream); no safe upgrade; transitive via i-slint-core; revisit when Slint moves off it" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained (listed alongside chrono's deprecation); no safe upgrade; transitive via zenoh-util and uhlc; revisit on the next zenoh release" },
     # zbus 6 absorbed its helper crates, which zbus 5 still depends on.
     # ashpd, slint's winit backend, ksni and notify-rust are all on zbus 5,
     # as are our consumed-D-Bus adapters (through zbus's re-exports, never
