@@ -218,8 +218,8 @@ notify-rust = { version = "4", default-features = false, features = ["z-with-tok
 
 # Kernel netlink: route resolution + carrier/route monitoring
 netlink-packet-core = "0.9"
-netlink-packet-route = "0.33"
-rtnetlink = "0.23"
+netlink-packet-route = "0.34"
+rtnetlink = "0.24"
 
 # Internal crates. Published crates carry both `path` and `version`, so
 # the entries work for local dev (path wins) and for `cargo publish` (the
