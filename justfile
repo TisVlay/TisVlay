@@ -308,10 +308,31 @@ promo-timeline name:
         --shot {{ _promo_dir }}/shots/{{ name }}.toml \
         --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
         --cli target/debug/tisvlay
+    just _promo-timeline-script {{ name }}
+
+# A recorded timeline as a script, the form a composition can load.
+_promo-timeline-script name:
     printf 'window.__promoTimelines = window.__promoTimelines || {};\nwindow.__promoTimelines["%s"] = ' {{ name }} \
         > {{ _promo_dir }}/build/timelines/{{ name }}.js
     jq --slurp --compact-output . {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
         >> {{ _promo_dir }}/build/timelines/{{ name }}.js
+
+# Play a shot that shows the settings window: the driver starts it in a
+# headless compositor, drives it and records the screen beside the
+# timeline, e.g. `just promo-capture desk-controls`. Extra arguments go
+# to the driver (`--dump-tree FILE` lists the window's element ids).
+[group('promo')]
+promo-capture name *args:
+    cargo build --profile test -p tisvlay-cli
+    cargo build --profile test -p tisvlay-gui-app --bin tisvlay-gui --features slint/mcp
+    cargo build --profile test -p tisvlay-session --example promo_driver
+    {{ _promo }} target/debug/examples/promo_driver \
+        --shot {{ _promo_dir }}/shots/{{ name }}.toml \
+        --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
+        --cli target/debug/tisvlay --gui target/debug/tisvlay-gui \
+        --compositor {{ _promo_dir }}/sway.conf \
+        --record {{ _promo_dir }}/build/clips/{{ name }}.mp4 {{ args }}
+    just _promo-timeline-script {{ name }}
 
 # Prove the render path: an animation, an embedded clip and an audio
 # track render, and a second render gives the same frames. Then compare

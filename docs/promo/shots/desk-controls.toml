@@ -1,0 +1,43 @@
+# Shot 1.2: everyday control from the desk. The settings window shows
+# both TVs; the volume and backlight change from the CLI, as the tray's
+# scroll would change them.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[tv]]
+name = "Living Room"
+vendor = "cec"
+address = "192.0.2.20"
+
+[gui]
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "click"
+label = "Desk"
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "cli"
+args = ["volume", "{Desk}", "45"]
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "cli"
+args = ["mute", "{Desk}", "on"]
+
+[[step]]
+do = "pause"
+ms = 1500

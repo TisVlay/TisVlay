@@ -7,6 +7,12 @@
 //! the backend is what ships. Lock, sleep and wake come from a fake
 //! logind on a private bus, through the same watchers production runs.
 //!
+//! A shot with a `[gui]` table also gets the settings window: the
+//! driver starts a headless compositor and the window inside it, on a
+//! private session bus whose fake settings portal answers "dark", drives
+//! the window through its MCP server and records the screen for as long
+//! as the steps run.
+//!
 //! A shot is a TOML file: the TVs to enroll and a list of steps. The
 //! timeline is JSON lines, one per action taken, state published or
 //! request the fake logind observed, each stamped with seconds since the
@@ -22,6 +28,7 @@
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
@@ -39,6 +46,7 @@ use tisvlay_session::sunshine::StaticProbe;
 use tisvlay_session::{SessionEvent, SessionOptions};
 use tisvlay_test::PrivateBus;
 use tisvlay_test::fake_logind::FakeLogind;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
@@ -47,6 +55,10 @@ const SITE: &str = "promo";
 
 /// How long a `wait` step gives the stack before the shot fails.
 const WAIT_LIMIT: Duration = Duration::from_secs(15);
+
+/// The settings window's MCP port: not the dev GUI's, so a capture can
+/// run beside a dev stack.
+const MCP_PORT: u16 = 9316;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -59,6 +71,20 @@ struct Args {
     /// The `tisvlay` binary `cli` steps run.
     #[arg(long)]
     cli: Option<PathBuf>,
+    /// The `tisvlay-gui` binary a `[gui]` shot starts, built with
+    /// `slint/mcp`.
+    #[arg(long)]
+    gui: Option<PathBuf>,
+    /// The sway config for the headless compositor a `[gui]` shot runs in.
+    #[arg(long)]
+    compositor: Option<PathBuf>,
+    /// Where a `[gui]` shot's screen recording goes.
+    #[arg(long)]
+    record: Option<PathBuf>,
+    /// Write the settings window's element tree here once it is up, to
+    /// find the ids `click` steps name.
+    #[arg(long)]
+    dump_tree: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -66,8 +92,18 @@ struct Args {
 struct Shot {
     #[serde(default)]
     tv: Vec<Tv>,
+    gui: Option<Gui>,
     #[serde(default)]
     step: Vec<Step>,
+}
+
+/// The settings window, started once the TVs are enrolled.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct Gui {
+    /// Force couch mode, the 10-foot layout.
+    #[serde(default)]
+    couch: bool,
 }
 
 /// A TV enrolled before the steps run.
@@ -98,6 +134,16 @@ enum Step {
     /// becomes that TV's id.
     Cli {
         args: Vec<String>,
+    },
+    /// Click an element of the settings window: the one with this id,
+    /// or the one with this accessible label.
+    Click {
+        id: Option<String>,
+        label: Option<String>,
+    },
+    /// Press and release a key in the settings window.
+    Key {
+        text: String,
     },
     /// The TV acts by itself, through the mock's handle.
     Mock {
@@ -328,9 +374,38 @@ async fn main() -> Result<()> {
         wait(&recorder, name, "state/link", "connected", &json!(true)).await?;
     }
 
+    // The settings window and its recording, for a `[gui]` shot. Both
+    // end with the driver.
+    let mut window = None;
+    let mut recording = None;
+    let _gui = match &shot.gui {
+        Some(gui) => {
+            let binary = args
+                .gui
+                .as_deref()
+                .context("the shot has `[gui]`; pass --gui")?;
+            let config = args
+                .compositor
+                .as_deref()
+                .context("the shot has `[gui]`; pass --compositor")?;
+            let started = start_gui(config, binary, gui, &system_socket, &user_socket).await?;
+            let handle = main_window().await?;
+            if let Some(path) = &args.dump_tree {
+                dump_tree(&handle, path).await?;
+            }
+            window = Some(handle);
+            if let Some(path) = &args.record {
+                recording = Some(start_recording(path, &started.runtime)?);
+                recorder.write("action", json!({ "do": "record" })).await?;
+            }
+            Some(started)
+        }
+        None => None,
+    };
+
     for step in &shot.step {
         match step {
-            Step::Wait { .. } | Step::Pause { .. } => {}
+            Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => {}
             other => recorder.write("action", action(other)).await?,
         }
         match step {
@@ -347,6 +422,24 @@ async fn main() -> Result<()> {
                     .context("the shot has a `cli` step; pass --cli")?;
                 run_cli(binary, &system_socket, &user_socket, cli_args, &tvs).await?;
             }
+            Step::Click { id, label } => {
+                let window = window.as_ref().context("a `click` step needs `[gui]`")?;
+                let at = click(window, id.as_deref(), label.as_deref()).await?;
+                recorder
+                    .write(
+                        "action",
+                        json!({ "do": "click", "id": id, "label": label, "at": at }),
+                    )
+                    .await?;
+            }
+            Step::Key { text } => {
+                let window = window.as_ref().context("a `key` step needs `[gui]`")?;
+                mcp(
+                    "dispatch_key_event",
+                    json!({ "windowHandle": window, "eventType": "PressAndRelease", "text": text }),
+                )
+                .await?;
+            }
             Step::Mock { tv, op } => {
                 let address = &lookup(&tvs, tv)?.1;
                 apply(&mock, address, *op);
@@ -360,7 +453,345 @@ async fn main() -> Result<()> {
         }
     }
     recorder.write("action", json!({ "do": "end" })).await?;
+    if let Some(recording) = recording {
+        recording.finish()?;
+        // The clip's length places it on the timeline: it ends here, so
+        // it began this long ago, whatever the recorder took to start.
+        if let Some(path) = &args.record {
+            let duration = clip_duration(path)?;
+            recorder
+                .write("clip", json!({ "file": path, "duration": duration }))
+                .await?;
+        }
+    }
     Ok(())
+}
+
+/// A child process that ends with the driver, however the driver ends.
+struct Reaped(Child);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Reaped {
+    /// Ask the recorder to stop and wait for it, so it closes its file.
+    fn finish(mut self) -> Result<()> {
+        Command::new("kill")
+            .args(["-INT", &self.0.id().to_string()])
+            .status()
+            .context("signal the recorder")?;
+        self.0.wait().context("wait for the recorder")?;
+        Ok(())
+    }
+}
+
+/// The settings portal the window reads its theme from: dark, with a
+/// fixed accent, whatever the desktop running the capture uses.
+struct Settings;
+
+impl Settings {
+    fn setting(namespace: &str, key: &str) -> Option<zbus::zvariant::Value<'static>> {
+        match (namespace, key) {
+            ("org.freedesktop.appearance", "color-scheme") => Some(1u32.into()),
+            ("org.freedesktop.appearance", "accent-color") => {
+                Some((0.239_f64, 0.682_f64, 0.914_f64).into())
+            }
+            _ => None,
+        }
+    }
+}
+
+#[zbus::interface(name = "org.freedesktop.portal.Settings")]
+impl Settings {
+    async fn read_one(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> zbus::fdo::Result<zbus::zvariant::Value<'static>> {
+        Self::setting(namespace, key)
+            .ok_or_else(|| zbus::fdo::Error::Failed("no such setting".into()))
+    }
+
+    /// The older call, whose reply wraps the value twice.
+    async fn read(
+        &self,
+        namespace: &str,
+        key: &str,
+    ) -> zbus::fdo::Result<zbus::zvariant::Value<'static>> {
+        self.read_one(namespace, key)
+            .await
+            .map(|value| zbus::zvariant::Value::Value(Box::new(value)))
+    }
+
+    async fn read_all(
+        &self,
+        _namespaces: Vec<String>,
+    ) -> HashMap<String, HashMap<String, zbus::zvariant::Value<'static>>> {
+        let namespace = "org.freedesktop.appearance";
+        let settings = ["color-scheme", "accent-color"]
+            .into_iter()
+            .filter_map(|key| Some((key.to_owned(), Self::setting(namespace, key)?)))
+            .collect();
+        HashMap::from([(namespace.to_owned(), settings)])
+    }
+
+    #[zbus(property)]
+    fn version(&self) -> u32 {
+        2
+    }
+}
+
+/// The running settings window, with the compositor, bus and portal it
+/// lives on. Fields drop in order: the window before its compositor.
+struct StartedGui {
+    _window: Reaped,
+    _compositor: Reaped,
+    _portal: zbus::Connection,
+    _bus: PrivateBus,
+    /// The compositor's runtime directory, where its socket is.
+    runtime: tempfile::TempDir,
+}
+
+/// The compositor's socket name in its runtime directory.
+const WAYLAND_DISPLAY: &str = "wayland-1";
+
+/// A headless sway under its own runtime directory, ready for clients.
+async fn start_compositor(config: &Path) -> Result<(Reaped, tempfile::TempDir)> {
+    // The temp-socket directory: short enough for the socket's path.
+    let runtime = tisvlay_test::socket_tempdir();
+    let compositor = Reaped(
+        Command::new("sway")
+            .arg("--config")
+            .arg(config)
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .env("WLR_BACKENDS", "headless")
+            .env("WLR_LIBINPUT_NO_DEVICES", "1")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("DISPLAY")
+            .env_remove("SWAYSOCK")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .context("start sway")?,
+    );
+    let socket = runtime.path().join(WAYLAND_DISPLAY);
+    let deadline = Instant::now() + WAIT_LIMIT;
+    while !socket.exists() {
+        if Instant::now() > deadline {
+            bail!("the compositor never opened {}", socket.display());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Ok((compositor, runtime))
+}
+
+async fn start_gui(
+    config: &Path,
+    binary: &Path,
+    gui: &Gui,
+    system_socket: &Path,
+    user_socket: &Path,
+) -> Result<StartedGui> {
+    let (compositor, runtime) = start_compositor(config).await?;
+    let bus = PrivateBus::isolated();
+    let portal = bus.connect().await.context("connect the settings portal")?;
+    portal
+        .object_server()
+        .at("/org/freedesktop/portal/desktop", Settings)
+        .await?;
+    portal
+        .request_name("org.freedesktop.portal.Desktop")
+        .await?;
+    let mut command = Command::new(binary);
+    command
+        .arg("--socket")
+        .arg(system_socket)
+        .arg("--user-socket")
+        .arg(user_socket)
+        .args(["--site", SITE])
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
+        .env("DBUS_SESSION_BUS_ADDRESS", bus.address())
+        .env("SLINT_MCP_PORT", MCP_PORT.to_string())
+        .env_remove("DISPLAY")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if gui.couch {
+        command.env("TISVLAY_COUCH_MODE", "1");
+    }
+    let window = command
+        .spawn()
+        .with_context(|| format!("start {}", binary.display()))?;
+    Ok(StartedGui {
+        _window: Reaped(window),
+        _compositor: compositor,
+        _portal: portal,
+        _bus: bus,
+        runtime,
+    })
+}
+
+/// The settings window's handle, once its MCP server answers.
+async fn main_window() -> Result<Value> {
+    let deadline = Instant::now() + WAIT_LIMIT;
+    loop {
+        if let Ok(windows) = mcp("list_windows", json!({})).await
+            && let Some(handle) = windows["windowHandles"].get(0)
+        {
+            return Ok(handle.clone());
+        }
+        if Instant::now() > deadline {
+            bail!("the settings window never opened its MCP server");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn dump_tree(window: &Value, path: &Path) -> Result<()> {
+    let properties = mcp("get_window_properties", json!({ "windowHandle": window })).await?;
+    let tree = mcp(
+        "get_element_tree",
+        json!({ "elementHandle": properties["rootElementHandle"] }),
+    )
+    .await?;
+    std::fs::write(path, serde_json::to_string_pretty(&tree)?)
+        .with_context(|| format!("write {}", path.display()))
+}
+
+/// Record the compositor's screen until the driver ends.
+fn start_recording(path: &Path, runtime: &tempfile::TempDir) -> Result<Reaped> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    // `-D` records a frame every tick, not only when the screen changes,
+    // so the clip's clock is the wall clock the timeline uses.
+    let recorder = Command::new("wf-recorder")
+        .args([
+            "-D", "-r", "60", "-c", "libx264", "-p", "crf=12", "-y", "-f",
+        ])
+        .arg(path)
+        .env("XDG_RUNTIME_DIR", runtime.path())
+        .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("start wf-recorder")?;
+    Ok(Reaped(recorder))
+}
+
+/// A recorded clip's length in seconds.
+fn clip_duration(path: &Path) -> Result<f64> {
+    let output = Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .context("run ffprobe")?;
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .with_context(|| format!("read the length of {}", path.display()))
+}
+
+/// Click the element with `id`, or the first with the accessible
+/// `label`; returns where it sits in the window.
+async fn click(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<Value> {
+    let element = match (id, label) {
+        (Some(id), _) => {
+            let found = mcp(
+                "find_elements_by_id",
+                json!({ "windowHandle": window, "elementsId": id }),
+            )
+            .await?;
+            found["elementHandles"]
+                .get(0)
+                .cloned()
+                .with_context(|| format!("the window has no element with id {id}"))?
+        }
+        (None, Some(label)) => {
+            let properties =
+                mcp("get_window_properties", json!({ "windowHandle": window })).await?;
+            let tree = mcp(
+                "get_element_tree",
+                json!({ "elementHandle": properties["rootElementHandle"] }),
+            )
+            .await?;
+            tree["elements"]
+                .as_array()
+                .and_then(|elements| {
+                    elements
+                        .iter()
+                        .find(|element| element["accessibleLabel"] == json!(label))
+                })
+                .map(|element| element["handle"].clone())
+                .with_context(|| format!("the window has no element labeled {label}"))?
+        }
+        (None, None) => bail!("a `click` step names an `id` or a `label`"),
+    };
+    let element = &element;
+    let properties = mcp(
+        "get_element_properties",
+        json!({ "elementHandle": element }),
+    )
+    .await?;
+    mcp(
+        "click_element",
+        json!({ "elementHandle": element, "action": "SingleClick", "button": "Left" }),
+    )
+    .await?;
+    Ok(json!({
+        "position": properties["absolutePosition"],
+        "size": properties["size"],
+    }))
+}
+
+/// One tool call on the settings window's MCP server; the tool's reply,
+/// decoded.
+async fn mcp(tool: &str, arguments: Value) -> Result<Value> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments },
+    })
+    .to_string();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", MCP_PORT)).await?;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Accept: application/json, text/event-stream\r\nConnection: close\r\n\
+         Content-Length: {}\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(request.as_bytes()).await?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response).await?;
+    // The reply is one JSON object, whatever framing surrounds it.
+    let json = response
+        .find("{\"")
+        .zip(response.rfind('}'))
+        .and_then(|(start, end)| response.get(start..=end))
+        .with_context(|| format!("{tool}: no JSON in the MCP reply"))?;
+    let reply: Value = serde_json::from_str(json).with_context(|| format!("{tool}: bad reply"))?;
+    if let Some(error) = reply.get("error") {
+        bail!("{tool}: {error}");
+    }
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .with_context(|| format!("{tool}: no text in the reply"))?;
+    if reply["result"]["isError"] == json!(true) {
+        bail!("{tool}: {text}");
+    }
+    Ok(serde_json::from_str(text).unwrap_or_else(|_| json!(text)))
 }
 
 /// A backend's capability names, as the daemon registers them.
@@ -384,7 +815,8 @@ fn action(step: &Step) -> Value {
         Step::Cli { args } => json!({ "do": "cli", "args": args }),
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
-        Step::Wait { .. } | Step::Pause { .. } => Value::Null,
+        Step::Key { text } => json!({ "do": "key", "text": text }),
+        Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => Value::Null,
     }
 }
 
@@ -438,7 +870,7 @@ async fn run_cli(
     args: &[String],
     tvs: &HashMap<String, (Uuid, String)>,
 ) -> Result<()> {
-    let mut command = std::process::Command::new(binary);
+    let mut command = Command::new(binary);
     command
         .arg("--socket")
         .arg(system_socket)

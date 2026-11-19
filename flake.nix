@@ -114,6 +114,10 @@
             chromium
             ffmpeg
             just
+            # A capture's headless compositor and its screen recorder
+            # (`just promo-capture`).
+            sway
+            wf-recorder
           ];
           # HyperFrames renders with the browser and encoder named here
           # instead of downloading its own, which can't run on NixOS.
