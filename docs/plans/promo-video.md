@@ -21,11 +21,11 @@ The cuts share their shots. A shot is written once, and each cut is a list of sh
 - **Bare windows, framed.** The GUI is captured alone in a headless wlroots compositor (`cage`, at 1920×1080) with `wf-recorder`, driven step by step over the Slint MCP server (`SLINT_MCP_PORT`). The composition places it on a branded background taken from `docs/artwork/`. The tray menu is recreated as a styled HTML overlay, not captured, because it needs a Plasma panel.
 - **Dark theme only.** It fits the OLED / living-room story. How the GUI is forced dark under `cage` (no portal, no Plasma colors) is checked in step 4. If no knob exists, the fallback is an environment override, not a new product option.
 - **Couch mode is captured with `TISVLAY_COUCH_MODE`** (the existing override in `crates/tisvlay-gui-app/src/couch.rs`). Remote and gamepad presses are animated, driven by the same event log.
-- **CLI scenes are VHS tapes** (`.tape` files, `vhs` in nixpkgs), run against the same dev stack.
+- **CLI shots are VHS tapes** (`.tape` files, `vhs` in nixpkgs), run against the same dev stack.
 - **No music.** Narration only, with UI sound effects at most: nothing to license or credit.
-- **Three narration tones, screened before one is picked.** Each shot's narration and on-screen text exists in three variants: *calm* (short declarative lines, like the docs), *warm* (brief, lightly playful), and *technical* (names the mechanisms: logind, DPMS, HDMI-CEC, the network protocol). The tone is a render parameter, so each cut renders once per tone for test screenings. After the pick, the losing variants are deleted, not kept.
+- **Three narration tones, screened before one is picked.** Each shot's narration and on-screen text, the title card's pitch line included, exists in three variants: *calm* (short declarative lines, like the docs), *warm* (brief, lightly playful), and *technical* (names the mechanisms: logind, DPMS, HDMI-CEC, the network protocol). The tone is a render parameter, so each cut renders once per tone for test screenings. After the pick, the losing variants are deleted, not kept.
 - **The storyboard tells the default profiles' story.** Each beat shows what the shipped defaults do. Where a beat needs a non-default choice (TV-drives-PC, input gating), the shot shows the profile change first, which doubles as the profiles pitch. The defaults are read from the generated partials (`docs/book/src/generated/profile-defaults-*.md`), not restated here.
-- **Narration: Kokoro-FastAPI** (OpenAI-compatible, `/v1/audio/speech`). Its `/dev/captioned_speech` endpoint returns word timestamps, so scene timing and burned-in captions come from the TTS call itself, with no separate alignment pass. Voice: `af_heart`, chosen from rendered samples of eight voices and blends. The service runs on pox, not in the flake, so the endpoint is a recipe variable and the generated audio is cached per narration line (keyed by text + voice), so a re-render without a Kokoro instance reuses it.
+- **Narration: Kokoro-FastAPI** (OpenAI-compatible, `/v1/audio/speech`). Its `/dev/captioned_speech` endpoint returns word timestamps, so shot timing and burned-in captions come from the TTS call itself, with no separate alignment pass. Voice: `af_heart`, chosen from rendered samples of eight voices and blends. The service runs on pox, not in the flake, so the endpoint is a recipe variable and the generated audio is cached per narration line (keyed by text + voice), so a re-render without a Kokoro instance reuses it.
 - **Outputs are release assets, never committed.** `docs/promo/out/` and every intermediate (captures, logs, audio cache, `node_modules`) are gitignored. Rendered files are uploaded to the GitHub release, and the README and book link to them.
 - **The toolchain stays out of the main dev shell.** `docs/promo/flake.nix` holds Node, Chromium, FFmpeg, VHS, `cage` and `wf-recorder`. Recipes live in the root `justfile` under a `promo` group (the justfile is the single source of commands) and call `nix develop ./docs/promo -c …`. No CI gate renders video. Lint gates that walk `docs/` (typos, file checks) still apply to the sources.
 
@@ -37,7 +37,7 @@ Shots are the shared library; the cuts below are lists of them. Footage key: **T
 
 | Shot | Beat | Footage |
 |---|---|---|
-| T | Title card: banner, then the one-line pitch | card |
+| T | Title card: banner, then the one-line pitch, which varies with the tone (the warm tone's is "Your TV, in step with your PC") | card |
 | E | End card: version, install pointer, docs link | card |
 
 ### Act 1: a day in the life
@@ -50,7 +50,7 @@ One TV, one PC, one day. It opens on the desk user and moves to the couch.
 | 1.2 | At the desk | Tray scroll sets volume, a click mutes; the GUI's backlight slider | tray + GUI + TV |
 | 1.3 | Coffee break | Lock → screen off; unlock → screen on. The hero beat. | TV + lock overlay |
 | 1.4 | On the phone | Idle → screen off; a mouse nudge → screen on | TV |
-| 1.5 | From the couch | Streaming the desktop to a handheld → the desk TV's screen off; back at the desk → screen on | TV + stream badge |
+| 1.5 | From the couch | Streaming the desktop to a generic, brand-free handheld → the desk TV's screen off; back at the desk → screen on | TV + stream badge |
 | 1.6 | Game night | A console on another input; with input gating chosen in the profile, the PC locking leaves the TV alone | GUI (profile change) + TV |
 | 1.7 | Couch mode | The GUI on the TV, driven by the TV remote or a gamepad, at the 10-foot scale | GUI (`TISVLAY_COUCH_MODE`) + animated remote |
 | 1.8 | Lights out | With the TV-drives-PC actions chosen in the profile, the TV remote powers the TV off → the PC sleeps; the TV powering on wakes it, back to 1.1 | GUI (profile change) + TV |
@@ -83,7 +83,7 @@ The README's Features groups, in README order, each with a title chip. Groups Ac
 ### Cuts
 
 - **Hero loop:** T (short) → 1.3 → E (short), with a seamless loop seam.
-- **Release clip:** T → 1.3 → 1.2 → 1.5 → 1.7 → 3.2–3.3 (fast) → E.
+- **Release clip:** T → 1.3 → 1.2 → 1.5 → 1.7 → 3.2–3.3 (fast) → E. Evergreen: only the version on the end card changes per release, with no "what's new" segment.
 - **Walkthrough:** T → Act 1 → Act 2 → Act 3 → E, with a chapter per act and per Act 2 group.
 
 ## Steps
@@ -103,6 +103,5 @@ Each step is one commit, and the plan is committed first as the baseline.
 ## Open questions
 
 - **Hosting and README embedding:** decided after the cuts are edited, by comparing quality and visitor experience: release assets only or a YouTube/PeerTube mirror; an animated WebP via `<img>`, a `user-attachments` MP4, or a poster that links out.
-- **What's new in the release clip:** whether each release's clip carries a short "new in this release" segment ahead of the end card, written per release, or stays evergreen apart from the version.
 - **An honest multi-vendor shot (2.5):** the mock backend is one vendor. Either the animated TV carries a vendor label the driver sets per mock TV, or the shot leans on `tisvlay vendor` output alone.
 - **A link drop for 2.6:** whether the mock can drop and redial its connection on cue, or the driver needs a small seam for it (a dev-only mock knob, not a product option).
