@@ -61,6 +61,12 @@ const WAIT_LIMIT: Duration = Duration::from_secs(15);
 /// run beside a dev stack.
 const MCP_PORT: u16 = 9316;
 
+/// A frame of the 60 Hz capture, in milliseconds.
+const FRAME_MS: u64 = 16;
+
+/// The least time a `ramp` step gives each CLI call.
+const RAMP_STEP_MS: u64 = 60;
+
 #[derive(Parser, Debug)]
 struct Args {
     /// The shot script to play.
@@ -170,11 +176,25 @@ enum Step {
         label: Option<String>,
     },
     /// Turn the wheel over a point of the settings window, in its
-    /// logical pixels; a negative `dy` scrolls the content up.
+    /// logical pixels; a negative `dy` scrolls the content up. Over
+    /// `ms` milliseconds the scroll eases in and out, a frame at a time;
+    /// left out, it lands at once.
     Scroll {
         x: f64,
         y: f64,
         dy: f64,
+        #[serde(default)]
+        ms: u64,
+    },
+    /// Run the CLI repeatedly with a value moving from `from` to `to`
+    /// over `ms` milliseconds, as a held key or a turning wheel would
+    /// set it: a slider in the window scrubs instead of jumping. The
+    /// value is appended to `args`.
+    Ramp {
+        args: Vec<String>,
+        from: i64,
+        to: i64,
+        ms: u64,
     },
     /// Someone approves the pairing prompt on the TV at this address.
     Approve {
@@ -500,18 +520,51 @@ async fn main() -> Result<()> {
                     )
                     .await?;
             }
-            Step::Scroll { x, y, dy } => {
+            Step::Scroll { x, y, dy, ms } => {
                 let window = window.as_ref().context("a `scroll` step needs `[gui]`")?;
-                mcp(
-                    "dispatch_pointer_scroll",
-                    json!({
-                        "windowHandle": window,
-                        "position": { "x": x, "y": y },
-                        "deltaX": 0.0,
-                        "deltaY": dy,
-                    }),
-                )
-                .await?;
+                // One wheel event per frame, their sizes following an
+                // ease in and out that sums to `dy`.
+                let frames = (*ms / FRAME_MS).max(1);
+                let eased = |i: u64| {
+                    let t = i as f64 / frames as f64;
+                    t * t * (3.0 - 2.0 * t)
+                };
+                let mut tick = tokio::time::interval(Duration::from_millis(FRAME_MS));
+                for frame in 1..=frames {
+                    tick.tick().await;
+                    mcp(
+                        "dispatch_pointer_scroll",
+                        json!({
+                            "windowHandle": window,
+                            "position": { "x": x, "y": y },
+                            "deltaX": 0.0,
+                            "deltaY": dy * (eased(frame) - eased(frame - 1)),
+                        }),
+                    )
+                    .await?;
+                }
+            }
+            Step::Ramp {
+                args: cli_args,
+                from,
+                to,
+                ms,
+            } => {
+                let binary = args
+                    .cli
+                    .as_deref()
+                    .context("the shot has a `ramp` step; pass --cli")?;
+                // As many values as a CLI call each fits in the time.
+                let span = (to - from).unsigned_abs().max(1);
+                let steps = span.min((*ms / RAMP_STEP_MS).max(1));
+                let mut tick = tokio::time::interval(Duration::from_millis(*ms / steps));
+                for step in 1..=steps {
+                    tick.tick().await;
+                    let value = from + (to - from) * step as i64 / steps as i64;
+                    let mut with_value = cli_args.clone();
+                    with_value.push(value.to_string());
+                    run_cli(binary, &system_socket, &user_socket, &with_value, &tvs).await?;
+                }
             }
             Step::Key { text } => {
                 let window = window.as_ref().context("a `key` step needs `[gui]`")?;
@@ -954,7 +1007,10 @@ fn action(step: &Step) -> Value {
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
         Step::Approve { address } => json!({ "do": "approve", "address": address }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
-        Step::Scroll { x, y, dy } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
+        Step::Scroll { x, y, dy, .. } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
+        Step::Ramp { args, from, to, .. } => {
+            json!({ "do": "cli", "args": args, "from": from, "to": to })
+        }
         Step::Key { text } => json!({ "do": "key", "text": text }),
         Step::Tape { file, .. } => json!({ "do": "tape", "file": file }),
         Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } | Step::Tree { .. } => {

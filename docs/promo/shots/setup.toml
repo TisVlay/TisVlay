@@ -7,6 +7,10 @@
 name = "Living Room TV"
 address = "192.0.2.30"
 
+[[found]]
+name = "Bedroom TV"
+address = "192.0.2.31"
+
 [gui]
 
 [[step]]
@@ -17,9 +21,10 @@ ms = 800
 do = "click"
 id = "TvList::pair"
 
+# The scan and its animation, before a TV is picked.
 [[step]]
 do = "pause"
-ms = 1800
+ms = 2600
 
 [[step]]
 do = "click"

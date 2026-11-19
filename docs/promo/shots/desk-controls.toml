@@ -16,7 +16,7 @@ address = "192.0.2.20"
 
 [[step]]
 do = "pause"
-ms = 1200
+ms = 900
 
 [[step]]
 do = "click"
@@ -24,7 +24,7 @@ label = "Desk"
 
 [[step]]
 do = "pause"
-ms = 1000
+ms = 500
 
 # Down to the picture and audio rows.
 [[step]]
@@ -32,34 +32,44 @@ do = "scroll"
 x = 450.0
 y = 300.0
 dy = -470.0
+ms = 900
 
 [[step]]
 do = "pause"
-ms = 1200
+ms = 300
 
 [[step]]
-do = "cli"
-args = ["volume", "{Desk}", "55"]
-
-[[step]]
-do = "pause"
-ms = 1000
-
-[[step]]
-do = "cli"
-args = ["volume", "{Desk}", "20"]
+do = "ramp"
+args = ["volume", "{Desk}"]
+from = 30
+to = 60
+ms = 900
 
 [[step]]
 do = "pause"
-ms = 1200
+ms = 300
 
 [[step]]
-do = "cli"
-args = ["backlight", "{Desk}", "35"]
+do = "ramp"
+args = ["volume", "{Desk}"]
+from = 60
+to = 18
+ms = 1100
 
 [[step]]
 do = "pause"
-ms = 1200
+ms = 400
+
+[[step]]
+do = "ramp"
+args = ["backlight", "{Desk}"]
+from = 80
+to = 35
+ms = 1100
+
+[[step]]
+do = "pause"
+ms = 400
 
 [[step]]
 do = "cli"
@@ -67,4 +77,4 @@ args = ["mute", "{Desk}", "on"]
 
 [[step]]
 do = "pause"
-ms = 2000
+ms = 1500
