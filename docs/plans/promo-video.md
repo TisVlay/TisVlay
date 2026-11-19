@@ -65,7 +65,7 @@ The README's Features groups, in README order, each with a title chip. Groups Ac
 | 2.2 | Automation via system/user events | The profile's event → action table, every row at once | GUI |
 | 2.3 | TV console remote control | Recap 1.8; remote keys moving desktop focus | TV + animated remote |
 | 2.4 | Flexible profile customization | System vs. user profiles; `tisvlay watch` and getters/setters; an SDK snippet | GUI + VHS + card |
-| 2.5 | Modular & vendor agnostic | `tisvlay vendor`, then a network TV and an HDMI-CEC TV under the same controls | VHS + TV |
+| 2.5 | Modular & vendor agnostic | `tisvlay vendor`, then two mock TVs the driver labels "network" and "HDMI-CEC", taking the same command side by side; the labels are display-only, the narration says the same controls work on either | VHS + TV |
 | 2.6 | Self-healing connectivity | The TV's link drops, a reconnect indicator, state intact | TV |
 | 2.7 | Input-aware automation gating | Recap 1.6 | GUI + TV |
 | 2.8 | Graphical user interfaces | The GUI's panes and the tray menu | GUI + tray |
@@ -103,5 +103,4 @@ Each step is one commit, and the plan is committed first as the baseline.
 ## Open questions
 
 - **Hosting and README embedding:** decided after the cuts are edited, by comparing quality and visitor experience: release assets only or a YouTube/PeerTube mirror; an animated WebP via `<img>`, a `user-attachments` MP4, or a poster that links out.
-- **An honest multi-vendor shot (2.5):** the mock backend is one vendor. Either the animated TV carries a vendor label the driver sets per mock TV, or the shot leans on `tisvlay vendor` output alone.
-- **A link drop for 2.6:** whether the mock can drop and redial its connection on cue, or the driver needs a small seam for it (a dev-only mock knob, not a product option).
+- **A link drop for 2.6:** reuse the seam the outage and redial tests already use (in the mock or `tisvlay-test`); add a dev-only mock knob only if none fits. Settled in step 2.
