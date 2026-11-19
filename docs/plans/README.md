@@ -26,4 +26,6 @@ When a plan is in flight, list it here with a one-line summary of the work it co
 
 > - [`example-feature.md`](example-feature.md) — short description of what's landing and why a multi-commit PR benefits from an upfront design doc.
 
+- [`promo-video.md`](promo-video.md) — declarative, reproducible demo video (hero loop, release clip, walkthrough) under `docs/promo/`: HyperFrames scenes, an animated TV driven by recorded event logs, Kokoro narration.
+
 Remove the entry when the plan retires and its file deletes (per Convention above). Git history is the archive — no need to maintain a retired-plans list here.
