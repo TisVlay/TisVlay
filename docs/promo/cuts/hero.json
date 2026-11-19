@@ -1,0 +1,14 @@
+{
+  "wordmark": "TisVlay",
+  "shots": [
+    {
+      "shot": "hero",
+      "kind": "stage",
+      "timeline": "coffee-break",
+      "tv": "Desk",
+      "link": "network",
+      "lead": 2.2,
+      "settle": 2.6
+    }
+  ]
+}

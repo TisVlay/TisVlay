@@ -82,14 +82,27 @@
     },
 
     stage(layer, shot, cut, tl) {
-      const child = stage(layer, window.__promoTimelines[shot.timeline], {
-        tv: { name: shot.tv, x: 480, y: 420, w: 2000, h: 1160 },
-        pc: { x: 2960, y: shot.handheld ? 520 : 680, w: 400, h: 760 },
-        beats: shot.beatTimes,
+      const child = stage(layer, shot.script, {
+        tv: { name: shot.tv, x: shot.remote ? 620 : 480, y: 420, w: 2000, h: 1160 },
+        pc: { x: shot.remote ? 3100 : 2960, y: shot.handheld ? 520 : 680, w: 400, h: 760 },
         link: shot.link,
         handheld: shot.handheld,
+        remote: shot.remote,
+        wordmark: cut.wordmark,
       });
       tl.add(child, shot.start);
+    },
+
+    // A terminal tape, framed as a window.
+    terminal(layer, shot, cut) {
+      frame(layer, shot.box, cut.frame.bar, shot.title, shot.last);
+    },
+
+    // A card of text: a heading and the lines under it.
+    card(layer, shot) {
+      const card = el(layer, "card");
+      el(card, "heading", shot.heading);
+      el(card, "lines", shot.lines.join("<br>"));
     },
 
     window(layer, shot, cut, tl) {

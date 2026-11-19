@@ -1,12 +1,14 @@
-// Builds the promo's stage and animates it from a recorded timeline.
+// Draws the promo's stage, a TV and the PC beside it, and plays a
+// shot's script on it: how things stand when the shot opens, then what
+// happens when (lib/build-cut.mjs writes the script from a recorded
+// timeline).
 //
 // Every visual state is its own element, shown and hidden by opacity
 // tweens at absolute times: the renderer seeks frames out of order, so
 // nothing may depend on a callback having run earlier.
 (function () {
-  const FPS = 60;
-  // A command takes this long to cross the link before the TV reacts,
-  // and the panel this long to change. The mock answers at once; a TV
+  // A command takes this long to cross between the PC and the TV, and
+  // the panel this long to change. The mock answers at once; a TV
   // doesn't.
   const CROSS = 0.4;
   const FADE = 0.45;
@@ -15,8 +17,6 @@
     open: '<svg viewBox="0 0 24 24" fill="none" stroke="#fcfcfc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/></svg>',
     closed: '<svg viewBox="0 0 24 24" fill="none" stroke="#141618" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
   };
-
-  const frame = (t) => Math.round(t * FPS) / FPS;
 
   function el(parent, cls, html) {
     const node = document.createElement("div");
@@ -44,12 +44,16 @@
     }
   }
 
-  function buildTv(stage, spec) {
+  function buildTv(stage, spec, inputs) {
     const label = el(stage, "label");
     label.style.left = spec.x + "px";
     label.style.top = spec.y - 170 + "px";
     el(label, "name", spec.name);
-    const state = chips(label, { active: "on", screenoff: "screen off", standby: "off" }, ["active"]);
+    const state = chips(
+      label,
+      { active: "on", screenoff: "screen off", standby: "off", down: "reconnecting" },
+      ["active"],
+    );
 
     const tv = el(stage, "tv");
     Object.assign(tv.style, { left: spec.x + "px", top: spec.y + "px", width: spec.w + "px", height: spec.h + "px" });
@@ -65,9 +69,16 @@
       Object.assign(win.style, { left: x * scale + "px", top: y * scale + "px", width: w * scale + "px", height: h * scale + "px" });
     }
     el(desktop, "panel");
+    // What the TV shows on an input that isn't the PC's: something else
+    // plugged into it.
+    const other = el(screen, "other", '<div class="pad"></div>');
     const dark = el(screen, "dark");
     const standby = el(tv, "standby");
-    return { state, glow, dark, standby };
+    // The input it is on, named on its bezel.
+    const tag = el(tv, "inputs");
+    const input = {};
+    for (const { id, label: text } of inputs) input[id] = el(tag, "input", text);
+    return { state, glow, dark, standby, other, input };
   }
 
   function buildPc(stage, spec) {
@@ -77,7 +88,7 @@
     el(label, "name", "PC");
     const state = chips(
       label,
-      { unlocked: "unlocked", locked: "locked", asleep: "asleep", streaming: "streaming" },
+      { unlocked: "unlocked", locked: "locked", idle: "idle", asleep: "asleep", streaming: "streaming" },
       ["locked", "streaming"],
     );
 
@@ -93,30 +104,20 @@
     return { state, power, fill, open, closed };
   }
 
-  // What the PC shows for an action, if the action changes it.
-  function pcState(e) {
-    if (e.do === "cli" && e.args[0] === "stream") return e.args[1] === "start" ? "streaming" : "unlocked";
-    return { lock: "locked", unlock: "unlocked", sleep: "asleep", wake: "unlocked", return: "unlocked" }[e.do];
-  }
-
-  // The stage for one TV and the PC, animated from `entries` (a shot's
-  // timeline). `spec.beats`, when given, is the time each of the shot's
-  // actions lands on: everything the stack did in answer to an action
-  // keeps its distance from it. Returns a GSAP timeline for the caller
-  // to place.
-  function stage(root, entries, spec) {
+  // The stage for one TV and the PC, playing `script`. Returns a GSAP
+  // timeline for the caller to place.
+  function stage(root, script, spec) {
     const tl = gsap.timeline();
-    const tv = buildTv(root, spec.tv);
+    const tv = buildTv(root, spec.tv, script.inputs);
     const pc = buildPc(root, spec.pc);
-    // The link a command crosses: Wi-Fi waves for a network TV, a cable
-    // with its plugs for an HDMI-CEC one.
+    // The link a command crosses: an antenna on each device for a
+    // network TV, a cable with its plugs for an HDMI-CEC one.
     const linkY = spec.pc.y + spec.pc.h / 2;
     const linkX = spec.tv.x + spec.tv.w;
     const linkW = spec.pc.x - linkX;
     const wireless = spec.link !== "hdmi";
-    // Each device's antenna, at the corner turned away from the other,
-    // clear of both: the sender's waves ripple out, then the receiver's
-    // ripple in.
+    // Each antenna sits at the corner turned away from the other device,
+    // clear of both.
     const antenna = (side, x, y) => {
       const fan = el(root, "wifi " + side);
       Object.assign(fan.style, { left: x + "px", top: y + "px" });
@@ -128,12 +129,12 @@
         return arc;
       });
     };
-    let sends = [];
-    let receives = [];
+    let pcWaves = [];
+    let tvWaves = [];
     let pulse = null;
     if (wireless) {
-      sends = antenna("pc", spec.pc.x - 40, spec.pc.y + 60);
-      receives = antenna("tv", spec.tv.x + spec.tv.w - 30, spec.tv.y - 10);
+      pcWaves = antenna("pc", spec.pc.x - 40, spec.pc.y + 60);
+      tvWaves = antenna("tv", spec.tv.x + spec.tv.w - 30, spec.tv.y - 10);
     } else {
       const link = el(root, "link");
       Object.assign(link.style, { left: linkX + "px", top: linkY + "px", width: linkW + "px" });
@@ -151,6 +152,18 @@
         tl.to(arc, { opacity: 0.2, duration: 0.3 }, when + 0.12);
       });
     };
+    // A command crossing, to the TV or back to the PC.
+    const cross = (at, to) => {
+      const [sender, receiver] = to === "tv" ? [pcWaves, tvWaves] : [tvWaves, pcWaves];
+      if (wireless) {
+        ripple(sender, at, true);
+        ripple(receiver, at + CROSS / 2, false);
+      } else {
+        const [from, end] = to === "tv" ? [0, -linkW] : [-linkW, 0];
+        tl.fromTo(pulse, { x: from, opacity: 1 }, { x: end, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
+        tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
+      }
+    };
     // The device a stream goes to, lit while the stream runs.
     const handheld = spec.handheld ? el(root, "handheld", '<div class="grip"></div><div class="view"><div class="lit"></div></div><div class="grip"></div>') : null;
     const lit = handheld ? handheld.querySelector(".lit") : null;
@@ -158,71 +171,57 @@
       Object.assign(handheld.style, { left: spec.pc.x - 260 + "px", top: spec.pc.y + spec.pc.h + 110 + "px" });
       el(handheld, "tag", "handheld");
     }
+    // The TV's remote, whose power key lights when pressed.
+    const remote = spec.remote ? el(root, "remote small", '<div class="led"></div><div class="pressed"></div><div class="pad"></div>') : null;
+    const pressed = remote ? remote.querySelector(".pressed") : null;
+    if (remote) Object.assign(remote.style, { left: spec.tv.x - 300 + "px", top: spec.tv.y + 160 + "px" });
     if (spec.wordmark) el(root, "wordmark", spec.wordmark);
 
-    // Where the shot begins: the last state published before its first
-    // action, shown from the first frame.
-    const first = entries.find((e) => e.kind === "action");
-    const origin = first ? first.t : 0;
-    let power = "active";
-    for (const e of entries) {
-      if (e.t > origin) break;
-      if (e.kind === "state" && e.tv === spec.tv.name && e.key === "state/power") power = e.value.state;
-    }
-    show(tl, tv.state, power, 0, true);
-    show(tl, pc.state, "unlocked", 0, true);
-    tl.set(tv.dark, { opacity: power === "active" ? 0 : 1 }, 0);
-    tl.set(tv.glow, { opacity: power === "active" ? 1 : 0 }, 0);
+    // How things stand when the shot opens. The PC's input is the one
+    // the TV starts on.
+    const { initial } = script;
+    const home = initial.input;
+    const awake = (power) => power === "active";
+    const pcLook = (state, at, instant) => {
+      const locked = state === "locked" || state === "asleep";
+      const set = (node, opacity, duration) => (instant ? tl.set(node, { opacity }, at) : tl.to(node, { opacity, duration }, at));
+      show(tl, pc.state, state, at, instant);
+      set(pc.fill, locked ? 1 : 0, 0.25);
+      set(pc.closed, locked ? 1 : 0, 0.25);
+      set(pc.open, locked ? 0 : 1, 0.25);
+      set(pc.power, state === "asleep" ? 0.25 : 1, 0.4);
+      if (lit) set(lit, state === "streaming" ? 1 : 0, 0.4);
+    };
+    let power = initial.power;
+    // A TV in standby is off the network by nature, not reconnecting.
+    show(tl, tv.state, initial.link || power === "standby" ? power : "down", 0, true);
+    tl.set(tv.dark, { opacity: awake(power) ? 0 : 1 }, 0);
+    tl.set(tv.glow, { opacity: awake(power) ? 1 : 0 }, 0);
     tl.set(tv.standby, { opacity: power === "standby" ? 1 : 0 }, 0);
-    tl.set(pc.closed, { opacity: 0 }, 0);
+    tl.set(tv.other, { opacity: 0 }, 0);
+    show(tl, tv.input, home, 0, true);
+    pcLook(initial.pc, 0, true);
     if (pulse) tl.set(pulse, { opacity: 0 }, 0);
-    if (lit) tl.set(lit, { opacity: 0 }, 0);
+    if (pressed) tl.set(pressed, { opacity: 0 }, 0);
 
-    // The moment the TV may react: once the last command has crossed.
-    let arrives = 0;
-    // How far the current action was moved from its recorded time.
-    let beat = 0;
-    let shift = spec.beats ? spec.beats[0] - (first.t - origin) : 0;
-    for (const e of entries) {
-      if (e.t < origin) continue;
-      const acts = e.kind === "action" && pcState(e);
-      if (acts && spec.beats) {
-        shift = spec.beats[beat] - (e.t - origin);
-        beat += 1;
+    for (const e of script.events) {
+      if (e.kind === "pc") pcLook(e.state, e.at);
+      if (e.kind === "send") cross(e.at, e.to);
+      if (e.kind === "power") {
+        power = e.state;
+        show(tl, tv.state, power, e.at + FADE / 2);
+        tl.to(tv.dark, { opacity: awake(power) ? 0 : 1, duration: FADE, ease: "power2.out" }, e.at);
+        tl.to(tv.glow, { opacity: awake(power) ? 1 : 0, duration: FADE }, e.at);
+        tl.to(tv.standby, { opacity: power === "standby" ? 1 : 0, duration: 0.3 }, e.at + FADE);
       }
-      const at = frame(e.t - origin + shift);
-      if (e.kind === "action") {
-        const state = pcState(e);
-        if (!state) continue;
-        show(tl, pc.state, state, at);
-        const locked = state === "locked" || state === "asleep";
-        tl.to(pc.fill, { opacity: locked ? 1 : 0, duration: 0.25 }, at);
-        tl.to(pc.closed, { opacity: locked ? 1 : 0, duration: 0.25 }, at);
-        tl.to(pc.open, { opacity: locked ? 0 : 1, duration: 0.25 }, at);
-        tl.to(pc.power, { opacity: state === "asleep" ? 0.25 : 1, duration: 0.4 }, at);
-        if (lit) tl.to(lit, { opacity: state === "streaming" ? 1 : 0, duration: 0.4 }, at);
-        // A stream ending sends the TV nothing: it stays dark until
-        // someone is back.
-        if (e.do === "cli" && e.args[1] === "stop") continue;
-        // The command crosses to the TV.
-        if (pulse) {
-          tl.fromTo(pulse, { x: 0, opacity: 1 }, { x: -linkW, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
-          tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
-        }
-        if (wireless) {
-          ripple(sends, at, true);
-          ripple(receives, at + CROSS / 2, false);
-        }
-        arrives = at + CROSS;
-      } else if (e.kind === "state" && e.tv === spec.tv.name && e.key === "state/power") {
-        const state = e.value.state;
-        if (state === power) continue;
-        power = state;
-        const when = Math.max(at, arrives);
-        show(tl, tv.state, state, when + FADE / 2);
-        tl.to(tv.dark, { opacity: state === "active" ? 0 : 1, duration: FADE, ease: "power2.out" }, when);
-        tl.to(tv.glow, { opacity: state === "active" ? 1 : 0, duration: FADE }, when);
-        tl.to(tv.standby, { opacity: state === "standby" ? 1 : 0, duration: 0.3 }, when + FADE);
+      if (e.kind === "input") {
+        show(tl, tv.input, e.id, e.at);
+        tl.to(tv.other, { opacity: e.id === home ? 0 : 1, duration: FADE }, e.at);
+      }
+      if (e.kind === "link") show(tl, tv.state, e.up ? power : "down", e.at);
+      if (e.kind === "remote" && pressed) {
+        tl.to(pressed, { opacity: 1, duration: 0.06 }, e.at);
+        tl.to(pressed, { opacity: 0, duration: 0.4 }, e.at + 0.2);
       }
     }
     return tl;

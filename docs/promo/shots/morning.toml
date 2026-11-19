@@ -1,0 +1,35 @@
+# Shot 1.1: the PC wakes in the morning and the TV powers on with it.
+# The cut opens on the sleeping pair, after the first step.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "sleep"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "standby"
+
+[[step]]
+do = "pause"
+ms = 2000
+
+[[step]]
+do = "wake"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "active"
+
+[[step]]
+do = "pause"
+ms = 1500

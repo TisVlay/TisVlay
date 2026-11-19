@@ -871,7 +871,8 @@ async fn start_gui(
 
 /// The settings window's handle, once its MCP server answers.
 async fn main_window() -> Result<Value> {
-    let deadline = Instant::now() + WAIT_LIMIT;
+    // A freshly linked debug build takes a while to load the first time.
+    let deadline = Instant::now() + 4 * WAIT_LIMIT;
     loop {
         if let Ok(windows) = mcp("list_windows", json!({})).await
             && let Some(handle) = windows["windowHandles"].get(0)

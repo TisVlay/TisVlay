@@ -1,0 +1,31 @@
+# Shot 2.6: the TV's link drops with the TV still on, and the daemon
+# dials it again by itself.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "mock"
+tv = "Desk"
+op = "cut_link"
+
+[[step]]
+do = "pause"
+ms = 500
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/link"
+field = "connected"
+is = true
+
+[[step]]
+do = "pause"
+ms = 2000

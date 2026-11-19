@@ -1,0 +1,44 @@
+# Shot 1.6: with automation gated to the PC's input, the TV is left
+# alone while something else is on it. The first two steps set that up
+# and are not in the cut: the PC's input is named, and the profile told
+# to act only while the TV is on it.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "cli"
+args = ["config", "{Desk}", '{"primary_input":"HDMI_1"}']
+
+[[step]]
+do = "cli"
+args = ["profile", "system", "update", "00000000-0000-0000-0000-000000005159", '{"name":"default","automate_when":"on_primary"}']
+
+[[step]]
+do = "pause"
+ms = 1500
+
+# Someone switches the TV to the console.
+[[step]]
+do = "cli"
+args = ["input", "{Desk}", "HDMI_2"]
+
+[[step]]
+do = "pause"
+ms = 2000
+
+[[step]]
+do = "lock"
+
+[[step]]
+do = "pause"
+ms = 2500
+
+[[step]]
+do = "unlock"
+
+[[step]]
+do = "pause"
+ms = 1500

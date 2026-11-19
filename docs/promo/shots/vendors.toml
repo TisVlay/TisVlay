@@ -1,0 +1,11 @@
+# Shot 2.5's terminal: the vendor backends, from the CLI.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "tape"
+file = "docs/promo/tapes/vendors.tape"
+output = "docs/promo/build/clips/vendors.mp4"

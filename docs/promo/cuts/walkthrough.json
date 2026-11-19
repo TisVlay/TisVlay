@@ -1,0 +1,220 @@
+{
+  "shots": [
+    {
+      "shot": "title",
+      "kind": "title"
+    },
+    {
+      "shot": "act1",
+      "kind": "card",
+      "heading": "A day with TisVlay",
+      "lines": []
+    },
+    {
+      "shot": "a1-morning",
+      "kind": "stage",
+      "timeline": "morning",
+      "tv": "Desk",
+      "link": "network",
+      "skip": 1
+    },
+    {
+      "shot": "a1-desk",
+      "kind": "window",
+      "clip": "desk-controls",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a1-coffee",
+      "kind": "stage",
+      "timeline": "coffee-break",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0,
+        1
+      ]
+    },
+    {
+      "shot": "a1-idle",
+      "kind": "stage",
+      "timeline": "idle",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0,
+        1
+      ]
+    },
+    {
+      "shot": "a1-stream",
+      "kind": "stage",
+      "timeline": "stream",
+      "tv": "Desk",
+      "link": "network",
+      "handheld": true,
+      "beats": [
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "shot": "a1-gating-setup",
+      "kind": "window",
+      "clip": "profile-gating",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a1-game-night",
+      "kind": "stage",
+      "timeline": "game-night",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "shot": "a1-couch",
+      "kind": "tv",
+      "clip": "couch",
+      "tv": "Living Room"
+    },
+    {
+      "shot": "a1-remote-setup",
+      "kind": "window",
+      "clip": "profile-remote",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a1-lights-out",
+      "kind": "stage",
+      "timeline": "lights-out",
+      "tv": "Living Room",
+      "link": "hdmi",
+      "remote": true,
+      "beats": [
+        0,
+        0
+      ]
+    },
+    {
+      "shot": "act2",
+      "kind": "card",
+      "heading": "What it does",
+      "lines": []
+    },
+    {
+      "shot": "a2-control",
+      "kind": "window",
+      "clip": "desk-controls",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a2-automation",
+      "kind": "window",
+      "clip": "profiles",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a2-remote",
+      "kind": "tv",
+      "clip": "couch",
+      "tv": "Living Room"
+    },
+    {
+      "shot": "a2-profiles",
+      "kind": "terminal",
+      "clip": "cli-tour",
+      "title": "Terminal",
+      "size": [
+        2880,
+        1500
+      ]
+    },
+    {
+      "shot": "a2-vendors",
+      "kind": "terminal",
+      "clip": "vendors",
+      "title": "Terminal",
+      "size": [
+        2880,
+        1500
+      ]
+    },
+    {
+      "shot": "a2-outage",
+      "kind": "stage",
+      "timeline": "outage",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0
+      ]
+    },
+    {
+      "shot": "a2-gating",
+      "kind": "stage",
+      "timeline": "game-night",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "shot": "a2-gui",
+      "kind": "window",
+      "clip": "gui-tour",
+      "title": "TisVlay"
+    },
+    {
+      "shot": "a2-couch",
+      "kind": "tv",
+      "clip": "couch",
+      "tv": "Living Room"
+    },
+    {
+      "shot": "act3",
+      "kind": "card",
+      "heading": "Setting it up",
+      "lines": []
+    },
+    {
+      "shot": "a3-install",
+      "kind": "card",
+      "heading": "Install",
+      "lines": [
+        "Packages, or the NixOS module",
+        "tisvlay.readthedocs.io"
+      ]
+    },
+    {
+      "shot": "a3-setup",
+      "kind": "window",
+      "clip": "setup",
+      "title": "TisVlay",
+      "prompt": "Living Room TV"
+    },
+    {
+      "shot": "a3-done",
+      "kind": "stage",
+      "timeline": "coffee-break",
+      "tv": "Desk",
+      "link": "network",
+      "beats": [
+        0,
+        0
+      ]
+    },
+    {
+      "shot": "end",
+      "kind": "end"
+    }
+  ]
+}

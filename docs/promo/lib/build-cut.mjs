@@ -8,7 +8,7 @@
 //
 //     node lib/build-cut.mjs <cut> <tone>
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 
 const [cutName, tone] = process.argv.slice(2);
@@ -24,8 +24,11 @@ const FADE = 0.35;
 // shot holds this long after the stack's last reaction.
 const CUE = 0.3;
 const SETTLE = 1.1;
-// What a command takes to cross to the TV; lib/stage.js draws it so.
+// What a command takes to cross between the PC and a TV; lib/stage.js
+// draws it so.
 const CROSS = 0.4;
+// The least an outage shows for on the stage.
+const OUTAGE = 1.6;
 // A clip starts this long before its first action.
 const RUNUP = 0.8;
 
@@ -38,9 +41,13 @@ const FRAME = { x: 768, y: 208, w: 2304, h: 1536, bar: 88 };
 const TV = { x: 560, y: 200, w: 2560, h: 1496, inset: 28 };
 
 const cut = JSON.parse(readFileSync(`cuts/${cutName}.json`, "utf8"));
-const narration = JSON.parse(
-  readFileSync("build/narration/narration.js", "utf8").replace(/^window\.__promoNarration = /, "").replace(/;\s*$/, ""),
-)[tone];
+// A silent cut is laid out in the tone "silent": no narration at all.
+const narration =
+  tone === "silent"
+    ? {}
+    : JSON.parse(
+        readFileSync("build/narration/narration.js", "utf8").replace(/^window\.__promoNarration = /, "").replace(/;\s*$/, ""),
+      )[tone];
 if (!narration) throw new Error(`no narration in the ${tone} tone`);
 const version = /^version = "([^"]+)"/m.exec(readFileSync("../../Cargo.toml", "utf8").split("[workspace.package]")[1])[1];
 
@@ -57,10 +64,100 @@ function clip(name) {
   return { name, duration: entry.duration, began: entry.t - entry.duration, entries };
 }
 
-// The actions the stage shows the PC taking; lib/stage.js draws the same set.
-const isBeat = (e) =>
-  e.kind === "action" &&
-  (["lock", "unlock", "sleep", "wake", "return"].includes(e.do) || (e.do === "cli" && e.args[0] === "stream"));
+// What one of the driver's actions means on the stage: what the PC then
+// shows, whether a command may cross to the TV, or what the TV did by
+// itself. Actions that only set things up (a config or profile change)
+// mean nothing there.
+function beatOf(e) {
+  if (e.kind !== "action") return null;
+  if (e.do === "cli") {
+    if (e.args[0] === "stream") return { pc: e.args[1] === "start" ? "streaming" : "unlocked" };
+    if (e.args[0] === "input") return {};
+    return null;
+  }
+  if (e.do === "mock") return { tv: e.op };
+  const pc = { lock: "locked", unlock: "unlocked", idle: "idle", resume: "unlocked", sleep: "asleep", wake: "unlocked", return: "unlocked" }[e.do];
+  return pc ? { pc } : null;
+}
+
+// A stage shot's script: how things stand when it opens, then what
+// happens when, in the shot's own time. Each beat's action lands on its
+// sentence (actions sharing a sentence keep their recorded spacing), and
+// what the stack did in answer keeps its distance from the action. A
+// command is shown crossing only where the TV then changed.
+function stageScript(shot, sentences) {
+  const entries = timeline(shot.timeline);
+  const all = entries.filter(beatOf);
+  const beats = all.slice(shot.skip ?? 0);
+  const origin = beats[0].t;
+  const mine = (e, key) => e.kind === "state" && e.tv === shot.tv && e.key === key;
+
+  const initial = { power: "active", pc: "unlocked", input: null, link: true };
+  const inputs = new Map();
+  for (const e of entries) {
+    if (mine(e, "state/input")) for (const input of e.value.available) inputs.set(input.id, input.label);
+    if (e.t >= origin) continue;
+    if (mine(e, "state/power")) initial.power = e.value.state;
+    if (mine(e, "state/input")) initial.input = e.value.current;
+    if (mine(e, "state/link")) initial.link = e.value.connected;
+    const beat = beatOf(e);
+    if (beat?.pc) initial.pc = beat.pc;
+  }
+
+  // A silent shot keeps the pace it was recorded at.
+  const times = [];
+  beats.forEach((beat, i) => {
+    if (!sentences.length) return times.push((shot.lead ?? LEAD) + beat.t - origin);
+    const on = shot.beats?.[i] ?? i;
+    const sentence = sentences[Math.min(on, sentences.length - 1)];
+    const first = i === 0 || on !== (shot.beats?.[i - 1] ?? i - 1);
+    times.push(first ? sentence.start + CUE : times[i - 1] + (beat.t - beats[i - 1].t));
+  });
+
+  const events = [];
+  const now = { ...initial };
+  beats.forEach((act, i) => {
+    const beat = beatOf(act);
+    const at = times[i];
+    const until = beats[i + 1]?.t ?? Infinity;
+    if (beat.pc) events.push({ at, kind: "pc", state: beat.pc });
+    if (beat.tv === "PressRemotePower") events.push({ at, kind: "remote" });
+    let sent = false;
+    for (const e of entries) {
+      if (e.t < act.t || e.t >= until) continue;
+      const after = e.t - act.t;
+      // The TV answers a command once it has crossed; what it does by
+      // itself, it does at once.
+      const answers = () => {
+        if (beat.tv) return at + after;
+        if (!sent) events.push({ at, kind: "send", to: "tv" });
+        sent = true;
+        return Math.max(at + CROSS, at + after);
+      };
+      if (mine(e, "state/power") && e.value.state !== now.power) {
+        now.power = e.value.state;
+        events.push({ at: answers(), kind: "power", state: now.power });
+      } else if (mine(e, "state/input") && e.value.current !== now.input) {
+        now.input = e.value.current;
+        events.push({ at: answers(), kind: "input", id: now.input });
+      } else if (mine(e, "state/link") && e.value.connected !== now.link) {
+        // A TV in standby is off the network by nature; only a link
+        // lost while it is on is an outage. The mock is dialed again at
+        // once; the stage holds the outage long enough to read.
+        now.link = e.value.connected;
+        if (now.power === "standby") continue;
+        const when = now.link ? Math.max(at + after, (events.findLast((x) => x.kind === "link")?.at ?? 0) + OUTAGE) : at + after;
+        events.push({ at: when, kind: "link", up: now.link });
+      } else if (e.kind === "observed") {
+        // The TV's doing reaches the PC, which then sleeps or locks.
+        events.push({ at: at + after, kind: "send", to: "pc" });
+        events.push({ at: at + after + CROSS, kind: "pc", state: e.pc === "sleep" ? "asleep" : "locked" });
+      }
+    }
+  });
+  events.sort((x, y) => x.at - y.at);
+  return { initial, events, inputs: [...inputs].map(([id, label]) => ({ id, label })) };
+}
 
 let at = 0;
 const shots = [];
@@ -85,7 +182,6 @@ const sound = (name, when) => {
   const length = name === "click" ? 0.1 : 0.3;
   media.push(`<audio id="sound-${media.length}" src="../sounds/${name}.wav" data-start="${when.toFixed(3)}" data-duration="${length}" data-volume="0.6"></audio>`);
 };
-const scripts = new Set();
 cut.shots.forEach((shot, index) => {
   const lines = narration[shot.shot] ?? [];
   let t = LEAD;
@@ -114,38 +210,24 @@ cut.shots.forEach((shot, index) => {
   if (shot.kind === "stills") laid.images = shot.images.map(borrowed);
 
   if (shot.kind === "stage") {
-    // Each beat's action lands on its sentence; actions sharing a
-    // sentence keep the spacing they were recorded with.
-    const entries = timeline(shot.timeline);
-    const origin = entries.find((e) => e.kind === "action").t;
-    const acts = entries.filter(isBeat);
-    laid.beatTimes = [];
-    acts.forEach((act, i) => {
-      const sentence = sentences[Math.min(shot.beats[i], sentences.length - 1)];
-      const first = i === 0 || shot.beats[i] !== shot.beats[i - 1];
-      laid.beatTimes.push(first && sentence ? sentence.start + CUE : laid.beatTimes[i - 1] + (act.t - acts[i - 1].t));
-    });
-    // The TV's screen going off and coming on, each with its sound,
-    // where the stage shows it: once the command has crossed.
-    let shift = 0;
-    let beat = 0;
-    let power = null;
-    for (const e of entries) {
-      if (e.t < origin) {
-        if (e.kind === "state" && e.key === "state/power") power = e.value.state;
-        continue;
-      }
-      if (isBeat(e)) shift = laid.beatTimes[beat++] - (e.t - origin);
-      if (e.kind === "state" && e.key === "state/power" && e.value.state !== power) {
-        power = e.value.state;
-        sound(power === "active" ? "on" : "off", at + e.t - origin + shift + CROSS);
-      }
+    laid.script = stageScript(shot, sentences);
+    for (const event of laid.script.events) {
+      if (event.kind === "power") sound(event.state === "active" ? "on" : "off", at + event.at);
+      if (event.kind === "remote") sound("click", at + event.at);
     }
-    const lastAct = acts.at(-1);
-    const lastState = entries.filter((e) => e.kind === "state" && e.key === "state/power").at(-1);
-    duration = Math.max(duration, laid.beatTimes.at(-1) + Math.max(0, lastState.t - lastAct.t) + SETTLE);
-    laid.origin = origin;
-    scripts.add(`../timelines/${shot.timeline}.js`);
+    duration = Math.max(duration, (laid.script.events.at(-1)?.at ?? 0) + (shot.settle ?? SETTLE));
+  }
+  if (shot.kind === "terminal") {
+    // A terminal tape, framed as a window, playing from its start.
+    const footage = clip(shot.clip);
+    const h = Math.round((FRAME.w * shot.size[1]) / shot.size[0]);
+    const box = { ...FRAME, h, y: FRAME.y + Math.round((FRAME.h - h) / 2) };
+    laid.box = box;
+    laid.last = image(`../clips/${shot.clip}.last.png`);
+    duration = Math.max(duration, Math.min(footage.duration, duration + 3));
+    media.push(
+      `<video id="clip-${index}" class="clip footage" src="../clips/${shot.clip}.mp4" muted playsinline data-start="${at.toFixed(3)}" data-duration="${Math.min(footage.duration, duration).toFixed(3)}" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px"></video>`,
+    );
   }
   if (shot.kind === "window" || shot.kind === "tv") {
     // The shot runs as long as its narration. The clip plays from just
@@ -208,8 +290,6 @@ cut.shots.forEach((shot, index) => {
 });
 const total = at + FADE;
 
-for (const script of scripts) if (!existsSync(`build/cuts/${script}`.replace("build/cuts/../", "build/"))) throw new Error(`missing ${script}`);
-
 const page = `<!doctype html>
 <html lang="en">
   <head>
@@ -223,12 +303,11 @@ const page = `<!doctype html>
       ${media.join("\n      ")}
     </div>
     <script src="../../node_modules/gsap/dist/gsap.min.js"></script>
-    ${[...scripts].map((src) => `<script src="${src}"></script>`).join("\n    ")}
     <script src="../../lib/stage.js"></script>
     <script src="../../lib/cut.js"></script>
     <script>
       window.__timelines = window.__timelines || {};
-      window.__timelines["cut"] = Promo.cut(document.querySelector("#cut"), ${JSON.stringify({ shots, fade: FADE, version, frame: FRAME, tv: TV })});
+      window.__timelines["cut"] = Promo.cut(document.querySelector("#cut"), ${JSON.stringify({ shots, fade: FADE, version, frame: FRAME, tv: TV, wordmark: cut.wordmark })});
     </script>
   </body>
 </html>

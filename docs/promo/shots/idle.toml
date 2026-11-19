@@ -1,0 +1,39 @@
+# Shot 1.4: nobody touches the PC for a while and the TV's screen goes
+# off; a nudge of the mouse brings it back.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "idle"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "screenoff"
+
+[[step]]
+do = "pause"
+ms = 2500
+
+[[step]]
+do = "resume"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "active"
+
+[[step]]
+do = "pause"
+ms = 1500

@@ -1,0 +1,49 @@
+# Shot 2.2: a profile is a table from each event to what the TV then
+# does; the pane scrolls through it.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[tv]]
+name = "Living Room"
+vendor = "cec"
+address = "192.0.2.20"
+
+[gui]
+
+[[step]]
+do = "pause"
+ms = 800
+
+[[step]]
+do = "click"
+id = "AppWindow::profiles-item"
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "click"
+label = "default"
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "pause"
+ms = 600
+
+[[step]]
+do = "scroll"
+x = 450.0
+y = 300.0
+dy = -480.0
+ms = 4200
+
+[[step]]
+do = "pause"
+ms = 1500

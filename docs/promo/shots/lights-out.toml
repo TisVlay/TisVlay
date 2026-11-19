@@ -1,0 +1,34 @@
+# Shot 1.8: with the profile told to, the power key on the TV's remote
+# puts the PC to sleep. The first step sets that up and is not in the
+# cut.
+
+[[tv]]
+name = "Living Room"
+vendor = "cec"
+address = "192.0.2.20"
+
+[[step]]
+do = "cli"
+args = ["profile", "system", "update", "00000000-0000-0000-0000-000000005159", '{"name":"default","on_remote_power":"suspend"}']
+
+[[step]]
+do = "pause"
+ms = 2000
+
+[[step]]
+do = "mock"
+tv = "Living Room"
+op = "press_remote_power"
+
+[[step]]
+do = "pause"
+ms = 300
+
+[[step]]
+do = "mock"
+tv = "Living Room"
+op = "power_off"
+
+[[step]]
+do = "pause"
+ms = 3000
