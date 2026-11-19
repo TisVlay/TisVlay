@@ -54,6 +54,10 @@ The pending `changed` handlers are pushed at the front of a list and drained fro
 
 The focused item is brought into view edge to edge, through every enclosing scroll area, with no margin for its label or its neighbors. The GUI reports the focused stop's window rectangle on focus-in and nudges the `ScrollView`'s `content-y` to keep a margin around it. Slint 1.19's `ensure-visible(behavior)` scrolls the same way, edge to edge, so the margin stays the GUI's own. `ThemedSelect`'s flyout does use it: the cursor row calls `ensure-visible(instant)` from `changed is-cursor`, which also keeps a key step in view after a wheel scroll replaced the flyout's `content-y` binding. A select opening on a value past `max-visible` keeps the binding for its first position, since that row becomes the cursor in the creation pass, where `changed` doesn't run and the layout isn't there to read.
 
+### A size that reads a child's preferred size can collapse to zero
+
+A wrapper whose `height` binds to a child's `preferred-height`, while the child sets its own `height` to a percentage of the wrapper, sizes both to nothing, with no diagnostic. The child's explicit height becomes its preferred one, so the binding reads itself. The slider in `OptimisticSlider` did this: it still drew its track, and the keys still reached it, but a zero-height hit area took no click, drag or hover. Let the child keep its own height instead. A control that is shorter than its row also sits at the top of a `HorizontalLayout`, so wrap it in `VerticalLayout { alignment: center; }` to keep it level with the row's label.
+
 ### `TextInput` focus rules
 
 `TextInput::focus_event` refuses focus while `enabled: false` (a programmatic `focus()` then walks on, see above), and enables the input method only on a focus-in that finds it not `read-only`, so a field that flips `read-only` under focus has to clear and retake focus for the keyboard to rise. A std `LineEdit` leaves the Tab order only through `enabled: false`, which dims it; a read-only one stays a stop. The GUI's text field is a bare `TextInput` in its own control box for that reason, with its ring's scope as the stop.

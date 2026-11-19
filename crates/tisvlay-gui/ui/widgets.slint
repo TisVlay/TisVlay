@@ -1472,64 +1472,72 @@ export component OptimisticSlider {
     HorizontalLayout {
         spacing: Design.gap-row;
 
-        // The slider keeps fluent's look (its focused state is the
-        // "pressed" one); the shared ring around it is what reads at
-        // a distance, and a soft fill says it's entered.
-        Rectangle {
+        // The row stretches the slider to its height; the wrapper keeps
+        // the slider's own and sits in the middle, level with the label.
+        VerticalLayout {
             horizontal-stretch: 1;
-            vertical-stretch: 0;
-            height: slider.preferred-height;
-            border-radius: Design.radius-pill;
-            background: root.entered ? Theme.accent-soft : transparent;
-            // The keys the slider leaves (Return, Escape) bubble here.
-            FocusScope {
-                focus-on-tab-navigation: false;
-                focus-on-click: false;
-                key-pressed(event) => {
-                    if (root.couch && slider.has-focus) {
-                        if (event.text == Key.Return) {
-                            root.entered = !root.entered;
-                            root.sync-idle();
-                            return accept;
+            alignment: center;
+
+            // The slider keeps fluent's look (its focused state is the
+            // "pressed" one); the shared ring around it is what reads at
+            // a distance, and a soft fill says it's entered.
+            Rectangle {
+                vertical-stretch: 0;
+                height: slider.preferred-height;
+                border-radius: Design.radius-pill;
+                background: root.entered ? Theme.accent-soft : transparent;
+                // The keys the slider leaves (Return, Escape) bubble here.
+                FocusScope {
+                    focus-on-tab-navigation: false;
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if (root.couch && slider.has-focus) {
+                            if (event.text == Key.Return) {
+                                root.entered = !root.entered;
+                                root.sync-idle();
+                                return accept;
+                            }
+                            if (event.text == Key.Escape && root.entered) {
+                                root.entered = false;
+                                root.sync-idle();
+                                return accept;
+                            }
                         }
-                        if (event.text == Key.Escape && root.entered) {
+                        reject
+                    }
+                    // No height of its own: the wrapper takes the slider's
+                    // preferred height, and a percentage here would size both
+                    // to nothing.
+                    slider := Slider {
+                        accessible-label: root.label;
+                        width: 100%;
+                        minimum: root.minimum;
+                        maximum: root.maximum;
+                        value <=> root.display;
+                        enabled: root.enabled;
+                        changed(v) => { root.committed(round(v)); }
+                        changed has-focus => {
                             root.entered = false;
-                            root.sync-idle();
-                            return accept;
-                        }
-                    }
-                    reject
-                }
-                slider := Slider {
-                    accessible-label: root.label;
-                    width: 100%;
-                    height: 100%;
-                    minimum: root.minimum;
-                    maximum: root.maximum;
-                    value <=> root.display;
-                    enabled: root.enabled;
-                    changed(v) => { root.committed(round(v)); }
-                    changed has-focus => {
-                        root.entered = false;
-                        if (self.has-focus) {
-                            Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
-                            root.seen-seq = Nav.focus-seq;
-                            root.sync-idle();
-                        } else if (Nav.focus-seq == root.seen-seq) {
-                            // Change handlers run newest first, so the
-                            // stop gaining focus has usually reported by
-                            // now and the flag is its to set; clear it
-                            // only while nobody has.
-                            root.sync-idle();
+                            if (self.has-focus) {
+                                Nav.stop-focused-at(2, root.nav-row, "", root.absolute-position.x, root.absolute-position.y, root.height);
+                                root.seen-seq = Nav.focus-seq;
+                                root.sync-idle();
+                            } else if (Nav.focus-seq == root.seen-seq) {
+                                // Change handlers run newest first, so the
+                                // stop gaining focus has usually reported by
+                                // now and the flag is its to set; clear it
+                                // only while nobody has.
+                                root.sync-idle();
+                            }
                         }
                     }
                 }
-            }
-            FocusRing {
-                shown: slider.has-focus && Nav.focus-visible;
-                host-width: parent.width;
-                host-height: parent.height;
-                host-radius: Design.radius-pill;
+                FocusRing {
+                    shown: slider.has-focus && Nav.focus-visible;
+                    host-width: parent.width;
+                    host-height: parent.height;
+                    host-radius: Design.radius-pill;
+                }
             }
         }
 
