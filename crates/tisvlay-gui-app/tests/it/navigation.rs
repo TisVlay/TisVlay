@@ -1602,6 +1602,56 @@ fn the_about_header_is_two_rows() {
 }
 
 #[test]
+fn a_slider_has_height_and_takes_a_pointer_click() {
+    i_slint_backend_testing::init_no_event_loop();
+    let app = AppWindow::new().expect("AppWindow::new");
+    app.set_tvs(ModelRc::new(VecModel::from(vec![TvViewModel {
+        uuid: SharedString::from("tv-1"),
+        name: SharedString::from("TV"),
+        connected: true,
+        has_backlight: true,
+        backlight: 10,
+        ..Default::default()
+    }])));
+    app.set_selected_tv_index(0);
+    app.set_active_pane(Pane::Tvs);
+    make_tall(&app);
+    let backlights = Rc::new(RefCell::new(Vec::new()));
+    let sink = backlights.clone();
+    app.global::<Daemon>()
+        .on_set_backlight(move |_, value| sink.borrow_mut().push(value));
+
+    // A slider sized to nothing draws its track but takes no pointer:
+    // the keys still reach it, so only a click tells.
+    let slider = ElementHandle::find_by_accessible_label(&app, "Backlight")
+        .find(|e| e.accessible_role() == Some(AccessibleRole::Slider))
+        .expect("the Backlight slider renders");
+    assert!(
+        slider.size().height >= 20.0,
+        "the slider has its height, not {}",
+        slider.size().height
+    );
+    // And it sits level with its row's label.
+    let label = ElementHandle::find_by_accessible_label(&app, "Backlight")
+        .find(|e| e.accessible_role() == Some(AccessibleRole::Text))
+        .expect("the Backlight label renders");
+    let middle = |e: &ElementHandle| e.absolute_position().y + e.size().height / 2.0;
+    assert!(
+        (middle(&slider) - middle(&label)).abs() < 1.0,
+        "the slider's middle ({}) is level with the label's ({})",
+        middle(&slider),
+        middle(&label)
+    );
+    slider.mock_single_click(PointerEventButton::Left);
+    settle();
+    let written = backlights.borrow();
+    assert!(
+        written.last().is_some_and(|v| (40..=60).contains(v)),
+        "a click at the middle moved the value there: {written:?}"
+    );
+}
+
+#[test]
 fn in_couch_mode_a_slider_adjusts_only_once_entered() {
     i_slint_backend_testing::init_no_event_loop();
     let app = AppWindow::new().expect("AppWindow::new");
