@@ -304,7 +304,8 @@ promo-render name *args:
 [group('promo')]
 promo-timeline name:
     cargo build --profile test -p tisvlay-cli
-    cargo run --profile test -p tisvlay-session --example promo_driver -- \
+    cargo build --profile test -p tisvlay-session --example promo_driver
+    {{ _promo }} target/debug/examples/promo_driver \
         --shot {{ _promo_dir }}/shots/{{ name }}.toml \
         --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
         --cli target/debug/tisvlay

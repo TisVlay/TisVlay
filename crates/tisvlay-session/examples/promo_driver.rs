@@ -51,7 +51,8 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
 
-const SITE: &str = "promo";
+/// The CLI's default site, so a terminal tape types no `--site`.
+const SITE: &str = "main";
 
 /// How long a `wait` step gives the stack before the shot fails.
 const WAIT_LIMIT: Duration = Duration::from_secs(15);
@@ -145,6 +146,13 @@ enum Step {
     Key {
         text: String,
     },
+    /// Record a terminal tape with VHS against the stack. In the tape,
+    /// `tisvlay` is the CLI and each TV's id is a variable named for it
+    /// in capitals (`$DESK`, `$LIVING_ROOM`).
+    Tape {
+        file: PathBuf,
+        output: PathBuf,
+    },
     /// The TV acts by itself, through the mock's handle.
     Mock {
         tv: String,
@@ -219,8 +227,12 @@ async fn main() -> Result<()> {
 
     // The real daemon, with the mock connector under the vendors' names.
     let dir = tisvlay_test::socket_tempdir();
-    let system_socket = dir.path().join("sys.sock");
-    let user_socket = dir.path().join("user.sock");
+    // Laid out as a runtime directory, where the CLI looks by default:
+    // a terminal tape pointed here types no socket flags.
+    let sockets = dir.path().join("tisvlay");
+    std::fs::create_dir(&sockets).context("create the socket directory")?;
+    let system_socket = sockets.join("zenoh.sock");
+    let user_socket = sockets.join("session.sock");
     let (connector, discovery, mock) = new_test_parts();
     let connector = Arc::new(connector);
     let mut daemon = tisvlay_daemon::serve(
@@ -439,6 +451,17 @@ async fn main() -> Result<()> {
                     json!({ "windowHandle": window, "eventType": "PressAndRelease", "text": text }),
                 )
                 .await?;
+            }
+            Step::Tape { file, output } => {
+                let binary = args
+                    .cli
+                    .as_deref()
+                    .context("the shot has a `tape` step; pass --cli")?;
+                run_tape(file, output, binary, dir.path(), &tvs).await?;
+                let duration = clip_duration(output)?;
+                recorder
+                    .write("clip", json!({ "file": output, "duration": duration }))
+                    .await?;
             }
             Step::Mock { tv, op } => {
                 let address = &lookup(&tvs, tv)?.1;
@@ -816,6 +839,7 @@ fn action(step: &Step) -> Value {
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
         Step::Key { text } => json!({ "do": "key", "text": text }),
+        Step::Tape { file, .. } => json!({ "do": "tape", "file": file }),
         Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => Value::Null,
     }
 }
@@ -860,6 +884,47 @@ async fn wait(recorder: &Recorder, tv: &str, key: &str, field: &str, is: &Value)
             bail!("{tv} never reported {key} {field} = {is}; last seen {seen:?}");
         }
     }
+}
+
+/// Record `tape` with VHS, its shell finding the CLI on `PATH`, the
+/// stack's sockets at the CLI's defaults under `runtime`, and each TV's
+/// id in a variable.
+async fn run_tape(
+    tape: &Path,
+    output: &Path,
+    cli: &Path,
+    runtime: &Path,
+    tvs: &HashMap<String, (Uuid, String)>,
+) -> Result<()> {
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let cli = cli.canonicalize().context("find the CLI")?;
+    let bin = cli.parent().context("the CLI has a directory")?;
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut command = Command::new("vhs");
+    command
+        .arg(tape)
+        .arg("--output")
+        .arg(output)
+        .env("PATH", format!("{}:{path}", bin.display()))
+        .env("XDG_RUNTIME_DIR", runtime)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    for (name, (id, _)) in tvs {
+        command.env(name.to_uppercase().replace(' ', "_"), id.to_string());
+    }
+    let result = tokio::task::spawn_blocking(move || command.output())
+        .await?
+        .context("run vhs")?;
+    if !result.status.success() {
+        bail!(
+            "vhs {} failed: {}",
+            tape.display(),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+    Ok(())
 }
 
 /// Run the CLI against the stack's sockets, `{Name}` standing for a TV's id.

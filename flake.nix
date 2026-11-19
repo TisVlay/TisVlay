@@ -118,6 +118,11 @@
             # (`just promo-capture`).
             sway
             wf-recorder
+            # Terminal tapes (a shot's `tape` step), and the shell they
+            # type into: plain bash has no line editing, and its prompt
+            # shows the escapes a tape sets.
+            vhs
+            bashInteractive
           ];
           # HyperFrames renders with the browser and encoder named here
           # instead of downloading its own, which can't run on NixOS.

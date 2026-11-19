@@ -1,0 +1,16 @@
+# Shot 2.4's terminal: reading and setting a TV from the CLI.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[tv]]
+name = "Living Room"
+vendor = "cec"
+address = "192.0.2.20"
+
+[[step]]
+do = "tape"
+file = "docs/promo/tapes/cli-tour.tape"
+output = "docs/promo/build/clips/cli-tour.mp4"
