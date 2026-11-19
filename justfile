@@ -277,6 +277,60 @@ docs-serve:
     mdbook-mermaid install docs/book
     mdbook serve docs/book --open
 
+# The promo video (docs/promo): HyperFrames compositions rendered by a
+# headless browser and FFmpeg from the flake's `promo` shell, so the
+# default shell never carries them. Everything generated lands in
+# docs/promo/build (inputs) and docs/promo/out (renders), both gitignored.
+_promo := "nix develop .#promo -c"
+_promo_dir := "docs/promo"
+
+# Install the promo's pinned dependencies and link its typeface.
+[group('promo')]
+promo-setup:
+    {{ _promo }} npm ci --prefix {{ _promo_dir }} --no-audit --no-fund
+    mkdir -p {{ _promo_dir }}/build/fonts
+    {{ _promo }} sh -c 'ln -sfn "$PROMO_FONT" {{ _promo_dir }}/build/fonts/Inter.ttf'
+
+# Render one composition, e.g. `just promo-render toolchain-check`.
+[group('promo')]
+promo-render name *args:
+    cd {{ _promo_dir }} && {{ _promo }} npx hyperframes render . \
+        --composition compositions/{{ name }}.html --output out/{{ name }}.mp4 \
+        --video-frame-format png --strict {{ args }}
+
+# Prove the render path: an animation, an embedded clip and an audio
+# track render, and a second render gives the same frames. Then compare
+# the two frame numbers in docs/promo/build/check/stills/*.png by eye:
+# the clip's burned-in one and the page's own.
+[group('promo')]
+promo-check: promo-setup
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd {{ _promo_dir }}
+    mkdir -p build/check/stills out
+    {{ _promo }} ffmpeg -v error -y -f lavfi -i "testsrc2=size=1280x720:rate=30:duration=4" \
+        -vf "drawtext=text=%{frame_num}:fontsize=160:fontcolor=white:box=1:boxcolor=black:x=40:y=40" \
+        -c:v libx264 -pix_fmt yuv420p build/check/counter.mp4
+    {{ _promo }} ffmpeg -v error -y -f lavfi -i "sine=frequency=440:duration=4" build/check/tone.wav
+    frames() { {{ _promo }} ffmpeg -v error -i "$1" -map 0:v -f framemd5 - | grep -v '^#' | sha256sum; }
+    render() {
+        {{ _promo }} npx hyperframes render . --composition compositions/toolchain-check.html \
+            --output "$1" --video-frame-format png --strict --quiet
+    }
+    render out/toolchain-check.mp4
+    render build/check/again.mp4
+    if [ "$(frames out/toolchain-check.mp4)" != "$(frames build/check/again.mp4)" ]; then
+        echo "two renders of the same composition differ" >&2
+        exit 1
+    fi
+    {{ _promo }} ffmpeg -v error -i out/toolchain-check.mp4 -map 0:a -f null - \
+        || { echo "the render has no audio track" >&2; exit 1; }
+    for frame in 0 37 119; do
+        {{ _promo }} ffmpeg -v error -y -i out/toolchain-check.mp4 \
+            -vf "select=eq(n\,$frame)" -frames:v 1 "build/check/stills/$frame.png"
+    done
+    echo "renders match; check the frame numbers in {{ _promo_dir }}/build/check/stills/"
+
 # Regenerate every generated partial from the code it documents.
 [group('docs')]
 docs-gen:

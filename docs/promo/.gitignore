@@ -1,0 +1,7 @@
+# Everything here is regenerated: dependencies, generated media and
+# timelines, the narration cache, and the renders themselves.
+/node_modules/
+/build/
+/out/
+/renders/
+/.hyperframes/

@@ -109,3 +109,7 @@ Each step is one commit, and the plan is committed first as the baseline.
 
 - **Hosting and README embedding:** decided after the cuts are edited, by comparing quality and visitor experience: release assets only or a YouTube/PeerTube mirror; an animated WebP via `<img>`, a `user-attachments` MP4, or a poster that links out.
 - **Vendor-specific pairing fields:** whether the wizard under a posed vendor registration shows that vendor's real pairing form (shot 3.3), or the mock's. Settled in step 2.
+
+## Deviations
+
+- **Step 1:** nixpkgs Chromium lacks the headless-shell frame API HyperFrames prefers, so it captures in its screenshot mode. Two renders still match frame for frame, and the embedded clip's frames land on the right composition frames, so the plain browser stays. The typeface is linked from the Nix store by `just promo-setup`, because HyperFrames otherwise fetches a missing family from Google Fonts at render time. Renders run with `--strict`, which caught an audio element that would have rendered silent. Still open: a harmless 404 the renderer logs per worker, and its "no index.html" notice, which goes away once the cuts get a project index.

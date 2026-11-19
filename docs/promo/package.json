@@ -1,0 +1,9 @@
+{
+  "name": "tisvlay-promo",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "gsap": "3.13.0",
+    "hyperframes": "0.9.69"
+  }
+}

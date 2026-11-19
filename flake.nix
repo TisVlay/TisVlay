@@ -105,6 +105,33 @@
           doCheck = true;
         });
 
+        # The promo video toolchain (docs/promo, `just promo-*`). Its own
+        # shell so the default one never fetches a browser: the recipes
+        # enter it with `nix develop .#promo -c`.
+        devShells.promo = pkgs.mkShell {
+          packages = with pkgs; [
+            nodejs_22
+            chromium
+            ffmpeg
+            just
+          ];
+          # HyperFrames renders with the browser and encoder named here
+          # instead of downloading its own, which can't run on NixOS.
+          HYPERFRAMES_BROWSER_PATH = pkgs.lib.getExe pkgs.chromium;
+          HYPERFRAMES_FFMPEG_PATH = pkgs.lib.getExe' pkgs.ffmpeg "ffmpeg";
+          HYPERFRAMES_FFPROBE_PATH = pkgs.lib.getExe' pkgs.ffmpeg "ffprobe";
+          PUPPETEER_SKIP_DOWNLOAD = "1";
+          # A render sends nothing out: no usage telemetry, no update
+          # check, no agent-skill install.
+          HYPERFRAMES_NO_TELEMETRY = "1";
+          HYPERFRAMES_NO_UPDATE_CHECK = "1";
+          HYPERFRAMES_SKIP_SKILLS = "1";
+          DO_NOT_TRACK = "1";
+          # The compositions' typeface, linked into the project by
+          # `just promo-setup` so no render fetches a web font.
+          PROMO_FONT = "${pkgs.inter}/share/fonts/truetype/InterVariable.ttf";
+        };
+
         devShells.default =
           let
             slintRuntimeLibs = pkgs.callPackage ./packaging/nix/slint-runtime.nix { };
