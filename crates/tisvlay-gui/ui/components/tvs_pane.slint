@@ -1169,6 +1169,7 @@ component TvDetail inherits Rectangle {
                         id-prefix: root.id-prefix;
                         label: @tr("Volume");
                         key: "volume";
+                        help: @tr("Set the TV's volume. The slider is locked while the TV is muted.");
                         OptimisticSlider {
                             label: volume-row.label;
                             nav-row: volume-row.row-id;
@@ -1183,12 +1184,19 @@ component TvDetail inherits Rectangle {
                         id-prefix: root.id-prefix;
                         label: @tr("Mute");
                         key: "mute";
-                        ThemedSwitch {
-                            accessible-label: mute-row.label;
-                            nav-row: mute-row.row-id;
-                            checked: root.tv.muted;
-                            enabled: root.tv.connected;
-                            toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
+                        help: @tr("Silence the TV without changing its volume.");
+                        HorizontalLayout {
+                            alignment: start;
+                            VerticalLayout {
+                                alignment: center;
+                                ThemedSwitch {
+                                    accessible-label: mute-row.label;
+                                    nav-row: mute-row.row-id;
+                                    checked: root.tv.muted;
+                                    enabled: root.tv.connected;
+                                    toggled => { Daemon.set-mute(root.tv.uuid, self.checked); }
+                                }
+                            }
                         }
                     }
                 }
