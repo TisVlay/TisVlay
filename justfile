@@ -298,6 +298,17 @@ promo-render name *args:
         --composition compositions/{{ name }}.html --output out/{{ name }}.mp4 \
         --video-frame-format png --strict {{ args }}
 
+# Play one shot script against the real stack (the mock connector under
+# the real vendors) and record its timeline, e.g.
+# `just promo-timeline coffee-break`.
+[group('promo')]
+promo-timeline name:
+    cargo build --profile test -p tisvlay-cli
+    cargo run --profile test -p tisvlay-session --example promo_driver -- \
+        --shot {{ _promo_dir }}/shots/{{ name }}.toml \
+        --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
+        --cli target/debug/tisvlay
+
 # Prove the render path: an animation, an embedded clip and an audio
 # track render, and a second render gives the same frames. Then compare
 # the two frame numbers in docs/promo/build/check/stills/*.png by eye:

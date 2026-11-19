@@ -1,0 +1,43 @@
+# Shot 1.3, the hero beat: the PC locks and the TV's screen goes off;
+# it unlocks and the screen comes back.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "mark"
+label = "at the desk"
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "lock"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "screenoff"
+
+[[step]]
+do = "pause"
+ms = 2500
+
+[[step]]
+do = "unlock"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "active"
+
+[[step]]
+do = "pause"
+ms = 1500

@@ -36,6 +36,9 @@ tempfile = { workspace = true }
 tisvlay-mock = { workspace = true }
 tisvlay-test = { workspace = true }
 tisvlay-daemon = { workspace = true }
+# The promo driver example registers the mock under these vendors.
+tisvlay-cec = { workspace = true }
+tisvlay-lg = { workspace = true }
 
 [lints]
 workspace = true
