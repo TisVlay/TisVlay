@@ -20,7 +20,7 @@ The cuts share their scenes. A scene is written once, and each cut is a list of 
 - **Dark theme only.** It fits the OLED / living-room story. How the GUI is forced dark under `cage` (no portal, no Plasma colors) is checked in step 4. If no knob exists, the fallback is an environment override, not a new product option.
 - **Couch mode is captured with `TISVLAY_COUCH_MODE`** (the existing override in `crates/tisvlay-gui-app/src/couch.rs`). Remote and gamepad presses are animated, driven by the same event log.
 - **CLI scenes are VHS tapes** (`.tape` files, `vhs` in nixpkgs), run against the same dev stack.
-- **Narration: Kokoro-FastAPI** (OpenAI-compatible, `/v1/audio/speech`). Its `/dev/captioned_speech` endpoint returns word timestamps, so scene timing and burned-in captions come from the TTS call itself, with no separate alignment pass. Voice: chosen from rendered samples, defaulting to the `am_liam+im_nicola` blend used before. The service runs on pox, not in the flake, so the endpoint is a recipe variable and the generated audio is cached per narration line (keyed by text + voice), so a re-render without a Kokoro instance reuses it.
+- **Narration: Kokoro-FastAPI** (OpenAI-compatible, `/v1/audio/speech`). Its `/dev/captioned_speech` endpoint returns word timestamps, so scene timing and burned-in captions come from the TTS call itself, with no separate alignment pass. Voice: `af_heart`, chosen from rendered samples of eight voices and blends. The service runs on pox, not in the flake, so the endpoint is a recipe variable and the generated audio is cached per narration line (keyed by text + voice), so a re-render without a Kokoro instance reuses it.
 - **Outputs are release assets, never committed.** `docs/promo/out/` and every intermediate (captures, logs, audio cache, `node_modules`) are gitignored. Rendered files are uploaded to the GitHub release, and the README and book link to them.
 - **The toolchain stays out of the main dev shell.** `docs/promo/flake.nix` holds Node, Chromium, FFmpeg, VHS, `cage` and `wf-recorder`. Recipes live in the root `justfile` under a `promo` group (the justfile is the single source of commands) and call `nix develop ./docs/promo -c …`. No CI gate renders video. Lint gates that walk `docs/` (typos, file checks) still apply to the sources.
 
@@ -59,7 +59,6 @@ Each step is one commit, and the plan is committed first as the baseline.
 
 ## Open questions
 
-- **Voice:** which sample (default `am_liam+im_nicola`).
 - **Music:** none, or a CC0 bed under the release clip and walkthrough.
 - **Hosting the walkthrough:** release asset only, or also YouTube/PeerTube linked from the book.
 - **Book embedding:** whether mdBook pages embed the loop with a `<video>` tag pointing at a release asset URL (the URL changes per release unless it points at `releases/latest/download/…`).
