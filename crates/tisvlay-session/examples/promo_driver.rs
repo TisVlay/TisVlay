@@ -158,6 +158,13 @@ enum Step {
         id: Option<String>,
         label: Option<String>,
     },
+    /// Turn the wheel over a point of the settings window, in its
+    /// logical pixels; a negative `dy` scrolls the content up.
+    Scroll {
+        x: f64,
+        y: f64,
+        dy: f64,
+    },
     /// Press and release a key in the settings window.
     Key {
         text: String,
@@ -463,6 +470,19 @@ async fn main() -> Result<()> {
                         json!({ "do": "click", "id": id, "label": label, "at": at }),
                     )
                     .await?;
+            }
+            Step::Scroll { x, y, dy } => {
+                let window = window.as_ref().context("a `scroll` step needs `[gui]`")?;
+                mcp(
+                    "dispatch_pointer_scroll",
+                    json!({
+                        "windowHandle": window,
+                        "position": { "x": x, "y": y },
+                        "deltaX": 0.0,
+                        "deltaY": dy,
+                    }),
+                )
+                .await?;
             }
             Step::Key { text } => {
                 let window = window.as_ref().context("a `key` step needs `[gui]`")?;
@@ -894,6 +914,7 @@ fn action(step: &Step) -> Value {
         Step::Cli { args } => json!({ "do": "cli", "args": args }),
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
+        Step::Scroll { x, y, dy } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
         Step::Key { text } => json!({ "do": "key", "text": text }),
         Step::Tape { file, .. } => json!({ "do": "tape", "file": file }),
         Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => Value::Null,

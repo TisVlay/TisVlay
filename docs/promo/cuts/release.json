@@ -1,0 +1,16 @@
+{
+  "shots": [
+    { "shot": "title", "kind": "title" },
+    { "shot": "coffee-break", "kind": "stage", "timeline": "coffee-break", "tv": "Desk", "beats": [0, 1] },
+    { "shot": "desk-controls", "kind": "window", "clip": "desk-controls", "title": "TisVlay" },
+    { "shot": "stream", "kind": "stage", "timeline": "stream", "tv": "Desk", "beats": [0, 1, 1] },
+    { "shot": "couch", "kind": "tv", "clip": "couch", "tv": "Living Room" },
+    {
+      "shot": "setup",
+      "kind": "stills",
+      "title": "TisVlay",
+      "images": ["docs/screenshots/wizard_discovery.png", "docs/screenshots/wizard_pairing.png"]
+    },
+    { "shot": "end", "kind": "end" }
+  ]
+}

@@ -75,7 +75,11 @@
     label.style.left = spec.x + "px";
     label.style.top = spec.y - 170 + "px";
     el(label, "name", "PC");
-    const state = chips(label, { unlocked: "unlocked", locked: "locked", asleep: "asleep" }, ["locked"]);
+    const state = chips(
+      label,
+      { unlocked: "unlocked", locked: "locked", asleep: "asleep", streaming: "streaming" },
+      ["locked", "streaming"],
+    );
 
     const pc = el(stage, "pc");
     Object.assign(pc.style, { left: spec.x + "px", top: spec.y + "px", width: spec.w + "px", height: spec.h + "px" });
@@ -89,10 +93,19 @@
     return { state, power, fill, open, closed };
   }
 
+  // What the PC shows for an action, if the action changes it.
+  function pcState(e) {
+    if (e.do === "cli" && e.args[0] === "stream") return e.args[1] === "start" ? "streaming" : "unlocked";
+    return { lock: "locked", unlock: "unlocked", sleep: "asleep", wake: "unlocked", return: "unlocked" }[e.do];
+  }
+
   // The stage for one TV and the PC, animated from `entries` (a shot's
-  // timeline). Returns the paused GSAP timeline.
+  // timeline). `spec.beats`, when given, is the time each of the shot's
+  // actions lands on: everything the stack did in answer to an action
+  // keeps its distance from it. Returns a GSAP timeline for the caller
+  // to place.
   function stage(root, entries, spec) {
-    const tl = gsap.timeline({ paused: true });
+    const tl = gsap.timeline();
     const tv = buildTv(root, spec.tv);
     const pc = buildPc(root, spec.pc);
     const link = el(root, "link");
@@ -122,18 +135,26 @@
 
     // The moment the TV may react: once the last command has crossed.
     let arrives = 0;
+    // How far the current action was moved from its recorded time.
+    let beat = 0;
+    let shift = spec.beats ? spec.beats[0] - (first.t - origin) : 0;
     for (const e of entries) {
       if (e.t < origin) continue;
-      const at = frame(e.t - origin);
+      const acts = e.kind === "action" && pcState(e);
+      if (acts && spec.beats) {
+        shift = spec.beats[beat] - (e.t - origin);
+        beat += 1;
+      }
+      const at = frame(e.t - origin + shift);
       if (e.kind === "action") {
-        const pcState = { lock: "locked", unlock: "unlocked", sleep: "asleep", wake: "unlocked" }[e.do];
-        if (!pcState) continue;
-        show(tl, pc.state, pcState, at);
-        const locked = pcState !== "unlocked";
+        const state = pcState(e);
+        if (!state) continue;
+        show(tl, pc.state, state, at);
+        const locked = state === "locked" || state === "asleep";
         tl.to(pc.fill, { opacity: locked ? 1 : 0, duration: 0.25 }, at);
         tl.to(pc.closed, { opacity: locked ? 1 : 0, duration: 0.25 }, at);
         tl.to(pc.open, { opacity: locked ? 0 : 1, duration: 0.25 }, at);
-        tl.to(pc.power, { opacity: pcState === "asleep" ? 0.25 : 1, duration: 0.4 }, at);
+        tl.to(pc.power, { opacity: state === "asleep" ? 0.25 : 1, duration: 0.4 }, at);
         // The command crosses to the TV.
         tl.fromTo(pulse, { x: 0, opacity: 1 }, { x: -linkW, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
         tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
@@ -152,5 +173,5 @@
     return tl;
   }
 
-  window.Promo = { stage };
+  window.Promo = { stage, el };
 })();

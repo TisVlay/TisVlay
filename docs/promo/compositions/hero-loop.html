@@ -14,7 +14,8 @@
     <script src="../lib/stage.js"></script>
     <script>
       window.__timelines = window.__timelines || {};
-      window.__timelines["hero"] = Promo.stage(
+      window.__timelines["hero"] = gsap.timeline({ paused: true }).add(
+        Promo.stage(
         document.querySelector("#hero"),
         window.__promoTimelines["coffee-break"],
         {
@@ -22,6 +23,8 @@
           pc: { x: 2960, y: 760, w: 400, h: 760 },
           wordmark: "TisVlay",
         },
+      ),
+      0,
       );
     </script>
   </body>

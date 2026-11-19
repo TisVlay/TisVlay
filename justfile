@@ -300,6 +300,16 @@ promo_voice := env("PROMO_VOICE", "af_heart")
 promo-narrate:
     cd {{ _promo_dir }} && {{ _promo }} node lib/narrate.mjs {{ promo_kokoro }} {{ promo_voice }}
 
+# Lay a cut out in a narration tone and render it, e.g.
+# `just promo-cut release warm`. Its shots must be recorded
+# (`promo-timeline`, `promo-capture`) and the narration spoken.
+[group('promo')]
+promo-cut cut tone *args:
+    cd {{ _promo_dir }} && {{ _promo }} node lib/build-cut.mjs {{ cut }} {{ tone }}
+    cd {{ _promo_dir }} && {{ _promo }} npx hyperframes render . \
+        --composition build/cuts/{{ cut }}-{{ tone }}.html --output out/{{ cut }}-{{ tone }}.mp4 \
+        --video-frame-format png --strict {{ args }}
+
 # Render one composition, e.g. `just promo-render toolchain-check`.
 [group('promo')]
 promo-render name *args:

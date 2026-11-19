@@ -1,6 +1,6 @@
 # Shot 1.2: everyday control from the desk. The settings window shows
-# both TVs; the volume and backlight change from the CLI, as the tray's
-# scroll would change them.
+# both TVs; the picture and audio rows follow as the backlight, volume
+# and mute change from the CLI, as the tray's scroll would change them.
 
 [[tv]]
 name = "Desk"
@@ -16,7 +16,7 @@ address = "192.0.2.20"
 
 [[step]]
 do = "pause"
-ms = 1500
+ms = 1200
 
 [[step]]
 do = "click"
@@ -24,15 +24,42 @@ label = "Desk"
 
 [[step]]
 do = "pause"
-ms = 1500
+ms = 1000
 
+# Down to the picture and audio rows.
 [[step]]
-do = "cli"
-args = ["volume", "{Desk}", "45"]
+do = "scroll"
+x = 450.0
+y = 300.0
+dy = -470.0
 
 [[step]]
 do = "pause"
-ms = 1500
+ms = 1200
+
+[[step]]
+do = "cli"
+args = ["volume", "{Desk}", "55"]
+
+[[step]]
+do = "pause"
+ms = 1000
+
+[[step]]
+do = "cli"
+args = ["volume", "{Desk}", "20"]
+
+[[step]]
+do = "pause"
+ms = 1200
+
+[[step]]
+do = "cli"
+args = ["backlight", "{Desk}", "35"]
+
+[[step]]
+do = "pause"
+ms = 1200
 
 [[step]]
 do = "cli"
@@ -40,4 +67,4 @@ args = ["mute", "{Desk}", "on"]
 
 [[step]]
 do = "pause"
-ms = 1500
+ms = 2000

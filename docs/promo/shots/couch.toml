@@ -11,11 +11,12 @@ name = "Living Room"
 vendor = "cec"
 address = "192.0.2.20"
 
-# A TV's screen, not a desktop window: couch mode runs maximized.
+# A 4K TV at a 200% display scale, not a desktop window: couch mode
+# runs maximized and multiplies the session's own scale.
 [gui]
 couch = true
 screen = [3840, 2160]
-scale = 3.0
+scale = 2.0
 
 [[step]]
 do = "pause"
