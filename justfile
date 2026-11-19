@@ -291,6 +291,15 @@ promo-setup:
     mkdir -p {{ _promo_dir }}/build/fonts
     {{ _promo }} sh -c 'ln -sfn "$PROMO_FONT" {{ _promo_dir }}/build/fonts/Inter.ttf'
 
+# Where the narration is spoken: a Kokoro-FastAPI server and a voice.
+promo_kokoro := env("PROMO_KOKORO", "http://127.0.0.1:8880")
+promo_voice := env("PROMO_VOICE", "af_heart")
+
+# Speak the narration text (docs/promo/narration), caching each sentence.
+[group('promo')]
+promo-narrate:
+    cd {{ _promo_dir }} && {{ _promo }} node lib/narrate.mjs {{ promo_kokoro }} {{ promo_voice }}
+
 # Render one composition, e.g. `just promo-render toolchain-check`.
 [group('promo')]
 promo-render name *args:
