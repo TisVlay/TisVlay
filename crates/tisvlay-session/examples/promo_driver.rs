@@ -400,7 +400,15 @@ async fn main() -> Result<()> {
                 .compositor
                 .as_deref()
                 .context("the shot has `[gui]`; pass --compositor")?;
-            let started = start_gui(config, binary, gui, &system_socket, &user_socket).await?;
+            let started = start_gui(
+                config,
+                binary,
+                args.cli.as_deref(),
+                gui,
+                &system_socket,
+                &user_socket,
+            )
+            .await?;
             let handle = main_window().await?;
             if let Some(path) = &args.dump_tree {
                 dump_tree(&handle, path).await?;
@@ -572,6 +580,7 @@ impl Settings {
 /// lives on. Fields drop in order: the window before its compositor.
 struct StartedGui {
     _window: Reaped,
+    _tray: Option<Reaped>,
     _compositor: Reaped,
     _portal: zbus::Connection,
     _bus: PrivateBus,
@@ -615,6 +624,7 @@ async fn start_compositor(config: &Path) -> Result<(Reaped, tempfile::TempDir)> 
 async fn start_gui(
     config: &Path,
     binary: &Path,
+    cli: Option<&Path>,
     gui: &Gui,
     system_socket: &Path,
     user_socket: &Path,
@@ -629,20 +639,38 @@ async fn start_gui(
     portal
         .request_name("org.freedesktop.portal.Desktop")
         .await?;
+    // The desktop the window and tray see is this capture's alone: its
+    // compositor and bus, and empty config and state directories, so a
+    // capture neither reads nor writes the settings of whoever runs it.
+    let desktop = |command: &mut Command| {
+        command
+            .arg("--socket")
+            .arg(system_socket)
+            .arg("--user-socket")
+            .arg(user_socket)
+            .args(["--site", SITE])
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .env("XDG_CONFIG_HOME", runtime.path().join("config"))
+            .env("XDG_STATE_HOME", runtime.path().join("state"))
+            .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
+            .env("DBUS_SESSION_BUS_ADDRESS", bus.address())
+            .env_remove("DISPLAY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+    };
+    // The tray, so the window's service indicators are all honestly up.
+    let tray = match cli {
+        Some(cli) => {
+            let mut command = Command::new(cli);
+            command.args(["service", "tray"]);
+            desktop(&mut command);
+            Some(Reaped(command.spawn().context("start the tray")?))
+        }
+        None => None,
+    };
     let mut command = Command::new(binary);
-    command
-        .arg("--socket")
-        .arg(system_socket)
-        .arg("--user-socket")
-        .arg(user_socket)
-        .args(["--site", SITE])
-        .env("XDG_RUNTIME_DIR", runtime.path())
-        .env("WAYLAND_DISPLAY", WAYLAND_DISPLAY)
-        .env("DBUS_SESSION_BUS_ADDRESS", bus.address())
-        .env("SLINT_MCP_PORT", MCP_PORT.to_string())
-        .env_remove("DISPLAY")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    desktop(&mut command);
+    command.env("SLINT_MCP_PORT", MCP_PORT.to_string());
     if gui.couch {
         command.env("TISVLAY_COUCH_MODE", "1");
     }
@@ -651,6 +679,7 @@ async fn start_gui(
         .with_context(|| format!("start {}", binary.display()))?;
     Ok(StartedGui {
         _window: Reaped(window),
+        _tray: tray,
         _compositor: compositor,
         _portal: portal,
         _bus: bus,
