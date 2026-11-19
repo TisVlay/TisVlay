@@ -1,0 +1,54 @@
+# Shots 3.2 and 3.3: the pairing wizard discovers a TV and pairs it.
+# The mock approves the pairing itself, so the prompt a real TV shows
+# never appears; the configure step, whose form is the mock's, passes
+# quickly.
+
+[[found]]
+name = "Living Room TV"
+address = "192.0.2.30"
+
+[gui]
+
+[[step]]
+do = "pause"
+ms = 800
+
+[[step]]
+do = "click"
+id = "TvList::pair"
+
+[[step]]
+do = "pause"
+ms = 1800
+
+[[step]]
+do = "click"
+label = "Living Room TV"
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "click"
+label = "Next"
+
+[[step]]
+do = "pause"
+ms = 700
+
+[[step]]
+do = "click"
+label = "Pair"
+
+[[step]]
+do = "pause"
+ms = 2200
+
+[[step]]
+do = "click"
+label = "Next"
+
+[[step]]
+do = "pause"
+ms = 2500

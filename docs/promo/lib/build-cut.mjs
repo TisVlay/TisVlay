@@ -18,12 +18,14 @@ if (!cutName || !tone) throw new Error("usage: build-cut.mjs <cut> <tone>");
 // last, and the cross-fade between shots.
 const LEAD = 0.6;
 const GAP = 0.45;
-const TAIL = 0.8;
+const TAIL = 0.6;
 const FADE = 0.35;
 // A beat's action follows its sentence's first word by this much, and a
 // shot holds this long after the stack's last reaction.
 const CUE = 0.3;
-const SETTLE = 1.8;
+const SETTLE = 1.1;
+// A clip starts this long before its first action.
+const RUNUP = 0.8;
 
 const W = 3840;
 const H = 2160;
@@ -70,7 +72,7 @@ cut.shots.forEach((shot, index) => {
     t += line.duration + GAP;
     return sentence;
   });
-  let duration = Math.max(3, t - GAP + TAIL);
+  let duration = Math.max(2.5, t - GAP + TAIL);
   const laid = { ...shot, index, sentences };
   // Images are written into the page too: the renderer serves what the
   // page names, not what a script asks for later.
@@ -97,7 +99,7 @@ cut.shots.forEach((shot, index) => {
     const acts = entries.filter(isBeat);
     laid.beatTimes = [];
     acts.forEach((act, i) => {
-      const sentence = sentences[shot.beats[i]];
+      const sentence = sentences[Math.min(shot.beats[i], sentences.length - 1)];
       const first = i === 0 || shot.beats[i] !== shot.beats[i - 1];
       laid.beatTimes.push(first && sentence ? sentence.start + CUE : laid.beatTimes[i - 1] + (act.t - acts[i - 1].t));
     });
@@ -108,15 +110,21 @@ cut.shots.forEach((shot, index) => {
     scripts.add(`../timelines/${shot.timeline}.js`);
   }
   if (shot.kind === "window" || shot.kind === "tv") {
+    // The shot runs as long as its narration. The clip plays from just
+    // before its first action, and is cut where the shot ends.
     const footage = clip(shot.clip);
-    duration = Math.max(duration, Math.min(footage.duration, duration + 4));
+    const acted = footage.entries.filter((e) => e.kind === "action" && ["click", "key", "scroll", "cli"].includes(e.do));
+    const from = acted.length ? Math.max(0, acted[0].t - footage.began - RUNUP) : 0;
     const box = shot.kind === "window" ? FRAME : { x: TV.x + TV.inset, y: TV.y + TV.inset, w: TV.w - 2 * TV.inset, h: TV.h - 2 * TV.inset };
     laid.box = box;
     laid.last = image(`../clips/${shot.clip}.last.png`);
     // Key presses, in the shot's time, for the remote beside the TV.
-    laid.keys = footage.entries.filter((e) => e.kind === "action" && e.do === "key").map((e) => e.t - footage.began);
+    const KEYS = { "\uF700": "up", "\uF701": "down", "\uF702": "left", "\uF703": "right", "\n": "ok" };
+    laid.keys = footage.entries
+      .filter((e) => e.kind === "action" && e.do === "key")
+      .map((e) => ({ at: e.t - footage.began - from, key: KEYS[e.text] ?? "ok" }));
     media.push(
-      `<video id="clip-${index}" class="clip footage" src="../clips/${shot.clip}.mp4" muted playsinline data-start="${at.toFixed(3)}" data-duration="${Math.min(footage.duration, duration).toFixed(3)}" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px"></video>`,
+      `<video id="clip-${index}" class="clip footage" src="../clips/${shot.clip}.mp4" muted playsinline data-start="${at.toFixed(3)}" data-media-start="${from.toFixed(3)}" data-duration="${Math.min(footage.duration - from, duration).toFixed(3)}" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px"></video>`,
     );
   }
   laid.start = at;

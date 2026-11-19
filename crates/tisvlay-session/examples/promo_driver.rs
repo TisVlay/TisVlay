@@ -90,9 +90,20 @@ struct Args {
 struct Shot {
     #[serde(default)]
     tv: Vec<Tv>,
+    /// TVs a discovery scan finds, not yet enrolled.
+    #[serde(default)]
+    found: Vec<Found>,
     gui: Option<Gui>,
     #[serde(default)]
     step: Vec<Step>,
+}
+
+/// A TV on the mock's network, for the pairing wizard to discover.
+#[derive(Deserialize, Debug)]
+#[serde(deny_unknown_fields)]
+struct Found {
+    name: String,
+    address: String,
 }
 
 /// The settings window, started once the TVs are enrolled.
@@ -164,6 +175,15 @@ enum Step {
         x: f64,
         y: f64,
         dy: f64,
+    },
+    /// Someone approves the pairing prompt on the TV at this address.
+    Approve {
+        address: String,
+    },
+    /// Write the settings window's element tree to a file, to find the
+    /// ids and labels `click` steps name while writing a shot.
+    Tree {
+        file: PathBuf,
     },
     /// Press and release a key in the settings window.
     Key {
@@ -404,6 +424,15 @@ async fn main() -> Result<()> {
         });
     }
 
+    for found in &shot.found {
+        mock.publish_tv(tisvlay_core::DiscoveredTv::new(
+            found.address.clone(),
+            found.name.clone(),
+            found.address.clone(),
+            "lg",
+        ));
+    }
+
     // Every TV connected before the first step.
     for name in tvs.keys() {
         wait(&recorder, name, "state/link", "connected", &json!(true)).await?;
@@ -443,7 +472,7 @@ async fn main() -> Result<()> {
 
     for step in &shot.step {
         match step {
-            Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => {}
+            Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } | Step::Tree { .. } => {}
             other => recorder.write("action", action(other)).await?,
         }
         match step {
@@ -512,6 +541,11 @@ async fn main() -> Result<()> {
                 wait(&recorder, tv, key, field, is).await?;
             }
             Step::Pause { ms } => tokio::time::sleep(Duration::from_millis(*ms)).await,
+            Step::Approve { address } => mock.simulate_user_accept(address),
+            Step::Tree { file } => {
+                let window = window.as_ref().context("a `tree` step needs `[gui]`")?;
+                dump_tree(window, file).await?;
+            }
             Step::Mark { .. } => {}
         }
     }
@@ -753,7 +787,7 @@ async fn dump_tree(window: &Value, path: &Path) -> Result<()> {
     let properties = mcp("get_window_properties", json!({ "windowHandle": window })).await?;
     let tree = mcp(
         "get_element_tree",
-        json!({ "elementHandle": properties["rootElementHandle"] }),
+        json!({ "elementHandle": properties["rootElementHandle"], "maxElements": 1000 }),
     )
     .await?;
     std::fs::write(path, serde_json::to_string_pretty(&tree)?)
@@ -821,15 +855,20 @@ async fn click(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<
                 mcp("get_window_properties", json!({ "windowHandle": window })).await?;
             let tree = mcp(
                 "get_element_tree",
-                json!({ "elementHandle": properties["rootElementHandle"] }),
+                json!({ "elementHandle": properties["rootElementHandle"], "maxElements": 1000 }),
             )
             .await?;
             tree["elements"]
                 .as_array()
                 .and_then(|elements| {
+                    // A control before a text that happens to read the
+                    // same, like a step's name beside its button.
+                    let labeled = |element: &&Value| element["accessibleLabel"] == json!(label);
                     elements
                         .iter()
-                        .find(|element| element["accessibleLabel"] == json!(label))
+                        .filter(labeled)
+                        .find(|element| element["accessibleRole"] != json!("Text"))
+                        .or_else(|| elements.iter().find(labeled))
                 })
                 .map(|element| element["handle"].clone())
                 .with_context(|| format!("the window has no element labeled {label}"))?
@@ -913,11 +952,14 @@ fn action(step: &Step) -> Value {
         Step::Wake => json!({ "do": "wake" }),
         Step::Cli { args } => json!({ "do": "cli", "args": args }),
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
+        Step::Approve { address } => json!({ "do": "approve", "address": address }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
         Step::Scroll { x, y, dy } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
         Step::Key { text } => json!({ "do": "key", "text": text }),
         Step::Tape { file, .. } => json!({ "do": "tape", "file": file }),
-        Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } => Value::Null,
+        Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } | Step::Tree { .. } => {
+            Value::Null
+        }
     }
 }
 

@@ -92,7 +92,33 @@ video.footage { position: absolute; object-fit: fill; }
 /* The remote beside a TV: its pad lights when a key is pressed. */
 .remote { position: absolute; left: 3330px; top: 520px; width: 240px; height: 1040px; border-radius: 120px; background: var(--window); box-shadow: 0 40px 120px #0009, 0 0 0 4px var(--raised); }
 .remote .led { position: absolute; left: 50%; top: 70px; width: 28px; height: 28px; margin-left: -14px; border-radius: 50%; background: var(--negative); }
-.remote .pad { position: absolute; left: 30px; top: 220px; width: 180px; height: 180px; border-radius: 50%; background: var(--raised); box-shadow: inset 0 0 0 28px var(--edge); }
-.remote .press { position: absolute; inset: 0; border-radius: 50%; box-shadow: inset 0 0 0 28px var(--accent), 0 0 60px var(--accent); opacity: 0; }
+.remote .pad { position: absolute; left: 20px; top: 200px; width: 200px; height: 200px; border-radius: 50%; background: var(--raised); }
+.remote .arrow { position: absolute; width: 0; height: 0; border: 22px solid transparent; }
+.remote .arrow.up { left: 78px; top: 8px; border-bottom-color: var(--dim); border-top-width: 0; }
+.remote .arrow.down { left: 78px; bottom: 8px; border-top-color: var(--dim); border-bottom-width: 0; }
+.remote .arrow.left { left: 8px; top: 78px; border-right-color: var(--dim); border-left-width: 0; }
+.remote .arrow.right { right: 8px; top: 78px; border-left-color: var(--dim); border-right-width: 0; }
+.remote .arrow.ok { left: 66px; top: 66px; width: 68px; height: 68px; border: 0; border-radius: 50%; background: var(--edge); }
+.remote .arrow.lit.up { border-bottom-color: var(--accent); filter: drop-shadow(0 0 18px var(--accent)); }
+.remote .arrow.lit.down { border-top-color: var(--accent); filter: drop-shadow(0 0 18px var(--accent)); }
+.remote .arrow.lit.left { border-right-color: var(--accent); filter: drop-shadow(0 0 18px var(--accent)); }
+.remote .arrow.lit.right { border-left-color: var(--accent); filter: drop-shadow(0 0 18px var(--accent)); }
+.remote .arrow.lit.ok { background: var(--accent); box-shadow: 0 0 40px var(--accent); }
 .remote .key { position: absolute; left: 60px; width: 120px; height: 56px; border-radius: 28px; background: var(--raised); }
 .asset { display: none; }
+
+/* The link by its transport. A network TV is reached over the air:
+   waves that light in turn from the PC to the TV. An HDMI-CEC one by
+   its cable, with a plug at each end. */
+.air { position: absolute; height: 0; }
+.air .wave { position: absolute; top: 0; border-radius: 50%; border: 10px solid transparent; border-left-color: var(--accent); opacity: 0.18; }
+.link .plug { position: absolute; top: -22px; width: 56px; height: 52px; border-radius: 10px; background: var(--edge); }
+.link .plug.tv-end { left: 0; }
+.link .plug.pc-end { right: 0; }
+
+/* A handheld the desktop streams to: its screen lights while it does. */
+.handheld { position: absolute; width: 920px; height: 340px; display: flex; align-items: stretch; border-radius: 170px; background: var(--window); box-shadow: 0 40px 120px #0009, 0 0 0 4px var(--raised); }
+.handheld .grip { flex: 0 0 170px; }
+.handheld .view { position: relative; flex: 1; margin: 36px 0; border-radius: 12px; background: #050506; overflow: hidden; }
+.handheld .lit { position: absolute; inset: 0; background: linear-gradient(135deg, #1d4f6e, #31363b 55%, #232629); box-shadow: inset 0 0 0 6px #3daee955; }
+.handheld .tag { position: absolute; left: 0; right: 0; top: -84px; text-align: center; font-size: 48px; font-weight: 500; color: var(--dim); }

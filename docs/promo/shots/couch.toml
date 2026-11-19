@@ -11,12 +11,14 @@ name = "Living Room"
 vendor = "cec"
 address = "192.0.2.20"
 
-# A 4K TV at a 200% display scale, not a desktop window: couch mode
-# runs maximized and multiplies the session's own scale.
+# A 4K TV, not a desktop window: couch mode runs maximized and
+# multiplies the session's own scale. At 300% the window still reads
+# when the whole TV is in the frame; a real session would more likely
+# run at 200%, where it is too small to follow in a video.
 [gui]
 couch = true
 screen = [3840, 2160]
-scale = 2.0
+scale = 3.0
 
 [[step]]
 do = "pause"
@@ -28,7 +30,7 @@ text = ""
 
 [[step]]
 do = "pause"
-ms = 900
+ms = 650
 
 [[step]]
 do = "key"
@@ -36,7 +38,7 @@ text = ""
 
 [[step]]
 do = "pause"
-ms = 900
+ms = 650
 
 [[step]]
 do = "key"
@@ -52,7 +54,7 @@ text = ""
 
 [[step]]
 do = "pause"
-ms = 900
+ms = 650
 
 [[step]]
 do = "key"
@@ -60,7 +62,7 @@ text = ""
 
 [[step]]
 do = "pause"
-ms = 900
+ms = 650
 
 [[step]]
 do = "key"

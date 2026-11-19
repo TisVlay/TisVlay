@@ -108,12 +108,36 @@
     const tl = gsap.timeline();
     const tv = buildTv(root, spec.tv);
     const pc = buildPc(root, spec.pc);
-    const link = el(root, "link");
+    // The link a command crosses: Wi-Fi waves for a network TV, a cable
+    // with its plugs for an HDMI-CEC one.
     const linkY = spec.pc.y + spec.pc.h / 2;
     const linkX = spec.tv.x + spec.tv.w;
     const linkW = spec.pc.x - linkX;
+    const wireless = spec.link !== "hdmi";
+    const link = el(root, wireless ? "air" : "link");
     Object.assign(link.style, { left: linkX + "px", top: linkY + "px", width: linkW + "px" });
-    const pulse = el(link, "pulse");
+    const waves = [];
+    let pulse = null;
+    if (wireless) {
+      // From the PC toward the TV, each wave a little larger.
+      for (let i = 0; i < 4; i++) {
+        const wave = el(link, "wave");
+        const size = 90 + i * 70;
+        Object.assign(wave.style, { right: 40 + i * 95 + "px", width: size + "px", height: size + "px", marginTop: -size / 2 + "px" });
+        waves.push(wave);
+      }
+    } else {
+      el(link, "plug tv-end");
+      el(link, "plug pc-end");
+      pulse = el(link, "pulse");
+    }
+    // The device a stream goes to, lit while the stream runs.
+    const handheld = spec.handheld ? el(root, "handheld", '<div class="grip"></div><div class="view"><div class="lit"></div></div><div class="grip"></div>') : null;
+    const lit = handheld ? handheld.querySelector(".lit") : null;
+    if (handheld) {
+      Object.assign(handheld.style, { left: spec.pc.x - 260 + "px", top: spec.pc.y + spec.pc.h + 110 + "px" });
+      el(handheld, "tag", "handheld");
+    }
     if (spec.wordmark) el(root, "wordmark", spec.wordmark);
 
     // Where the shot begins: the last state published before its first
@@ -131,7 +155,8 @@
     tl.set(tv.glow, { opacity: power === "active" ? 1 : 0 }, 0);
     tl.set(tv.standby, { opacity: power === "standby" ? 1 : 0 }, 0);
     tl.set(pc.closed, { opacity: 0 }, 0);
-    tl.set(pulse, { opacity: 0 }, 0);
+    if (pulse) tl.set(pulse, { opacity: 0 }, 0);
+    if (lit) tl.set(lit, { opacity: 0 }, 0);
 
     // The moment the TV may react: once the last command has crossed.
     let arrives = 0;
@@ -155,9 +180,20 @@
         tl.to(pc.closed, { opacity: locked ? 1 : 0, duration: 0.25 }, at);
         tl.to(pc.open, { opacity: locked ? 0 : 1, duration: 0.25 }, at);
         tl.to(pc.power, { opacity: state === "asleep" ? 0.25 : 1, duration: 0.4 }, at);
+        if (lit) tl.to(lit, { opacity: state === "streaming" ? 1 : 0, duration: 0.4 }, at);
+        // A stream ending sends the TV nothing: it stays dark until
+        // someone is back.
+        if (e.do === "cli" && e.args[1] === "stop") continue;
         // The command crosses to the TV.
-        tl.fromTo(pulse, { x: 0, opacity: 1 }, { x: -linkW, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
-        tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
+        if (pulse) {
+          tl.fromTo(pulse, { x: 0, opacity: 1 }, { x: -linkW, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
+          tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
+        }
+        waves.forEach((wave, i) => {
+          const step = (CROSS / waves.length) * i;
+          tl.to(wave, { opacity: 1, duration: 0.1 }, at + step);
+          tl.to(wave, { opacity: 0.18, duration: 0.3 }, at + step + 0.14);
+        });
         arrives = at + CROSS;
       } else if (e.kind === "state" && e.tv === spec.tv.name && e.key === "state/power") {
         const state = e.value.state;

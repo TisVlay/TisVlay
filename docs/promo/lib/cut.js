@@ -48,8 +48,10 @@
     stage(layer, shot, cut, tl) {
       const child = stage(layer, window.__promoTimelines[shot.timeline], {
         tv: { name: shot.tv, x: 480, y: 420, w: 2000, h: 1160 },
-        pc: { x: 2960, y: 680, w: 400, h: 760 },
+        pc: { x: 2960, y: shot.handheld ? 520 : 680, w: 400, h: 760 },
         beats: shot.beatTimes,
+        link: shot.link,
+        handheld: shot.handheld,
       });
       tl.add(child, shot.start);
     },
@@ -75,12 +77,20 @@
 
       const remote = el(layer, "remote");
       el(remote, "led");
+      // A direction pad: the arrow pressed lights, so the remote shows
+      // which way the focus moves on the screen.
       const pad = el(remote, "pad");
-      const press = el(pad, "press");
-      for (const top of [640, 760, 880]) el(remote, "key").style.top = top + "px";
-      for (const at of shot.keys) {
-        tl.fromTo(press, { opacity: 0 }, { opacity: 1, duration: 0.08, immediateRender: false }, shot.start + at);
-        tl.to(press, { opacity: 0, duration: 0.3 }, shot.start + at + 0.12);
+      const lights = {};
+      for (const key of ["up", "down", "left", "right", "ok"]) {
+        el(pad, "arrow " + key);
+        lights[key] = el(pad, "arrow lit " + key);
+        tl.set(lights[key], { opacity: 0 }, 0);
+      }
+      for (const top of [660, 780, 900]) el(remote, "key").style.top = top + "px";
+      for (const press of shot.keys) {
+        if (press.at < 0 || press.at > shot.duration) continue;
+        tl.to(lights[press.key], { opacity: 1, duration: 0.06 }, shot.start + press.at);
+        tl.to(lights[press.key], { opacity: 0, duration: 0.35 }, shot.start + press.at + 0.14);
       }
     },
 
