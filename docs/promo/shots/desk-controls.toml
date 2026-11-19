@@ -41,6 +41,7 @@ ms = 300
 [[step]]
 do = "ramp"
 args = ["volume", "{Desk}"]
+slider = "Volume"
 from = 30
 to = 60
 ms = 900
@@ -52,6 +53,7 @@ ms = 300
 [[step]]
 do = "ramp"
 args = ["volume", "{Desk}"]
+slider = "Volume"
 from = 60
 to = 18
 ms = 1100
@@ -63,6 +65,7 @@ ms = 400
 [[step]]
 do = "ramp"
 args = ["backlight", "{Desk}"]
+slider = "Backlight"
 from = 80
 to = 35
 ms = 1100

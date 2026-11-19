@@ -194,11 +194,16 @@ enum Step {
     /// over `ms` milliseconds, as a held key or a turning wheel would
     /// set it: a slider in the window scrubs instead of jumping. The
     /// value is appended to `args`.
+    ///
+    /// `slider` names the window's slider that follows, by its
+    /// accessible label: the timeline then says where it sits, for the
+    /// pointer to ride it.
     Ramp {
         args: Vec<String>,
         from: i64,
         to: i64,
         ms: u64,
+        slider: Option<String>,
     },
     /// Someone approves the pairing prompt on the TV.
     Approve,
@@ -518,7 +523,11 @@ async fn main() -> Result<()> {
 
     for step in &shot.step {
         match step {
-            Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } | Step::Tree { .. } => {}
+            Step::Wait { .. }
+            | Step::Pause { .. }
+            | Step::Click { .. }
+            | Step::Ramp { .. }
+            | Step::Tree { .. } => {}
             other => recorder.write("action", action(other)).await?,
         }
         match step {
@@ -575,11 +584,25 @@ async fn main() -> Result<()> {
                 from,
                 to,
                 ms,
+                slider,
             } => {
                 let binary = args
                     .cli
                     .as_deref()
                     .context("the shot has a `ramp` step; pass --cli")?;
+                let place = match (slider, window.as_ref()) {
+                    (Some(label), Some(window)) => locate(window, None, Some(label)).await?.1,
+                    _ => Value::Null,
+                };
+                recorder
+                    .write(
+                        "action",
+                        json!({
+                            "do": "cli", "args": cli_args, "from": from, "to": to,
+                            "ms": ms, "slider": place,
+                        }),
+                    )
+                    .await?;
                 // As many values as a CLI call each fits in the time.
                 let span = (to - from).unsigned_abs().max(1);
                 let steps = span.min((*ms / RAMP_STEP_MS).max(1));
@@ -914,9 +937,9 @@ fn clip_duration(path: &Path) -> Result<f64> {
         .with_context(|| format!("read the length of {}", path.display()))
 }
 
-/// Click the element with `id`, or the first with the accessible
-/// `label`; returns where it sits in the window.
-async fn click(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<Value> {
+/// The element with `id`, or the first with the accessible `label`,
+/// and where it sits in the window.
+async fn locate(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<(Value, Value)> {
     let element = match (id, label) {
         (Some(id), _) => {
             let found = mcp(
@@ -952,23 +975,31 @@ async fn click(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<
                 .map(|element| element["handle"].clone())
                 .with_context(|| format!("the window has no element labeled {label}"))?
         }
-        (None, None) => bail!("a `click` step names an `id` or a `label`"),
+        (None, None) => bail!("the step names an `id` or a `label`"),
     };
-    let element = &element;
     let properties = mcp(
         "get_element_properties",
         json!({ "elementHandle": element }),
     )
     .await?;
+    let place = json!({
+        "position": properties["absolutePosition"],
+        "size": properties["size"],
+    });
+    Ok((element, place))
+}
+
+/// Click the element with `id`, or the first with the accessible
+/// `label`; returns where it sits in the window.
+async fn click(window: &Value, id: Option<&str>, label: Option<&str>) -> Result<Value> {
+    let (element, place) = locate(window, id, label).await?;
+    let element = &element;
     mcp(
         "click_element",
         json!({ "elementHandle": element, "action": "SingleClick", "button": "Left" }),
     )
     .await?;
-    Ok(json!({
-        "position": properties["absolutePosition"],
-        "size": properties["size"],
-    }))
+    Ok(place)
 }
 
 /// One tool call on the settings window's MCP server; the tool's reply,
@@ -1126,15 +1157,16 @@ fn action(step: &Step) -> Value {
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
         Step::Approve => json!({ "do": "approve" }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
-        Step::Scroll { x, y, dy, .. } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
-        Step::Ramp { args, from, to, .. } => {
-            json!({ "do": "cli", "args": args, "from": from, "to": to })
+        Step::Scroll { x, y, dy, ms } => {
+            json!({ "do": "scroll", "at": [x, y], "dy": dy, "ms": ms })
         }
         Step::Key { text } => json!({ "do": "key", "text": text }),
         Step::Tape { file, .. } => json!({ "do": "tape", "file": file }),
-        Step::Wait { .. } | Step::Pause { .. } | Step::Click { .. } | Step::Tree { .. } => {
-            Value::Null
-        }
+        Step::Wait { .. }
+        | Step::Pause { .. }
+        | Step::Click { .. }
+        | Step::Ramp { .. }
+        | Step::Tree { .. } => Value::Null,
     }
 }
 

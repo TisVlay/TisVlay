@@ -69,7 +69,11 @@ const media = [];
 // The interface's sounds, made here so none is borrowed: a tick for a
 // click, a falling tone as a screen goes off, a rising one as it comes on.
 const SOUNDS = {
-  click: ["sine=frequency=1400:duration=0.03", "afade=t=out:st=0.01:d=0.02,volume=0.5"],
+  // A mouse button: the snap of the press, then the softer release.
+  click: [
+    "aevalsrc=(random(0)*2-1)*exp(-t*700)*lt(t\\,0.014)+0.55*(random(1)*2-1)*exp(-(t-0.075)*900)*between(t\\,0.075\\,0.09):d=0.1:s=48000",
+    "highpass=f=1400,lowpass=f=6500,volume=0.9",
+  ],
   off: ["aevalsrc=sin(2*PI*(520-560*t)*t):d=0.3:s=48000", "afade=t=in:d=0.02,afade=t=out:st=0.12:d=0.18,volume=0.5"],
   on: ["aevalsrc=sin(2*PI*(300+560*t)*t):d=0.3:s=48000", "afade=t=in:d=0.02,afade=t=out:st=0.12:d=0.18,volume=0.5"],
 };
@@ -78,7 +82,7 @@ for (const [name, [source, filter]] of Object.entries(SOUNDS)) {
   execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", source, "-af", filter, `build/sounds/${name}.wav`]);
 }
 const sound = (name, when) => {
-  const length = name === "click" ? 0.03 : 0.3;
+  const length = name === "click" ? 0.1 : 0.3;
   media.push(`<audio id="sound-${media.length}" src="../sounds/${name}.wav" data-start="${when.toFixed(3)}" data-duration="${length}" data-volume="0.6"></audio>`);
 };
 const scripts = new Set();
@@ -168,14 +172,26 @@ cut.shots.forEach((shot, index) => {
     // Clicks, as a place in the clip (0 to 1 each way), for the pointer.
     const recorded = footage.entries.find((e) => e.do === "record");
     const logical = recorded.screen.map((pixels) => pixels / recorded.scale);
-    laid.clicks = footage.entries
-      .filter((e) => e.kind === "action" && e.do === "click")
-      .map((e) => ({
-        at: e.t - footage.began - from,
-        x: (e.at.position.x + e.at.size.width / 2) / logical[0],
-        y: (e.at.position.y + e.at.size.height / 2) / logical[1],
-      }));
-    for (const click of laid.clicks) if (click.at > 0 && click.at < duration) sound("click", at + click.at);
+    // What the pointer does, each as a place in the clip (0 to 1 each
+    // way): it clicks, rests over a pane while it scrolls, and rides a
+    // slider's handle as its value changes.
+    const KNOB = 10;
+    const along = (slider, value) => (slider.position.x + KNOB + ((slider.size.width - 2 * KNOB) * value) / 100) / logical[0];
+    laid.pointer = footage.entries
+      .filter((e) => e.kind === "action")
+      .flatMap((e) => {
+        const when = e.t - footage.began - from;
+        if (e.do === "click") {
+          return [{ kind: "click", at: when, x: (e.at.position.x + e.at.size.width / 2) / logical[0], y: (e.at.position.y + e.at.size.height / 2) / logical[1] }];
+        }
+        if (e.do === "scroll") return [{ kind: "rest", at: when, x: e.at[0] / logical[0], y: e.at[1] / logical[1] }];
+        if (e.do === "cli" && e.slider) {
+          const y = (e.slider.position.y + e.slider.size.height / 2) / logical[1];
+          return [{ kind: "drag", at: when, x: along(e.slider, e.from), y, to: along(e.slider, e.to), over: e.ms / 1000 }];
+        }
+        return [];
+      });
+    for (const move of laid.pointer) if (move.kind === "click" && move.at > 0 && move.at < duration) sound("click", at + move.at);
     media.push(
       `<video id="clip-${index}" class="clip footage" src="../clips/${shot.clip}.mp4" muted playsinline data-start="${at.toFixed(3)}" data-media-start="${from.toFixed(3)}" data-duration="${Math.min(footage.duration - from, duration).toFixed(3)}" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px"></video>`,
     );

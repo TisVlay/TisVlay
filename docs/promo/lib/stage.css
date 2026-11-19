@@ -129,8 +129,8 @@ video.footage { position: absolute; object-fit: fill; }
 
 /* The pointer over a window's clip, which a scripted click doesn't have:
    it travels to each click and rings there. */
-.pointer { position: absolute; left: 0; top: 0; width: 112px; height: 112px; }
-.pointer svg { position: absolute; left: 0; top: 0; width: 112px; height: 112px; filter: drop-shadow(0 4px 8px #000a); }
+.pointer { position: absolute; left: 0; top: 0; width: 96px; height: 96px; }
+.pointer svg { position: absolute; left: -8px; top: -4px; width: 96px; height: 96px; filter: drop-shadow(0 4px 8px #000a); }
 .pointer .ring { position: absolute; left: -40px; top: -40px; width: 80px; height: 80px; border-radius: 50%; border: 8px solid var(--accent); opacity: 0; }
 
 /* A TV's own prompt, as when it is asked to pair. */

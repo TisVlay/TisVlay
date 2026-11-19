@@ -36,20 +36,33 @@
     const arrow = el(
       root,
       "pointer",
-      '<div class="ring"></div><svg viewBox="0 0 24 24"><path d="M3 2l7.5 19 2.6-7.6L20.7 11z" fill="#fcfcfc" stroke="#141618" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+      // The desktop's own arrow: dark, outlined in white, with its tail.
+      '<div class="ring"></div><svg viewBox="0 0 24 24"><path d="M2.5 1.5v18.2l4.6-4.3 3.2 7.1 3-1.3-3.2-7 6.3-.1z" fill="#232629" stroke="#fcfcfc" stroke-width="1.3" stroke-linejoin="round"/></svg>',
     );
     const ring = arrow.querySelector(".ring");
-    const place = (click) => ({ x: shot.box.x + click.x * shot.box.w, y: shot.box.y + click.y * shot.box.h });
+    const place = (x, y) => ({ x: shot.box.x + x * shot.box.w, y: shot.box.y + y * shot.box.h });
     // It waits low in the window, out of the way.
     let from = { x: shot.box.x + shot.box.w * 0.62, y: shot.box.y + shot.box.h * 0.82 };
+    let free = 0;
     tl.set(arrow, from, 0);
-    for (const click of shot.clicks) {
-      if (click.at < 0 || click.at > shot.duration) continue;
-      const to = place(click);
-      const travel = Math.min(0.6, Math.max(0.25, click.at));
-      tl.fromTo(arrow, from, { ...to, duration: travel, ease: "power2.inOut", immediateRender: false }, shot.start + click.at - travel);
-      tl.fromTo(ring, { opacity: 0.9, scale: 0.4 }, { opacity: 0, scale: 1.3, duration: 0.35, immediateRender: false }, shot.start + click.at);
+    for (const move of shot.pointer) {
+      if (move.at < 0 || move.at > shot.duration) continue;
+      // It arrives as the action starts, leaving when it is next free.
+      const to = place(move.x, move.y);
+      const travel = Math.min(0.5, Math.max(0.2, move.at - free));
+      tl.fromTo(arrow, from, { ...to, duration: travel, ease: "power2.inOut", immediateRender: false }, shot.start + move.at - travel);
       from = to;
+      free = move.at;
+      if (move.kind === "click") {
+        tl.fromTo(ring, { opacity: 0.9, scale: 0.4 }, { opacity: 0, scale: 1.3, duration: 0.35, immediateRender: false }, shot.start + move.at);
+      }
+      if (move.kind === "drag") {
+        // Riding the slider's handle to where the value ends.
+        const end = place(move.to, move.y);
+        tl.fromTo(arrow, to, { ...end, duration: move.over, ease: "none", immediateRender: false }, shot.start + move.at);
+        from = end;
+        free = move.at + move.over;
+      }
     }
     return arrow;
   }
@@ -169,7 +182,7 @@
       const clip = footage.find((video) => video.id === "clip-" + shot.index);
       const fading = clip ? [layer, clip] : [layer];
       if (clip) root.appendChild(clip);
-      if (shot.clicks && shot.clicks.length) fading.push(pointer(root, shot, tl));
+      if (shot.pointer && shot.pointer.length) fading.push(pointer(root, shot, tl));
       if (i > 0) {
         tl.set(fading, { opacity: 0 }, 0);
         tl.to(fading, { opacity: 1, duration: layout.fade }, shot.start);
