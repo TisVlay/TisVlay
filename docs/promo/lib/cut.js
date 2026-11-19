@@ -31,6 +31,29 @@
     return win;
   }
 
+  // A pointer over the shot's clip: it glides to each click and rings.
+  function pointer(root, shot, tl) {
+    const arrow = el(
+      root,
+      "pointer",
+      '<div class="ring"></div><svg viewBox="0 0 24 24"><path d="M3 2l7.5 19 2.6-7.6L20.7 11z" fill="#fcfcfc" stroke="#141618" stroke-width="1.4" stroke-linejoin="round"/></svg>',
+    );
+    const ring = arrow.querySelector(".ring");
+    const place = (click) => ({ x: shot.box.x + click.x * shot.box.w, y: shot.box.y + click.y * shot.box.h });
+    // It waits low in the window, out of the way.
+    let from = { x: shot.box.x + shot.box.w * 0.62, y: shot.box.y + shot.box.h * 0.82 };
+    tl.set(arrow, from, 0);
+    for (const click of shot.clicks) {
+      if (click.at < 0 || click.at > shot.duration) continue;
+      const to = place(click);
+      const travel = Math.min(0.6, Math.max(0.25, click.at));
+      tl.fromTo(arrow, from, { ...to, duration: travel, ease: "power2.inOut", immediateRender: false }, shot.start + click.at - travel);
+      tl.fromTo(ring, { opacity: 0.9, scale: 0.4 }, { opacity: 0, scale: 1.3, duration: 0.35, immediateRender: false }, shot.start + click.at);
+      from = to;
+    }
+    return arrow;
+  }
+
   const builders = {
     title(layer, shot) {
       const card = el(layer, "card");
@@ -56,8 +79,35 @@
       tl.add(child, shot.start);
     },
 
-    window(layer, shot, cut) {
+    window(layer, shot, cut, tl) {
       frame(layer, shot.box, cut.frame.bar, shot.title, shot.last);
+      if (!shot.prompt) return;
+      // The TV being paired, beside the window: its prompt comes up when
+      // the pairing starts, and "Yes" is picked when someone approves.
+      // An illustration: the prompt is the TV's own to draw.
+      const x = shot.box.x + shot.box.w + 130;
+      const w = 3840 - x - 130;
+      const h = Math.round((w * 9) / 16);
+      const y = shot.box.y + 260;
+      const label = el(layer, "label");
+      Object.assign(label.style, { left: x + "px", top: y - 150 + "px" });
+      el(label, "name", shot.prompt.name);
+      const tv = el(layer, "tv");
+      Object.assign(tv.style, { left: x + "px", top: y + "px", width: w + "px", height: h + "px" });
+      el(tv, "neck");
+      el(tv, "foot");
+      el(tv, "bezel");
+      const screen = el(tv, "screen");
+      el(screen, "desktop");
+      const ask = el(screen, "ask", '<div class="question">Allow this PC to connect?</div><div class="answers"><span class="yes">Yes<i></i></span><span>No</span></div>');
+      const picked = ask.querySelector(".yes i");
+      const from = shot.start + shot.prompt.from + 0.4;
+      const to = shot.start + shot.prompt.to;
+      tl.set(ask, { opacity: 0 }, 0);
+      tl.set(picked, { opacity: 0 }, 0);
+      tl.to(ask, { opacity: 1, duration: 0.3 }, from);
+      tl.to(picked, { opacity: 1, duration: 0.1 }, to - 0.15);
+      tl.to(ask, { opacity: 0, duration: 0.3 }, to + 0.25);
     },
 
     // A clip playing on the TV, with the remote that drives it.
@@ -119,6 +169,7 @@
       const clip = footage.find((video) => video.id === "clip-" + shot.index);
       const fading = clip ? [layer, clip] : [layer];
       if (clip) root.appendChild(clip);
+      if (shot.clicks && shot.clicks.length) fading.push(pointer(root, shot, tl));
       if (i > 0) {
         tl.set(fading, { opacity: 0 }, 0);
         tl.to(fading, { opacity: 1, duration: layout.fade }, shot.start);

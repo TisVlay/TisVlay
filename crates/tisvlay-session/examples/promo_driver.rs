@@ -2,8 +2,9 @@
 //! daemon and session, and records what happened as a timeline.
 //!
 //! The stack is the wire tests' rig: the daemon and session run in this
-//! process on temp sockets, with the mock connector registered under
-//! the real vendors' ids, names and capabilities, so everything above
+//! process on temp sockets, with the mock connector posing as the real
+//! vendors: registered under their ids, names and capabilities, and
+//! showing their pairing forms and prompts ([`Posed`]). Everything above
 //! the backend is what ships. Lock, sleep and wake come from a fake
 //! logind on a private bus, through the same watchers production runs.
 //!
@@ -37,8 +38,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Parser;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tisvlay_core::{PowerState, TvBackend};
-use tisvlay_mock::{MockHandle, new_test_parts};
+use tisvlay_core::{
+    Credentials, PairingCommand, PairingError, PairingField, PairingSession, PairingState,
+    PowerState, Transport, TvBackend, TvConnection, TvConnector, VendorConfig,
+};
+use tisvlay_mock::{MockConnector, MockHandle, new_test_parts};
 use tisvlay_protocol::caller::Caller;
 use tisvlay_protocol::endpoint::manager;
 use tisvlay_protocol::{bootstrap, keys, rpc};
@@ -196,10 +200,8 @@ enum Step {
         to: i64,
         ms: u64,
     },
-    /// Someone approves the pairing prompt on the TV at this address.
-    Approve {
-        address: String,
-    },
+    /// Someone approves the pairing prompt on the TV.
+    Approve,
     /// Write the settings window's element tree to a file, to find the
     /// ids and labels `click` steps name while writing a shot.
     Tree {
@@ -298,14 +300,29 @@ async fn main() -> Result<()> {
     let user_socket = sockets.join("session.sock");
     let (connector, discovery, mock) = new_test_parts();
     let connector = Arc::new(connector);
+    let approved = Arc::new(Notify::new());
+    let lg = Posed {
+        mock: connector.clone(),
+        real: Arc::new(tisvlay_lg::LgConnector::new()),
+        address_key: address_key("lg"),
+        prompt: "Please accept the pairing prompt on your LG TV",
+        approved: approved.clone(),
+    };
+    let cec = Posed {
+        mock: connector,
+        real: Arc::new(tisvlay_cec::CecConnector::new()),
+        address_key: address_key("cec"),
+        prompt: "",
+        approved: approved.clone(),
+    };
     let mut daemon = tisvlay_daemon::serve(
         &system_socket,
         SITE,
         vec![
-            tisvlay_daemon::VendorReg::new("lg", tisvlay_lg::VENDOR_NAME, connector.clone())
+            tisvlay_daemon::VendorReg::new("lg", tisvlay_lg::VENDOR_NAME, Arc::new(lg))
                 .with_capabilities(capabilities(&tisvlay_lg::LgBackend::new()))
                 .with_discovery(Arc::new(discovery)),
-            tisvlay_daemon::VendorReg::new("cec", tisvlay_cec::VENDOR_NAME, connector)
+            tisvlay_daemon::VendorReg::new("cec", tisvlay_cec::VENDOR_NAME, Arc::new(cec))
                 .with_capabilities(capabilities(&tisvlay_cec::CecBackend::new())),
         ],
         None,
@@ -357,7 +374,7 @@ async fn main() -> Result<()> {
             name: tv.name.clone(),
             vendor: tv.vendor.clone(),
             managed: true,
-            config: serde_json::from_value(json!({ "address": tv.address }))?,
+            config: serde_json::from_value(json!({ address_key(&tv.vendor): tv.address }))?,
         };
         let id = caller
             .call::<manager::AddTv>(&(), &request)
@@ -445,12 +462,16 @@ async fn main() -> Result<()> {
     }
 
     for found in &shot.found {
-        mock.publish_tv(tisvlay_core::DiscoveredTv::new(
+        let mut tv = tisvlay_core::DiscoveredTv::new(
             found.address.clone(),
             found.name.clone(),
             found.address.clone(),
             "lg",
-        ));
+        );
+        // What a network scan reports, which the wizard fills its form
+        // from.
+        tv.vendor_data.insert("ip".into(), found.address.clone());
+        mock.publish_tv(tv);
     }
 
     // Every TV connected before the first step.
@@ -483,7 +504,12 @@ async fn main() -> Result<()> {
             window = Some(handle);
             if let Some(path) = &args.record {
                 recording = Some(start_recording(path, &started.runtime)?);
-                recorder.write("action", json!({ "do": "record" })).await?;
+                recorder
+                    .write(
+                        "action",
+                        json!({ "do": "record", "screen": gui.screen, "scale": gui.scale }),
+                    )
+                    .await?;
             }
             Some(started)
         }
@@ -594,7 +620,7 @@ async fn main() -> Result<()> {
                 wait(&recorder, tv, key, field, is).await?;
             }
             Step::Pause { ms } => tokio::time::sleep(Duration::from_millis(*ms)).await,
-            Step::Approve { address } => mock.simulate_user_accept(address),
+            Step::Approve => approved.notify_one(),
             Step::Tree { file } => {
                 let window = window.as_ref().context("a `tree` step needs `[gui]`")?;
                 dump_tree(window, file).await?;
@@ -984,6 +1010,99 @@ async fn mcp(tool: &str, arguments: Value) -> Result<Value> {
     Ok(serde_json::from_str(text).unwrap_or_else(|_| json!(text)))
 }
 
+/// The config key a vendor keeps its TV's address under.
+fn address_key(vendor: &str) -> &'static str {
+    match vendor {
+        "cec" => "device",
+        _ => "ip",
+    }
+}
+
+/// The mock connector posing as a real vendor's: the TV behind it is the
+/// mock, and everything a person sees of the vendor is the vendor's own,
+/// its pairing form and its prompt. Pairing waits for the driver's
+/// `approve` step, as a real TV waits for its owner.
+struct Posed {
+    mock: Arc<MockConnector>,
+    real: Arc<dyn TvConnector>,
+    address_key: &'static str,
+    prompt: &'static str,
+    approved: Arc<Notify>,
+}
+
+impl Posed {
+    /// The vendor's config as the mock's: its address, and nothing else.
+    fn as_mock(&self, config: &VendorConfig) -> VendorConfig {
+        let mut mock = VendorConfig::new();
+        if let Some(address) = config.get(self.address_key) {
+            mock.insert("address", address.clone());
+        }
+        mock
+    }
+}
+
+#[async_trait::async_trait]
+impl TvConnector for Posed {
+    fn transport(&self) -> Transport {
+        self.mock.transport()
+    }
+
+    async fn connect(&self, config: &VendorConfig) -> tisvlay_core::Result<Box<dyn TvConnection>> {
+        self.mock.connect(&self.as_mock(config)).await
+    }
+
+    fn supports_wake(&self, config: &VendorConfig) -> bool {
+        self.mock.supports_wake(&self.as_mock(config))
+    }
+
+    async fn wake(&self, config: &VendorConfig) -> tisvlay_core::Result<()> {
+        self.mock.wake(&self.as_mock(config)).await
+    }
+
+    async fn wake_and_connect(
+        &self,
+        config: &VendorConfig,
+    ) -> tisvlay_core::Result<Box<dyn TvConnection>> {
+        self.mock.wake_and_connect(&self.as_mock(config)).await
+    }
+
+    fn start_pairing(&self, _config: &VendorConfig) -> tisvlay_core::Result<PairingSession> {
+        let (session, mut commands, state) = PairingSession::create();
+        let prompt = self.prompt;
+        let approved = self.approved.clone();
+        tokio::spawn(async move {
+            let _ = state.send(PairingState::awaiting_tv_prompt(prompt));
+            let outcome = tokio::select! {
+                () = approved.notified() => {
+                    PairingState::complete(Credentials::with_type("promo-key", "client_key"))
+                }
+                command = commands.recv() => match command {
+                    Some(PairingCommand::SubmitInput(_)) => {
+                        PairingState::complete(Credentials::with_type("promo-key", "client_key"))
+                    }
+                    Some(PairingCommand::Cancel) | None => {
+                        PairingState::failed(PairingError::cancelled())
+                    }
+                },
+            };
+            let _ = state.send(outcome);
+        });
+        Ok(session)
+    }
+
+    fn build_config_from_pairing(
+        &self,
+        pairing_params: &VendorConfig,
+        _credentials: &Credentials,
+    ) -> tisvlay_core::Result<VendorConfig> {
+        Ok(pairing_params.clone())
+    }
+
+    fn config_schema(&self) -> Vec<PairingField> {
+        self.real.config_schema()
+    }
+}
+
 /// A backend's capability names, as the daemon registers them.
 fn capabilities(backend: &dyn TvBackend) -> Vec<String> {
     backend
@@ -1005,7 +1124,7 @@ fn action(step: &Step) -> Value {
         Step::Wake => json!({ "do": "wake" }),
         Step::Cli { args } => json!({ "do": "cli", "args": args }),
         Step::Mock { tv, op } => json!({ "do": "mock", "tv": tv, "op": format!("{op:?}") }),
-        Step::Approve { address } => json!({ "do": "approve", "address": address }),
+        Step::Approve => json!({ "do": "approve" }),
         Step::Mark { label } => json!({ "do": "mark", "label": label }),
         Step::Scroll { x, y, dy, .. } => json!({ "do": "scroll", "at": [x, y], "dy": dy }),
         Step::Ramp { args, from, to, .. } => {

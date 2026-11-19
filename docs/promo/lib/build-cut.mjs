@@ -24,6 +24,8 @@ const FADE = 0.35;
 // shot holds this long after the stack's last reaction.
 const CUE = 0.3;
 const SETTLE = 1.1;
+// What a command takes to cross to the TV; lib/stage.js draws it so.
+const CROSS = 0.4;
 // A clip starts this long before its first action.
 const RUNUP = 0.8;
 
@@ -63,6 +65,22 @@ const isBeat = (e) =>
 let at = 0;
 const shots = [];
 const media = [];
+
+// The interface's sounds, made here so none is borrowed: a tick for a
+// click, a falling tone as a screen goes off, a rising one as it comes on.
+const SOUNDS = {
+  click: ["sine=frequency=1400:duration=0.03", "afade=t=out:st=0.01:d=0.02,volume=0.5"],
+  off: ["aevalsrc=sin(2*PI*(520-560*t)*t):d=0.3:s=48000", "afade=t=in:d=0.02,afade=t=out:st=0.12:d=0.18,volume=0.5"],
+  on: ["aevalsrc=sin(2*PI*(300+560*t)*t):d=0.3:s=48000", "afade=t=in:d=0.02,afade=t=out:st=0.12:d=0.18,volume=0.5"],
+};
+mkdirSync("build/sounds", { recursive: true });
+for (const [name, [source, filter]] of Object.entries(SOUNDS)) {
+  execFileSync("ffmpeg", ["-v", "error", "-y", "-f", "lavfi", "-i", source, "-af", filter, `build/sounds/${name}.wav`]);
+}
+const sound = (name, when) => {
+  const length = name === "click" ? 0.03 : 0.3;
+  media.push(`<audio id="sound-${media.length}" src="../sounds/${name}.wav" data-start="${when.toFixed(3)}" data-duration="${length}" data-volume="0.6"></audio>`);
+};
 const scripts = new Set();
 cut.shots.forEach((shot, index) => {
   const lines = narration[shot.shot] ?? [];
@@ -103,6 +121,22 @@ cut.shots.forEach((shot, index) => {
       const first = i === 0 || shot.beats[i] !== shot.beats[i - 1];
       laid.beatTimes.push(first && sentence ? sentence.start + CUE : laid.beatTimes[i - 1] + (act.t - acts[i - 1].t));
     });
+    // The TV's screen going off and coming on, each with its sound,
+    // where the stage shows it: once the command has crossed.
+    let shift = 0;
+    let beat = 0;
+    let power = null;
+    for (const e of entries) {
+      if (e.t < origin) {
+        if (e.kind === "state" && e.key === "state/power") power = e.value.state;
+        continue;
+      }
+      if (isBeat(e)) shift = laid.beatTimes[beat++] - (e.t - origin);
+      if (e.kind === "state" && e.key === "state/power" && e.value.state !== power) {
+        power = e.value.state;
+        sound(power === "active" ? "on" : "off", at + e.t - origin + shift + CROSS);
+      }
+    }
     const lastAct = acts.at(-1);
     const lastState = entries.filter((e) => e.kind === "state" && e.key === "state/power").at(-1);
     duration = Math.max(duration, laid.beatTimes.at(-1) + Math.max(0, lastState.t - lastAct.t) + SETTLE);
@@ -115,7 +149,15 @@ cut.shots.forEach((shot, index) => {
     const footage = clip(shot.clip);
     const acted = footage.entries.filter((e) => e.kind === "action" && ["click", "key", "scroll", "cli"].includes(e.do));
     const from = acted.length ? Math.max(0, acted[0].t - footage.began - RUNUP) : 0;
-    const box = shot.kind === "window" ? FRAME : { x: TV.x + TV.inset, y: TV.y + TV.inset, w: TV.w - 2 * TV.inset, h: TV.h - 2 * TV.inset };
+    let box = shot.kind === "window" ? FRAME : { x: TV.x + TV.inset, y: TV.y + TV.inset, w: TV.w - 2 * TV.inset, h: TV.h - 2 * TV.inset };
+    if (shot.prompt) {
+      // The window moves over for the TV whose prompt the wizard waits
+      // on: up from the click that starts the pairing to its approval.
+      box = { ...FRAME, x: 150 };
+      const when = (match) => footage.entries.find((e) => e.kind === "action" && match(e)).t - footage.began - from;
+      laid.prompt = { name: shot.prompt, from: when((e) => e.do === "click" && e.label === "Pair"), to: when((e) => e.do === "approve") };
+      sound("click", at + laid.prompt.to);
+    }
     laid.box = box;
     laid.last = image(`../clips/${shot.clip}.last.png`);
     // Key presses, in the shot's time, for the remote beside the TV.
@@ -123,6 +165,17 @@ cut.shots.forEach((shot, index) => {
     laid.keys = footage.entries
       .filter((e) => e.kind === "action" && e.do === "key")
       .map((e) => ({ at: e.t - footage.began - from, key: KEYS[e.text] ?? "ok" }));
+    // Clicks, as a place in the clip (0 to 1 each way), for the pointer.
+    const recorded = footage.entries.find((e) => e.do === "record");
+    const logical = recorded.screen.map((pixels) => pixels / recorded.scale);
+    laid.clicks = footage.entries
+      .filter((e) => e.kind === "action" && e.do === "click")
+      .map((e) => ({
+        at: e.t - footage.began - from,
+        x: (e.at.position.x + e.at.size.width / 2) / logical[0],
+        y: (e.at.position.y + e.at.size.height / 2) / logical[1],
+      }));
+    for (const click of laid.clicks) if (click.at > 0 && click.at < duration) sound("click", at + click.at);
     media.push(
       `<video id="clip-${index}" class="clip footage" src="../clips/${shot.clip}.mp4" muted playsinline data-start="${at.toFixed(3)}" data-media-start="${from.toFixed(3)}" data-duration="${Math.min(footage.duration - from, duration).toFixed(3)}" style="left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px"></video>`,
     );

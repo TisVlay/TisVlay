@@ -1,7 +1,5 @@
-# Shots 3.2 and 3.3: the pairing wizard discovers a TV and pairs it.
-# The mock approves the pairing itself, so the prompt a real TV shows
-# never appears; the configure step, whose form is the mock's, passes
-# quickly.
+# Shots 3.2 and 3.3: the pairing wizard discovers a TV, and pairs it
+# once the prompt on the TV is approved.
 
 [[found]]
 name = "Living Room TV"
@@ -46,9 +44,17 @@ ms = 700
 do = "click"
 label = "Pair"
 
+# The wizard waits on the TV's prompt until someone approves it there.
 [[step]]
 do = "pause"
 ms = 2200
+
+[[step]]
+do = "approve"
+
+[[step]]
+do = "pause"
+ms = 1600
 
 [[step]]
 do = "click"

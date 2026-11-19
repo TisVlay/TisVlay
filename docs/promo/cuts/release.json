@@ -27,9 +27,9 @@
       "timeline": "stream",
       "tv": "Desk",
       "beats": [
+        0,
         1,
-        2,
-        2
+        1
       ],
       "link": "network",
       "handheld": true
@@ -44,7 +44,8 @@
       "shot": "setup",
       "kind": "window",
       "clip": "setup",
-      "title": "TisVlay"
+      "title": "TisVlay",
+      "prompt": "Living Room TV"
     },
     {
       "shot": "end",

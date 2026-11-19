@@ -114,23 +114,43 @@
     const linkX = spec.tv.x + spec.tv.w;
     const linkW = spec.pc.x - linkX;
     const wireless = spec.link !== "hdmi";
-    const link = el(root, wireless ? "air" : "link");
-    Object.assign(link.style, { left: linkX + "px", top: linkY + "px", width: linkW + "px" });
-    const waves = [];
+    // Each device's antenna, at the corner turned away from the other,
+    // clear of both: the sender's waves ripple out, then the receiver's
+    // ripple in.
+    const antenna = (side, x, y) => {
+      const fan = el(root, "wifi " + side);
+      Object.assign(fan.style, { left: x + "px", top: y + "px" });
+      el(fan, "dot");
+      return [0, 1, 2].map((i) => {
+        const arc = el(fan, "arc");
+        const size = 110 + i * 90;
+        Object.assign(arc.style, { width: size + "px", height: size + "px", left: -size / 2 + "px", top: -size / 2 + "px" });
+        return arc;
+      });
+    };
+    let sends = [];
+    let receives = [];
     let pulse = null;
     if (wireless) {
-      // From the PC toward the TV, each wave a little larger.
-      for (let i = 0; i < 4; i++) {
-        const wave = el(link, "wave");
-        const size = 90 + i * 70;
-        Object.assign(wave.style, { right: 40 + i * 95 + "px", width: size + "px", height: size + "px", marginTop: -size / 2 + "px" });
-        waves.push(wave);
-      }
+      sends = antenna("pc", spec.pc.x - 40, spec.pc.y + 60);
+      receives = antenna("tv", spec.tv.x + spec.tv.w - 30, spec.tv.y - 10);
     } else {
+      const link = el(root, "link");
+      Object.assign(link.style, { left: linkX + "px", top: linkY + "px", width: linkW + "px" });
       el(link, "plug tv-end");
       el(link, "plug pc-end");
       pulse = el(link, "pulse");
     }
+    // Light an antenna's waves in turn: outward when it sends, inward
+    // when it receives.
+    const ripple = (arcs, at, outward) => {
+      const order = outward ? arcs : [...arcs].reverse();
+      order.forEach((arc, i) => {
+        const when = at + (CROSS / 2 / arcs.length) * i;
+        tl.to(arc, { opacity: 1, duration: 0.08 }, when);
+        tl.to(arc, { opacity: 0.2, duration: 0.3 }, when + 0.12);
+      });
+    };
     // The device a stream goes to, lit while the stream runs.
     const handheld = spec.handheld ? el(root, "handheld", '<div class="grip"></div><div class="view"><div class="lit"></div></div><div class="grip"></div>') : null;
     const lit = handheld ? handheld.querySelector(".lit") : null;
@@ -189,11 +209,10 @@
           tl.fromTo(pulse, { x: 0, opacity: 1 }, { x: -linkW, opacity: 1, duration: CROSS, ease: "power1.inOut", immediateRender: false }, at);
           tl.to(pulse, { opacity: 0, duration: 0.1 }, at + CROSS);
         }
-        waves.forEach((wave, i) => {
-          const step = (CROSS / waves.length) * i;
-          tl.to(wave, { opacity: 1, duration: 0.1 }, at + step);
-          tl.to(wave, { opacity: 0.18, duration: 0.3 }, at + step + 0.14);
-        });
+        if (wireless) {
+          ripple(sends, at, true);
+          ripple(receives, at + CROSS / 2, false);
+        }
         arrives = at + CROSS;
       } else if (e.kind === "state" && e.tv === spec.tv.name && e.key === "state/power") {
         const state = e.value.state;

@@ -66,9 +66,9 @@ html, body { margin: 0; background: var(--view); }
 .shot { position: absolute; inset: 0; background: radial-gradient(2600px 1500px at 42% 36%, #232a31 0, var(--view) 70%); }
 video.footage { position: absolute; object-fit: fill; }
 .caption {
-  position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%); max-width: 3200px;
+  position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%); max-width: 3000px;
   padding: 26px 56px; border-radius: 28px; background: #141618e6; box-shadow: 0 0 0 3px var(--raised);
-  font-size: 68px; font-weight: 500; line-height: 1.25; text-align: center; white-space: nowrap; opacity: 0;
+  font-size: 68px; font-weight: 500; line-height: 1.25; text-align: center; text-wrap: balance; width: max-content; opacity: 0;
 }
 
 /* A window on the stage: the settings window's clip, or a terminal's,
@@ -108,10 +108,14 @@ video.footage { position: absolute; object-fit: fill; }
 .asset { display: none; }
 
 /* The link by its transport. A network TV is reached over the air:
-   waves that light in turn from the PC to the TV. An HDMI-CEC one by
+   an antenna on each device, whose waves ripple out of the sender and
+   into the receiver. An HDMI-CEC one by
    its cable, with a plug at each end. */
-.air { position: absolute; height: 0; }
-.air .wave { position: absolute; top: 0; border-radius: 50%; border: 10px solid transparent; border-left-color: var(--accent); opacity: 0.18; }
+.wifi { position: absolute; width: 0; height: 0; }
+.wifi.pc { transform: rotate(-45deg); }
+.wifi.tv { transform: rotate(45deg); }
+.wifi .dot { position: absolute; left: -14px; top: -14px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); }
+.wifi .arc { position: absolute; border-radius: 50%; border: 12px solid transparent; border-top-color: var(--accent); opacity: 0.2; }
 .link .plug { position: absolute; top: -22px; width: 56px; height: 52px; border-radius: 10px; background: var(--edge); }
 .link .plug.tv-end { left: 0; }
 .link .plug.pc-end { right: 0; }
@@ -122,3 +126,16 @@ video.footage { position: absolute; object-fit: fill; }
 .handheld .view { position: relative; flex: 1; margin: 36px 0; border-radius: 12px; background: #050506; overflow: hidden; }
 .handheld .lit { position: absolute; inset: 0; background: linear-gradient(135deg, #1d4f6e, #31363b 55%, #232629); box-shadow: inset 0 0 0 6px #3daee955; }
 .handheld .tag { position: absolute; left: 0; right: 0; top: -84px; text-align: center; font-size: 48px; font-weight: 500; color: var(--dim); }
+
+/* The pointer over a window's clip, which a scripted click doesn't have:
+   it travels to each click and rings there. */
+.pointer { position: absolute; left: 0; top: 0; width: 112px; height: 112px; }
+.pointer svg { position: absolute; left: 0; top: 0; width: 112px; height: 112px; filter: drop-shadow(0 4px 8px #000a); }
+.pointer .ring { position: absolute; left: -40px; top: -40px; width: 80px; height: 80px; border-radius: 50%; border: 8px solid var(--accent); opacity: 0; }
+
+/* A TV's own prompt, as when it is asked to pair. */
+.tv .ask { position: absolute; left: 12%; right: 12%; top: 26%; padding: 44px 40px; border-radius: 24px; background: #141618f2; box-shadow: 0 0 0 3px var(--edge); text-align: center; }
+.tv .ask .question { font-size: 48px; font-weight: 600; }
+.tv .ask .answers { margin-top: 40px; display: flex; justify-content: center; gap: 36px; font-size: 42px; }
+.tv .ask .answers span { position: relative; padding: 14px 52px; border-radius: 16px; background: var(--raised); }
+.tv .ask .answers i { position: absolute; inset: 0; border-radius: 16px; box-shadow: 0 0 0 6px var(--accent), 0 0 40px var(--accent); }
