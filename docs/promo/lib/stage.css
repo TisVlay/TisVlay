@@ -1,0 +1,63 @@
+/* The promo's stage: a TV, the PC beside it and the link between them,
+   in the GUI's Breeze Dark palette. Authored at the 4K master size. */
+@font-face { font-family: "Inter"; src: url("../build/fonts/Inter.ttf"); font-weight: 100 900; }
+
+:root {
+  --view: #141618;
+  --window: #202326;
+  --raised: #2a2e32;
+  --edge: #3b4045;
+  --text: #fcfcfc;
+  --dim: #a1a9b1;
+  --accent: #3daee9;
+  --negative: #da4453;
+}
+
+html, body { margin: 0; background: var(--view); }
+
+.stage {
+  position: relative; width: 3840px; height: 2160px; overflow: hidden;
+  font-family: "Inter", sans-serif; color: var(--text);
+  background: radial-gradient(2600px 1500px at 42% 36%, #232a31 0, var(--view) 70%);
+}
+
+/* A device's name and its state chips, above it. */
+.label { position: absolute; display: flex; align-items: center; gap: 36px; font-size: 68px; font-weight: 600; color: var(--dim); }
+.chips { position: relative; width: 520px; height: 96px; }
+.chip {
+  position: absolute; left: 0; top: 0; height: 96px; padding: 0 40px; border-radius: 48px;
+  display: flex; align-items: center; white-space: nowrap; font-size: 48px; font-weight: 500;
+  background: var(--raised); border: 3px solid var(--edge); color: var(--dim); opacity: 0;
+}
+.chip.lit { border-color: var(--accent); color: var(--accent); }
+
+/* The TV. */
+.tv { position: absolute; }
+.tv .bezel { position: absolute; inset: 0; border-radius: 36px; background: #0b0c0d; box-shadow: 0 60px 160px #000a, 0 0 0 4px var(--raised); }
+.tv .glow { position: absolute; inset: -40px; border-radius: 80px; box-shadow: 0 0 260px 40px #3daee93d; }
+.tv .screen { position: absolute; inset: 28px; border-radius: 14px; overflow: hidden; background: #050506; }
+.tv .desktop { position: absolute; inset: 0; background: linear-gradient(135deg, #1d4f6e, #31363b 55%, #232629); }
+.tv .panel { position: absolute; left: 0; right: 0; bottom: 0; height: 68px; background: #2a2e32e6; }
+.tv .window { position: absolute; border-radius: 16px; background: #31363b; box-shadow: 0 16px 48px #0007; }
+.tv .window::before { content: ""; display: block; height: 52px; border-radius: 16px 16px 0 0; background: var(--edge); }
+.tv .dark { position: absolute; inset: 0; background: #050506; opacity: 0; }
+.tv .neck { position: absolute; left: 50%; top: 100%; width: 88px; height: 70px; margin-left: -44px; background: #232629; }
+.tv .foot { position: absolute; left: 50%; top: 100%; width: 520px; height: 28px; margin: 70px 0 0 -260px; border-radius: 0 0 16px 16px; background: var(--raised); }
+/* The standby light: bottom center, lit only while the TV is off. */
+.tv .standby { position: absolute; left: 50%; bottom: 8px; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: var(--negative); box-shadow: 0 0 16px var(--negative); opacity: 0; }
+
+/* The PC: a tower with a power light and a lock badge. */
+.pc { position: absolute; }
+.pc .case { position: absolute; inset: 0; border-radius: 28px; background: var(--window); box-shadow: 0 40px 120px #0009, 0 0 0 4px var(--raised); }
+.pc .slot { position: absolute; left: 48px; right: 48px; height: 20px; border-radius: 10px; background: var(--raised); }
+.pc .power { position: absolute; left: 50%; top: 72px; width: 44px; height: 44px; margin-left: -22px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 36px var(--accent); }
+.pc .badge { position: absolute; left: 50%; bottom: 80px; width: 168px; height: 168px; margin-left: -84px; border-radius: 40px; background: var(--raised); display: grid; place-items: center; }
+.pc .badge .icon { position: absolute; inset: 0; display: grid; place-items: center; }
+.pc .badge svg { width: 96px; height: 96px; }
+.pc .badge .locked-fill { position: absolute; inset: 0; border-radius: 40px; background: var(--accent); opacity: 0; }
+
+/* The link from the PC to the TV, and the command crossing it. */
+.link { position: absolute; height: 8px; border-radius: 4px; background: var(--edge); }
+.link .pulse { position: absolute; top: -14px; right: 0; width: 36px; height: 36px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 40px var(--accent); opacity: 0; }
+
+.wordmark { position: absolute; left: 120px; bottom: 96px; font-size: 64px; font-weight: 700; color: var(--accent); opacity: 0.9; }

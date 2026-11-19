@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Hero loop</title>
+    <link rel="stylesheet" href="../lib/stage.css" />
+  </head>
+  <body>
+    <!-- The hero loop: the lock beat alone. It ends in the state it
+         starts in, so it loops without a seam. -->
+    <div id="hero" class="stage" data-composition-id="hero" data-width="3840" data-height="2160" data-fps="60" data-start="0" data-duration="10"></div>
+    <script src="../node_modules/gsap/dist/gsap.min.js"></script>
+    <script src="../build/timelines/coffee-break.js"></script>
+    <script src="../lib/stage.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+      window.__timelines["hero"] = Promo.stage(
+        document.querySelector("#hero"),
+        window.__promoTimelines["coffee-break"],
+        {
+          tv: { name: "Desk", x: 480, y: 500, w: 2000, h: 1160 },
+          pc: { x: 2960, y: 760, w: 400, h: 760 },
+          wordmark: "TisVlay",
+        },
+      );
+    </script>
+  </body>
+</html>

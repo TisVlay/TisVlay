@@ -308,6 +308,10 @@ promo-timeline name:
         --shot {{ _promo_dir }}/shots/{{ name }}.toml \
         --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
         --cli target/debug/tisvlay
+    printf 'window.__promoTimelines = window.__promoTimelines || {};\nwindow.__promoTimelines["%s"] = ' {{ name }} \
+        > {{ _promo_dir }}/build/timelines/{{ name }}.js
+    jq --slurp --compact-output . {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
+        >> {{ _promo_dir }}/build/timelines/{{ name }}.js
 
 # Prove the render path: an animation, an embedded clip and an audio
 # track render, and a second render gives the same frames. Then compare
