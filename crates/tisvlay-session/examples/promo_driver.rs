@@ -76,9 +76,6 @@ struct Args {
     /// `slint/mcp`.
     #[arg(long)]
     gui: Option<PathBuf>,
-    /// The sway config for the headless compositor a `[gui]` shot runs in.
-    #[arg(long)]
-    compositor: Option<PathBuf>,
     /// Where a `[gui]` shot's screen recording goes.
     #[arg(long)]
     record: Option<PathBuf>,
@@ -105,6 +102,22 @@ struct Gui {
     /// Force couch mode, the 10-foot layout.
     #[serde(default)]
     couch: bool,
+    /// The screen the window fills, in pixels. Left out, it is the
+    /// window's default size at four pixels to one: the clip is the
+    /// window as a user sees it on opening it.
+    #[serde(default = "default_screen")]
+    screen: (u32, u32),
+    /// Pixels per logical pixel on that screen.
+    #[serde(default = "default_scale")]
+    scale: f32,
+}
+
+fn default_screen() -> (u32, u32) {
+    (2880, 1920)
+}
+
+fn default_scale() -> f32 {
+    4.0
 }
 
 /// A TV enrolled before the steps run.
@@ -128,6 +141,9 @@ enum Step {
     Idle,
     /// Activity ends the idle period.
     Resume,
+    /// Someone is back at the PC: the first local input after a stream
+    /// ended.
+    Return,
     /// The PC is about to sleep (logind's `PrepareForSleep`).
     Sleep,
     Wake,
@@ -396,12 +412,7 @@ async fn main() -> Result<()> {
                 .gui
                 .as_deref()
                 .context("the shot has `[gui]`; pass --gui")?;
-            let config = args
-                .compositor
-                .as_deref()
-                .context("the shot has `[gui]`; pass --compositor")?;
             let started = start_gui(
-                config,
                 binary,
                 args.cli.as_deref(),
                 gui,
@@ -433,6 +444,7 @@ async fn main() -> Result<()> {
             Step::Unlock => logind.set_locked(false).await?,
             Step::Idle => send(&session.client, SessionEvent::IdleTimeout)?,
             Step::Resume => send(&session.client, SessionEvent::IdleResume)?,
+            Step::Return => send(&session.client, SessionEvent::LocalReturn)?,
             Step::Sleep => logind.emit_prepare_for_sleep(true).await?,
             Step::Wake => logind.emit_prepare_for_sleep(false).await?,
             Step::Cli { args: cli_args } => {
@@ -592,13 +604,28 @@ struct StartedGui {
 const WAYLAND_DISPLAY: &str = "wayland-1";
 
 /// A headless sway under its own runtime directory, ready for clients.
-async fn start_compositor(config: &Path) -> Result<(Reaped, tempfile::TempDir)> {
+/// Its one output is the shot's screen, which the window fills bare.
+async fn start_compositor(gui: &Gui) -> Result<(Reaped, tempfile::TempDir)> {
     // The temp-socket directory: short enough for the socket's path.
     let runtime = tisvlay_test::socket_tempdir();
+    let config = runtime.path().join("sway.conf");
+    let (width, height) = gui.screen;
+    std::fs::write(
+        &config,
+        format!(
+            "xwayland disable\n\
+             output HEADLESS-1 mode {width}x{height}@60Hz scale {} bg #141618 solid_color\n\
+             default_border none\n\
+             default_floating_border none\n\
+             for_window [app_id=\".*\"] fullscreen enable\n",
+            gui.scale
+        ),
+    )
+    .context("write the compositor's config")?;
     let compositor = Reaped(
         Command::new("sway")
             .arg("--config")
-            .arg(config)
+            .arg(&config)
             .env("XDG_RUNTIME_DIR", runtime.path())
             .env("WLR_BACKENDS", "headless")
             .env("WLR_LIBINPUT_NO_DEVICES", "1")
@@ -622,14 +649,13 @@ async fn start_compositor(config: &Path) -> Result<(Reaped, tempfile::TempDir)> 
 }
 
 async fn start_gui(
-    config: &Path,
     binary: &Path,
     cli: Option<&Path>,
     gui: &Gui,
     system_socket: &Path,
     user_socket: &Path,
 ) -> Result<StartedGui> {
-    let (compositor, runtime) = start_compositor(config).await?;
+    let (compositor, runtime) = start_compositor(gui).await?;
     let bus = PrivateBus::isolated();
     let portal = bus.connect().await.context("connect the settings portal")?;
     portal
@@ -672,7 +698,7 @@ async fn start_gui(
     desktop(&mut command);
     command.env("SLINT_MCP_PORT", MCP_PORT.to_string());
     if gui.couch {
-        command.env("TISVLAY_COUCH_MODE", "1");
+        command.env("TISVLAY_COUCH_MODE", "on");
     }
     let window = command
         .spawn()
@@ -862,6 +888,7 @@ fn action(step: &Step) -> Value {
         Step::Unlock => json!({ "do": "unlock" }),
         Step::Idle => json!({ "do": "idle" }),
         Step::Resume => json!({ "do": "resume" }),
+        Step::Return => json!({ "do": "return" }),
         Step::Sleep => json!({ "do": "sleep" }),
         Step::Wake => json!({ "do": "wake" }),
         Step::Cli { args } => json!({ "do": "cli", "args": args }),

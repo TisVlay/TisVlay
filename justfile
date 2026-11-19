@@ -340,7 +340,6 @@ promo-capture name *args:
         --shot {{ _promo_dir }}/shots/{{ name }}.toml \
         --timeline {{ _promo_dir }}/build/timelines/{{ name }}.jsonl \
         --cli target/debug/tisvlay --gui target/debug/tisvlay-gui \
-        --compositor {{ _promo_dir }}/sway.conf \
         --record {{ _promo_dir }}/build/clips/{{ name }}.mp4 {{ args }}
     just _promo-timeline-script {{ name }}
 

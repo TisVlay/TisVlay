@@ -1,0 +1,48 @@
+# Shot 1.5: the desktop streams to another device, so the TV at the
+# desk turns its screen off; back at the desk, it comes on again.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "cli"
+args = ["stream", "start"]
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "screenoff"
+
+[[step]]
+do = "pause"
+ms = 3000
+
+[[step]]
+do = "cli"
+args = ["stream", "stop"]
+
+[[step]]
+do = "pause"
+ms = 1000
+
+[[step]]
+do = "return"
+
+[[step]]
+do = "wait"
+tv = "Desk"
+key = "state/power"
+field = "state"
+is = "active"
+
+[[step]]
+do = "pause"
+ms = 1500

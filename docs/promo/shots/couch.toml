@@ -1,0 +1,70 @@
+# Shot 1.7: couch mode, the settings window at its 10-foot scale, driven
+# by the keys a TV remote or a gamepad sends.
+
+[[tv]]
+name = "Desk"
+vendor = "lg"
+address = "192.0.2.10"
+
+[[tv]]
+name = "Living Room"
+vendor = "cec"
+address = "192.0.2.20"
+
+# A TV's screen, not a desktop window: couch mode runs maximized.
+[gui]
+couch = true
+screen = [3840, 2160]
+scale = 3.0
+
+[[step]]
+do = "pause"
+ms = 1500
+
+[[step]]
+do = "key"
+text = ""
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "key"
+text = ""
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "key"
+text = "\n"
+
+[[step]]
+do = "pause"
+ms = 1200
+
+[[step]]
+do = "key"
+text = ""
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "key"
+text = ""
+
+[[step]]
+do = "pause"
+ms = 900
+
+[[step]]
+do = "key"
+text = ""
+
+[[step]]
+do = "pause"
+ms = 2000
