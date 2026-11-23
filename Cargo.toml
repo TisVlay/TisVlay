@@ -77,7 +77,7 @@ toml_edit = "0.25"
 
 # The system's monospace family for the GUI (the font library Slint uses;
 # kept on the version Slint pins so the graph holds one copy).
-fontique = "0.12"
+fontique = "0.13"
 
 # Error handling
 thiserror = "2"
